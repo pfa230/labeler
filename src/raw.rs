@@ -189,14 +189,14 @@ pub struct TemplateDefinitionRaw {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
     pub unit: String,
     pub dpi: u32,
     pub format: RawTemplateFormat,
     #[serde(default)]
     pub params: Vec<RawParamEntry>,
     pub layout: Vec<LayoutItemRaw>,
-    #[serde(default)]
-    pub version: Option<String>,
 }
 
 pub type RawTemplate = TemplateDefinitionRaw;

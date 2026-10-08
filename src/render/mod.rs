@@ -3421,6 +3421,7 @@ layout:
         let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -3454,7 +3455,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         assert_eq!(template.validate(), Ok(()));
         let data: HashMap<String, super::JsonValue> = HashMap::new();
@@ -4164,6 +4164,7 @@ layout:
         let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -4194,7 +4195,6 @@ layout:
                 repeat: None,
                 items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
             }]),
-            version: None,
         };
         assert_eq!(
             template.validate(),
@@ -4220,6 +4220,7 @@ layout:
         let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -4250,7 +4251,6 @@ layout:
                 repeat: None,
                 items: vec![],
             }]),
-            version: None,
         };
         assert_eq!(
             template.validate(),
@@ -4299,6 +4299,7 @@ layout:
         TemplateContent {
             name: "Rot".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4328,7 +4329,6 @@ layout:
                 repeat: None,
                 items,
             }]),
-            version: None,
         }
     }
 
@@ -4522,6 +4522,7 @@ layout:
         let template = TemplateContent {
             name: "Nest".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4531,7 +4532,6 @@ layout:
             },
             params: IndexMap::new(),
             layout: Layout::Items(vec![outer]),
-            version: None,
         };
         let png = render_single_label(&template, &HashMap::new(), &no_settings(), &no_datetime())
             .expect("render nested rotated containers");
@@ -4551,6 +4551,7 @@ layout:
         TemplateContent {
             name: "Tape".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -4580,7 +4581,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         }
     }
 
@@ -4941,10 +4941,10 @@ layout:
     fn two_slot_sheet() -> TemplateDefinition {
         TemplateDefinition {
             id: "sheet2".to_string(),
-            group: None,
             content: TemplateContent {
                 name: "Sheet2".to_string(),
                 description: String::new(),
+                categories: Vec::new(),
                 unit: "mm".to_string(),
                 dpi: 200,
                 format: TemplateFormat::Sheet {
@@ -4979,7 +4979,6 @@ layout:
                     overflow: Overflow::Ellipsis,
                     when: None,
                 }]),
-                version: None,
             },
         }
     }
@@ -5044,6 +5043,7 @@ layout:
         let template = TemplateContent {
             name: "Test".to_string(),
             description: "Test template".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5078,7 +5078,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
@@ -5094,6 +5093,7 @@ layout:
         let template = TemplateContent {
             name: "Test QR".to_string(),
             description: "Test template with qr".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5166,7 +5166,6 @@ layout:
                     items: Vec::new(),
                 },
             ]),
-            version: None,
         };
 
         let data = HashMap::from([
@@ -5184,10 +5183,10 @@ layout:
     fn render_sheet_labels_produces_pdf() {
         let template = TemplateDefinition {
             id: "sheet".to_string(),
-            group: None,
             content: TemplateContent {
                 name: "Sheet".to_string(),
                 description: "Sheet template".to_string(),
+                categories: Vec::new(),
                 unit: "mm".to_string(),
                 dpi: 200,
                 format: TemplateFormat::Sheet {
@@ -5222,7 +5221,6 @@ layout:
                     overflow: Overflow::Ellipsis,
                     when: None,
                 }]),
-                version: None,
             },
         };
 
@@ -5244,6 +5242,7 @@ layout:
         TemplateContent {
             name: "Img".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5262,7 +5261,6 @@ layout:
                 fit: Fit::Contain,
                 when: None,
             }]),
-            version: None,
         }
     }
 
@@ -5299,10 +5297,10 @@ layout:
     fn render_sheet_labels_with_image_produces_pdf() {
         let template = TemplateDefinition {
             id: "sheet".to_string(),
-            group: None,
             content: TemplateContent {
                 name: "Sheet".to_string(),
                 description: String::new(),
+                categories: Vec::new(),
                 unit: "mm".to_string(),
                 dpi: 200,
                 format: TemplateFormat::Sheet {
@@ -5332,7 +5330,6 @@ layout:
                     fit: Fit::Contain,
                     when: None,
                 }]),
-                version: None,
             },
         };
         let labels = vec![LabelInput {
@@ -5452,6 +5449,7 @@ layout:
         let template = TemplateContent {
             name: "Pdf".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5475,7 +5473,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
         let pdf = render_single_label_pdf(&template, &data, &no_settings(), &no_datetime())
@@ -5625,6 +5622,7 @@ layout:
         let template = TemplateContent {
             name: "Interp".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5659,7 +5657,6 @@ layout:
                     when: None,
                 },
             ]),
-            version: None,
         };
         let data = HashMap::from([("id".to_string(), json!("A1"))]);
         let settings = BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())]);
@@ -5676,6 +5673,7 @@ layout:
         let template = TemplateContent {
             name: "Inject".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5699,7 +5697,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         // Typst-hostile payload: markup that would call into the system if not escaped.
         let data = HashMap::from([("x".to_string(), json!(r#""]#sys.version[ \ end"#))]);
@@ -5754,6 +5751,7 @@ layout:
         TemplateContent {
             name: "s".into(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Sheet {
@@ -5779,7 +5777,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         }
     }
 
@@ -5789,6 +5786,7 @@ layout:
         let template = TemplateContent {
             name: "t".into(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5855,7 +5853,6 @@ layout:
                     when: None,
                 },
             ]),
-            version: None,
         };
         let data = test_placeholder_data(&template, chrono::Local::now());
         assert_eq!(data.get("title").and_then(|v| v.as_str()), Some("title"));
@@ -5883,6 +5880,7 @@ layout:
         let template = TemplateContent {
             name: "t".into(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5915,7 +5913,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         let data = test_placeholder_data(&template, chrono::Local::now());
         assert!(
@@ -7133,6 +7130,7 @@ layout:
                 let template = TemplateContent {
                     name: "SuppliedBlockHeight".to_string(),
                     description: String::new(),
+                    categories: Vec::new(),
                     unit: "mm".to_string(),
                     dpi: 200,
                     format: TemplateFormat::Single {
@@ -7156,7 +7154,6 @@ layout:
                         overflow: Overflow::Ellipsis,
                         when: None,
                     }]),
-                    version: None,
                 };
                 let mut data = HashMap::new();
                 data.insert("pitch".to_string(), serde_json::json!(spacing));
@@ -7253,6 +7250,7 @@ layout:
             let template = TemplateContent {
                 name: "Hxy".to_string(),
                 description: String::new(),
+                categories: Vec::new(),
                 unit: "mm".to_string(),
                 dpi: 180,
                 format: TemplateFormat::Single {
@@ -7279,7 +7277,6 @@ layout:
                     overflow: Overflow::Ellipsis,
                     when: None,
                 }]),
-                version: None,
             };
             render_single_label(&template, &HashMap::new(), &no_settings(), &no_datetime())
                 .expect("render hxy")
@@ -7320,6 +7317,7 @@ layout:
         let make_range_template = |spacing: Option<f32>| TemplateContent {
             name: "RangePitch".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -7346,7 +7344,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
 
         let env = super::RenderEnv {
@@ -7373,6 +7370,7 @@ layout:
             let template = TemplateContent {
                 name: "SingleLine".to_string(),
                 description: String::new(),
+                categories: Vec::new(),
                 unit: "mm".to_string(),
                 dpi: 180,
                 format: TemplateFormat::Single {
@@ -7396,7 +7394,6 @@ layout:
                     overflow: Overflow::Ellipsis,
                     when: None,
                 }]),
-                version: None,
             };
             render_single_label(&template, &HashMap::new(), &no_settings(), &no_datetime())
                 .expect("render single line")
@@ -7547,6 +7544,7 @@ layout:
         TemplateContent {
             name: "T".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -7584,7 +7582,6 @@ layout:
                     when: None,
                 },
             ]),
-            version: None,
         }
     }
 
@@ -7819,6 +7816,7 @@ layout:
         let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -7857,7 +7855,6 @@ layout:
                 overflow: Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         assert_eq!(template.validate(), Ok(()));
         for value in ["hello", ""] {
@@ -7878,6 +7875,7 @@ layout:
         let qr_at = |x: f32| TemplateContent {
             name: "T".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -7914,7 +7912,6 @@ layout:
                 }),
                 when: None,
             }]),
-            version: None,
         };
         let mut data: HashMap<String, super::JsonValue> = HashMap::new();
 
@@ -9302,7 +9299,6 @@ layout:
         };
         let template_def = crate::templates::TemplateDefinition {
             id: "CircleParamTest".to_string(),
-            group: None,
             content: template,
         };
         let labels = vec![
@@ -10296,7 +10292,6 @@ layout:
         let template_content = parse_and_validate(yaml).unwrap();
         let template = TemplateDefinition {
             id: "sheet_flow".to_string(),
-            group: None,
             content: template_content,
         };
         let labels = vec![LabelInput {
@@ -11263,7 +11258,6 @@ layout:
         let template_content = crate::parse::parse_template(yaml).unwrap();
         let template = TemplateDefinition {
             id: "sheet_color".to_string(),
-            group: None,
             content: template_content,
         };
         let Layout::Items(items) = &template.layout;
@@ -11441,8 +11435,8 @@ layout:
                 );
                 TemplateContent {
                     name: "Test".to_string(),
-                    version: None,
                     description: String::new(),
+                    categories: Vec::new(),
                     unit: "mm".to_string(),
                     dpi: 200,
                     format: crate::models::TemplateFormat::Single {
@@ -11601,8 +11595,8 @@ layout:
         );
         let template = TemplateContent {
             name: "Test".to_string(),
-            version: None,
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: crate::models::TemplateFormat::Single {
@@ -11660,7 +11654,6 @@ layout:
         let template_content = crate::parse::parse_template(yaml).unwrap();
         let template = TemplateDefinition {
             id: "shelf".to_string(),
-            group: None,
             content: template_content,
         };
 

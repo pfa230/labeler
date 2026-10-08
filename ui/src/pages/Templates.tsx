@@ -1,16 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError } from "../api/client";
-import {
-  useDeleteTemplateGroup,
-  useFavorites,
-  useMoveTemplateGroup,
-  useRecentTemplates,
-  useRenameTemplateGroup,
-  useSetFavorite,
-  useTemplateGroups,
-  useTemplates,
-} from "../api/queries";
+import { useFavorites, useRecentTemplates, useSetFavorite, useTemplates } from "../api/queries";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { FormatBadge } from "../components/FormatBadge";
@@ -28,60 +18,34 @@ function compareCodePoints(a: string, b: string): number {
   return ca.length - cb.length;
 }
 
-type GroupFilter = { kind: "all" } | { kind: "ungrouped" } | { kind: "group"; path: string };
+// A union rather than a string, so a category literally named "All" or "Uncategorized" stays distinct
+// from those two filters.
+type CategoryFilter = { kind: "all" } | { kind: "uncategorized" } | { kind: "category"; name: string };
 
-const ALL_FILTER: GroupFilter = { kind: "all" };
+const ALL_FILTER: CategoryFilter = { kind: "all" };
 
-function sameFilter(a: GroupFilter, b: GroupFilter): boolean {
+function sameFilter(a: CategoryFilter, b: CategoryFilter): boolean {
   if (a.kind !== b.kind) return false;
-  return a.kind !== "group" || b.kind !== "group" || a.path === b.path;
+  return a.kind !== "category" || b.kind !== "category" || a.name === b.name;
 }
 
 function TemplateCard({
   template,
   favorite,
-  selected,
-  onToggleSelect,
   onToggleFavorite,
-  onMove,
 }: {
   template: TemplateSummary;
   favorite: boolean;
-  selected: boolean;
-  onToggleSelect: () => void;
   onToggleFavorite: () => void;
-  onMove: () => void;
 }) {
   const [failed, setFailed] = useState(false);
   return (
     <div
       className="flex h-full flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md"
-      style={{
-        background: selected ? "var(--accent-soft)" : "var(--surface)",
-        borderColor: selected ? "var(--accent)" : "var(--border)",
-      }}
+      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex shrink-0 items-center gap-2">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={selected}
-              onChange={onToggleSelect}
-              aria-label={`Select ${template.name}`}
-              className="h-4 w-4 rounded border-gray-300"
-            />
-          </label>
-          <FormatBadge format={template.format} />
-        </div>
-        {template.group && (
-          <span
-            className="min-w-0 truncate rounded-full px-2 py-0.5 text-xs font-medium border"
-            style={{ background: "var(--paper)", color: "var(--muted)", borderColor: "var(--border)" }}
-          >
-            {template.group}
-          </span>
-        )}
+      <div className="flex items-center">
+        <FormatBadge format={template.format} />
       </div>
       <Link
         to={`/print/${encodeURIComponent(template.id)}`}
@@ -120,19 +84,6 @@ function TemplateCard({
           </code>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={onMove}
-            aria-label={`Move ${template.name}`}
-            className="flex h-11 px-2.5 items-center justify-center rounded-md border text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
-            style={{
-              background: "var(--surface)",
-              borderColor: "var(--border)",
-              color: "var(--muted)",
-            }}
-          >
-            Move to…
-          </button>
           <Link
             to={`/templates/${encodeURIComponent(template.id)}`}
             aria-label={`${template.name} template details`}
@@ -165,386 +116,14 @@ function TemplateCard({
   );
 }
 
-function MoveDialog({
-  templateIds,
-  templatesById,
-  groupsInUse,
-  onClose,
-  onSuccess,
-}: {
-  templateIds: string[];
-  templatesById: Map<string, TemplateSummary>;
-  groupsInUse: string[];
-  onClose: () => void;
-  onSuccess: () => void;
-}) {
-  const [groupInput, setGroupInput] = useState("");
-  const moveGroup = useMoveTemplateGroup();
-  const { push } = useToast();
-  const [submitting, setSubmitting] = useState(false);
-
-  const isBulk = templateIds.length > 1;
-  const title = isBulk
-    ? `Move ${templateIds.length} templates`
-    : `Move ${templatesById.get(templateIds[0])?.name ?? templateIds[0]}`;
-
-  const formatMoveError = (err: unknown, id: string): string => {
-    if (err instanceof ApiError) {
-      if (err.status === 422) {
-        return `Invalid group path: ${err.message}`;
-      }
-      if (err.status === 409) {
-        return `Conflict: template '${id}' already exists in destination`;
-      }
-      return err.message;
-    }
-    return err instanceof Error ? err.message : "Failed to move template";
-  };
-
-  const handleMove = async (targetGroup: string | null) => {
-    setSubmitting(true);
-    try {
-      if (isBulk) {
-        const results = await Promise.allSettled(
-          templateIds.map((id) => moveGroup.mutateAsync({ id, group: targetGroup })),
-        );
-        const successes = results.filter((r) => r.status === "fulfilled").length;
-        const failures = results
-          .map((r, i) => ({ id: templateIds[i], result: r }))
-          .filter((x) => x.result.status === "rejected");
-
-        if (failures.length === 0) {
-          push({
-            kind: "ok",
-            message: `Moved ${successes} templates${targetGroup ? ` to ${targetGroup}` : " to ungrouped"}`,
-          });
-        } else if (successes === 0) {
-          const firstErr = failures[0].result as PromiseRejectedResult;
-          push({
-            kind: "error",
-            message: `Failed to move templates: ${formatMoveError(firstErr.reason, failures[0].id)}`,
-          });
-        } else {
-          push({
-            kind: "error",
-            message: `Moved ${successes} templates. Failed ${failures.length}: ${failures.map((f) => f.id).join(", ")}`,
-          });
-        }
-      } else {
-        const id = templateIds[0];
-        const tplName = templatesById.get(id)?.name ?? id;
-        await moveGroup.mutateAsync({ id, group: targetGroup });
-        push({
-          kind: "ok",
-          message: `Moved ${tplName}${targetGroup ? ` to ${targetGroup}` : " to ungrouped"}`,
-        });
-      }
-      onSuccess();
-      onClose();
-    } catch (err) {
-      push({
-        kind: "error",
-        message: formatMoveError(err, templateIds[0]),
-      });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div
-      role="dialog"
-      aria-label={title}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-    >
-      <div
-        className="flex w-full max-w-md flex-col gap-4 rounded-lg border p-6 shadow-xl"
-        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold" style={{ color: "var(--ink)" }}>
-            {title}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="rounded p-1 text-sm focus-visible:outline-none focus-visible:ring-2"
-            style={{ color: "var(--muted)" }}
-          >
-            ✕
-          </button>
-        </div>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const trimmed = groupInput.trim();
-            if (trimmed) {
-              void handleMove(trimmed);
-            }
-          }}
-          className="flex flex-col gap-4"
-        >
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="move-group-input"
-              className="text-xs font-medium"
-              style={{ color: "var(--muted)" }}
-            >
-              Group name
-            </label>
-            <input
-              id="move-group-input"
-              list="groups-datalist"
-              type="text"
-              value={groupInput}
-              onChange={(e) => setGroupInput(e.target.value)}
-              placeholder="Choose or enter group (e.g. Shipping/Pallets)…"
-              className="rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
-              autoFocus
-            />
-            <datalist id="groups-datalist">
-              {groupsInUse.map((g) => (
-                <option key={g} value={g} />
-              ))}
-            </datalist>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-            <button
-              type="button"
-              disabled={submitting}
-              onClick={() => void handleMove(null)}
-              className="rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
-              style={{ borderColor: "var(--border)", color: "var(--muted)" }}
-            >
-              Make ungrouped
-            </button>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={onClose}
-                className="rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
-                style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={submitting || !groupInput.trim()}
-                className="rounded-md px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
-                style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
-              >
-                {submitting ? "Moving…" : "Move"}
-              </button>
-            </div>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function validateGroupSegment(segment: string): string | null {
-  if (!segment) return "Name cannot be empty";
-  if (segment.length > 64) return "Name cannot exceed 64 characters";
-  const encoder = new TextEncoder();
-  if (encoder.encode(segment).length > 255) return "Name cannot exceed 255 bytes";
-  // Scanned by code point rather than matched by regex: a character class spelling out the C0
-  // range is what `no-control-regex` exists to flag, and the intent here is exactly that range.
-  for (const ch of segment) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (code <= 0x1f || code === 0x7f) return "Name cannot contain control characters";
-  }
-  if (/[/\\<>:"|?*]/.test(segment)) return 'Name cannot contain / \\ < > : " | ? *';
-  if (segment === "." || segment === "..") return 'Name cannot be "." or ".."';
-  if (segment.startsWith(" ") || segment.endsWith(" ")) return "Name cannot have leading or trailing whitespace";
-  if (segment.startsWith(".") || segment.endsWith(".")) return 'Name cannot begin or end with "."';
-
-  const stem = segment.replace(/\.[^.]*$/, "");
-  const upper = stem.toUpperCase();
-  const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]|COM[¹²³]|LPT[¹²³])$/;
-  if (reserved.test(upper)) return `"${stem}" is a reserved device name`;
-
-  return null;
-}
-
-function RenameDialog({
-  groupPath,
-  onClose,
-  onSuccess,
-}: {
-  groupPath: string;
-  onClose: () => void;
-  onSuccess: (newGroupPath: string, oldGroupPath: string) => void;
-}) {
-  const currentSegment = groupPath.split("/").pop() ?? groupPath;
-  const [nameInput, setNameInput] = useState(currentSegment);
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const renameGroup = useRenameTemplateGroup();
-  const { push } = useToast();
-
-  const handleRename = async () => {
-    const trimmed = nameInput.trim();
-    const validationErr = validateGroupSegment(trimmed);
-    if (validationErr) {
-      setError(validationErr);
-      return;
-    }
-
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await renameGroup.mutateAsync({ groupPath, name: trimmed });
-      push({
-        kind: "ok",
-        message: `Renamed group ${groupPath} to ${res.group}`,
-      });
-      onSuccess(res.group, groupPath);
-      onClose();
-    } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.status === 404) {
-          setError(`Group '${groupPath}' not found`);
-        } else if (err.status === 409) {
-          setError(`Destination group '${trimmed}' already exists`);
-        } else if (err.status === 422) {
-          setError(`Invalid name: ${err.message}`);
-        } else {
-          setError(err.message);
-        }
-      } else {
-        setError(err instanceof Error ? err.message : "Failed to rename group");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div
-      role="dialog"
-      aria-label={`Rename group ${groupPath}`}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-    >
-      <div
-        className="flex w-full max-w-md flex-col gap-4 rounded-lg border p-6 shadow-xl"
-        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold" style={{ color: "var(--ink)" }}>
-            Rename group
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="rounded p-1 text-sm focus-visible:outline-none focus-visible:ring-2"
-            style={{ color: "var(--muted)" }}
-          >
-            ✕
-          </button>
-        </div>
-
-        <p className="text-xs" style={{ color: "var(--muted)" }}>
-          Renaming <span className="font-medium" style={{ color: "var(--ink)" }}>{groupPath}</span> changes its own name within its parent directory.
-        </p>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void handleRename();
-          }}
-          className="flex flex-col gap-4"
-        >
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="rename-group-input"
-              className="text-xs font-medium"
-              style={{ color: "var(--muted)" }}
-            >
-              New name
-            </label>
-            <input
-              id="rename-group-input"
-              type="text"
-              value={nameInput}
-              onChange={(e) => {
-                setNameInput(e.target.value);
-                setError(null);
-              }}
-              placeholder="New name"
-              aria-label="New name"
-              autoFocus
-              className="rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-              style={{
-                background: "var(--surface)",
-                borderColor: error ? "var(--bad, #dc2626)" : "var(--border)",
-                color: "var(--ink)",
-              }}
-            />
-            {error && (
-              <p className="text-xs" style={{ color: "var(--bad, #dc2626)" }}>
-                {error}
-              </p>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
-              style={{
-                background: "var(--surface)",
-                borderColor: "var(--border)",
-                color: "var(--ink)",
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting || !nameInput.trim()}
-              className="rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
-              style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
-            >
-              {submitting ? "Renaming…" : "Rename"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 export function Templates() {
-  const templatesQuery = useTemplates();
-  const { data, isLoading, isError, error } = templatesQuery;
-  const groupsQuery = useTemplateGroups();
-  const deleteGroup = useDeleteTemplateGroup();
+  const { data, isLoading, isError, error } = useTemplates();
   const favs = useFavorites();
   const recents = useRecentTemplates();
   const setFav = useSetFavorite();
   const { push } = useToast();
   const [query, setQuery] = useState("");
-  const [selectedGroup, setSelectedGroup] = useState<GroupFilter>(ALL_FILTER);
-  const [includeNested, setIncludeNested] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [movingTemplateIds, setMovingTemplateIds] = useState<string[] | null>(null);
-  const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
-  const [pendingTransition, setPendingTransition] = useState<{
-    snapshot: TemplateSummary[];
-    oldGroup: string;
-    newGroup: string;
-    targetSelectedPath: string;
-    refreshError: string | null;
-  } | null>(null);
+  const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>(ALL_FILTER);
 
   useEffect(() => {
     if (isError) {
@@ -555,168 +134,33 @@ export function Templates() {
     }
   }, [isError, error, push]);
 
-  const { groupsInUse, hasUngrouped } = useMemo(() => {
-    const rawGroups = Array.isArray(groupsQuery.data) ? groupsQuery.data : [];
-    const set = new Set<string>(rawGroups);
-    let ungrouped = false;
+  const { categories, hasUncategorized } = useMemo(() => {
+    const set = new Set<string>();
+    let uncategorized = false;
     for (const t of data?.templates ?? []) {
-      if (t.group) {
-        set.add(t.group);
-      } else {
-        ungrouped = true;
-      }
+      if (t.categories.length === 0) uncategorized = true;
+      for (const c of t.categories) set.add(c);
     }
-    const sorted = Array.from(set).sort(compareCodePoints);
-    return { groupsInUse: sorted, hasUngrouped: ungrouped };
-  }, [data, groupsQuery.data]);
+    return { categories: Array.from(set).sort(compareCodePoints), hasUncategorized: uncategorized };
+  }, [data]);
 
   const filtered = useMemo(() => {
-    let list = pendingTransition ? pendingTransition.snapshot : data?.templates ?? [];
-    if (selectedGroup.kind === "ungrouped") {
-      list = list.filter((t) => !t.group);
-    } else if (selectedGroup.kind === "group") {
-      if (includeNested) {
-        list = list.filter(
-          (t) =>
-            t.group === selectedGroup.path ||
-            (t.group ? t.group.startsWith(selectedGroup.path + "/") : false),
-        );
-      } else {
-        list = list.filter((t) => t.group === selectedGroup.path);
-      }
+    let list = data?.templates ?? [];
+    if (selectedFilter.kind === "uncategorized") {
+      list = list.filter((t) => t.categories.length === 0);
+    } else if (selectedFilter.kind === "category") {
+      list = list.filter((t) => t.categories.includes(selectedFilter.name));
     }
     const needle = query.trim().toLowerCase();
     if (!needle) return list;
     return list.filter(
       (t) => t.id.toLowerCase().includes(needle) || t.name.toLowerCase().includes(needle),
     );
-  }, [data, selectedGroup, includeNested, query, pendingTransition]);
-
-  const performRefresh = async (transition: {
-    snapshot: TemplateSummary[];
-    oldGroup: string;
-    newGroup: string;
-    targetSelectedPath: string;
-    refreshError: string | null;
-  }) => {
-    try {
-      const [groupsRes, templatesRes] = await Promise.all([
-        groupsQuery.refetch(),
-        templatesQuery.refetch(),
-      ]);
-
-      if (groupsRes.isError || templatesRes.isError) {
-        const errMsg =
-          (groupsRes.error instanceof Error ? groupsRes.error.message : null) ??
-          (templatesRes.error instanceof Error ? templatesRes.error.message : null) ??
-          "Failed to refresh after rename";
-        setPendingTransition({
-          ...transition,
-          refreshError: errMsg,
-        });
-        push({
-          kind: "error",
-          message: `Failed to refresh after rename: ${errMsg}`,
-        });
-        return;
-      }
-
-      const refreshedTemplates = templatesRes.data?.templates ?? [];
-      const refreshedGroups = groupsRes.data ?? [];
-      const hasNewPaths =
-        refreshedGroups.includes(transition.newGroup) ||
-        refreshedTemplates.some(
-          (t) =>
-            t.group === transition.newGroup ||
-            (t.group ? t.group.startsWith(transition.newGroup + "/") : false),
-        );
-
-      if (hasNewPaths) {
-        setSelectedGroup((prev) => {
-          if (prev.kind === "group") {
-            return { kind: "group", path: transition.targetSelectedPath };
-          }
-          return prev;
-        });
-        setPendingTransition(null);
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "Failed to refresh after rename";
-      setPendingTransition({
-        ...transition,
-        refreshError: errMsg,
-      });
-      push({
-        kind: "error",
-        message: `Failed to refresh after rename: ${errMsg}`,
-      });
-    }
-  };
-
-  const handleRenameSuccess = (newGroupPath: string, renamedOldGroup?: string) => {
-    if (selectedGroup.kind !== "group") return;
-    const oldGroupPath = renamedOldGroup ?? renamingGroup ?? selectedGroup.path;
-    if (oldGroupPath === newGroupPath) return;
-
-    const currentTemplates = data?.templates ?? [];
-    const rewrittenSelectedPath =
-      selectedGroup.path === oldGroupPath
-        ? newGroupPath
-        : selectedGroup.path.startsWith(oldGroupPath + "/")
-          ? `${newGroupPath}${selectedGroup.path.slice(oldGroupPath.length)}`
-          : selectedGroup.path;
-
-    const transition = {
-      snapshot: currentTemplates,
-      oldGroup: oldGroupPath,
-      newGroup: newGroupPath,
-      targetSelectedPath: rewrittenSelectedPath,
-      refreshError: null,
-    };
-
-    setPendingTransition(transition);
-    void performRefresh(transition);
-  };
-
-  const canDeleteCurrentGroup = useMemo(() => {
-    if (selectedGroup.kind !== "group") return false;
-    const hasTemplates = (data?.templates ?? []).some(
-      (t) =>
-        t.group === selectedGroup.path ||
-        (t.group ? t.group.startsWith(selectedGroup.path + "/") : false),
-    );
-    const hasSubgroups = groupsInUse.some(
-      (g) => g !== selectedGroup.path && g.startsWith(selectedGroup.path + "/"),
-    );
-    return !hasTemplates && !hasSubgroups;
-  }, [selectedGroup, data, groupsInUse]);
-
-  const handleDeleteGroup = async () => {
-    if (selectedGroup.kind !== "group") return;
-    try {
-      await deleteGroup.mutateAsync(selectedGroup.path);
-      push({ kind: "ok", message: `Deleted group ${selectedGroup.path}` });
-      setSelectedGroup(ALL_FILTER);
-    } catch (err) {
-      push({
-        kind: "error",
-        message: err instanceof Error ? err.message : "Failed to delete group",
-      });
-    }
-  };
+  }, [data, selectedFilter, query]);
 
   const favoriteIds = favs.data ?? [];
   const isFavorite = (id: string) => favoriteIds.includes(id);
   const toggleFavorite = (id: string) => setFav.mutate({ id, favorite: !isFavorite(id) });
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
 
   const byId = useMemo(() => {
     const map = new Map<string, TemplateSummary>();
@@ -725,7 +169,7 @@ export function Templates() {
   }, [data]);
 
   const searching = query.trim() !== "";
-  const isFiltered = searching || selectedGroup.kind !== "all";
+  const isFiltered = searching || selectedFilter.kind !== "all";
   const favTemplates = favoriteIds.map((id) => byId.get(id)).filter((t): t is TemplateSummary => !!t);
   const recentTemplates = (recents.data ?? [])
     .filter((id) => !favoriteIds.includes(id))
@@ -737,10 +181,7 @@ export function Templates() {
       key={t.id}
       template={t}
       favorite={isFavorite(t.id)}
-      selected={selectedIds.has(t.id)}
-      onToggleSelect={() => toggleSelect(t.id)}
       onToggleFavorite={() => toggleFavorite(t.id)}
-      onMove={() => setMovingTemplateIds([t.id])}
     />
   );
 
@@ -766,128 +207,61 @@ export function Templates() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Group filter">
-          <button
-            type="button"
-            onClick={() => setSelectedGroup(ALL_FILTER)}
-            aria-pressed={selectedGroup.kind === "all"}
-            className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
-            style={{
-              background: selectedGroup.kind === "all" ? "var(--accent)" : "var(--surface)",
-              color: selectedGroup.kind === "all" ? "var(--accent-ink)" : "var(--ink)",
-              border: "1px solid",
-              borderColor: selectedGroup.kind === "all" ? "var(--accent)" : "var(--border)",
-            }}
-          >
-            All
-          </button>
-          {groupsInUse.map((g) => (
-            <button
-              key={g}
-              type="button"
-              onClick={() => setSelectedGroup({ kind: "group", path: g })}
-              aria-pressed={sameFilter(selectedGroup, { kind: "group", path: g })}
-              className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
-              style={{
-                background: sameFilter(selectedGroup, { kind: "group", path: g })
-                  ? "var(--accent)"
-                  : "var(--surface)",
-                color: sameFilter(selectedGroup, { kind: "group", path: g })
-                  ? "var(--accent-ink)"
-                  : "var(--ink)",
-                border: "1px solid",
-                borderColor: sameFilter(selectedGroup, { kind: "group", path: g })
-                  ? "var(--accent)"
-                  : "var(--border)",
-              }}
-            >
-              {g}
-            </button>
-          ))}
-          {hasUngrouped && (
-            <button
-              type="button"
-              onClick={() => setSelectedGroup({ kind: "ungrouped" })}
-              aria-pressed={selectedGroup.kind === "ungrouped"}
-              className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
-              style={{
-                background: selectedGroup.kind === "ungrouped" ? "var(--accent)" : "var(--surface)",
-                color: selectedGroup.kind === "ungrouped" ? "var(--accent-ink)" : "var(--ink)",
-                border: "1px solid",
-                borderColor: selectedGroup.kind === "ungrouped" ? "var(--accent)" : "var(--border)",
-              }}
-            >
-              Ungrouped
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-4">
-          <label
-            className="flex items-center gap-1.5 text-xs select-none cursor-pointer"
-            style={{ color: selectedGroup.kind === "group" ? "var(--ink)" : "var(--muted)" }}
-          >
-            <input
-              type="checkbox"
-              checked={includeNested}
-              disabled={selectedGroup.kind !== "group"}
-              onChange={(e) => setIncludeNested(e.target.checked)}
-              aria-label="Include nested subgroups"
-              className="h-3.5 w-3.5 rounded border-gray-300 disabled:opacity-40"
-            />
-            Include nested
-          </label>
-
-          {selectedGroup.kind === "group" && (
-            <button
-              type="button"
-              onClick={() => setRenamingGroup(selectedGroup.path)}
-              aria-label={`Rename group ${selectedGroup.path}`}
-              className="rounded-md border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
-              style={{
-                background: "var(--surface)",
-                borderColor: "var(--border)",
-                color: "var(--ink)",
-              }}
-            >
-              Rename group
-            </button>
-          )}
-
-          {selectedGroup.kind === "group" && canDeleteCurrentGroup && (
-            <button
-              type="button"
-              onClick={() => void handleDeleteGroup()}
-              aria-label={`Delete group ${selectedGroup.path}`}
-              className="rounded-md border px-2.5 py-1 text-xs font-medium text-red-600 border-red-300 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950 focus-visible:outline-none focus-visible:ring-2"
-            >
-              Delete group
-            </button>
-          )}
-        </div>
-      </div>
-
-      {pendingTransition?.refreshError && (
-        <div
-          role="alert"
-          className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"
+      <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Category filter">
+        <button
+          type="button"
+          onClick={() => setSelectedFilter(ALL_FILTER)}
+          aria-pressed={selectedFilter.kind === "all"}
+          className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
           style={{
-            background: "var(--bad-soft, #fee2e2)",
-            borderColor: "var(--bad, #dc2626)",
-            color: "var(--bad, #dc2626)",
+            background: selectedFilter.kind === "all" ? "var(--accent)" : "var(--surface)",
+            color: selectedFilter.kind === "all" ? "var(--accent-ink)" : "var(--ink)",
+            border: "1px solid",
+            borderColor: selectedFilter.kind === "all" ? "var(--accent)" : "var(--border)",
           }}
         >
-          <span>Failed to refresh after rename: {pendingTransition.refreshError}</span>
+          All
+        </button>
+        {categories.map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => setSelectedFilter({ kind: "category", name: c })}
+            aria-pressed={sameFilter(selectedFilter, { kind: "category", name: c })}
+            className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
+            style={{
+              background: sameFilter(selectedFilter, { kind: "category", name: c })
+                ? "var(--accent)"
+                : "var(--surface)",
+              color: sameFilter(selectedFilter, { kind: "category", name: c })
+                ? "var(--accent-ink)"
+                : "var(--ink)",
+              border: "1px solid",
+              borderColor: sameFilter(selectedFilter, { kind: "category", name: c })
+                ? "var(--accent)"
+                : "var(--border)",
+            }}
+          >
+            {c}
+          </button>
+        ))}
+        {hasUncategorized && (
           <button
             type="button"
-            onClick={() => void performRefresh(pendingTransition)}
-            className="rounded px-2.5 py-1 text-xs font-semibold bg-white border border-current shadow-sm hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2"
+            onClick={() => setSelectedFilter({ kind: "uncategorized" })}
+            aria-pressed={selectedFilter.kind === "uncategorized"}
+            className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
+            style={{
+              background: selectedFilter.kind === "uncategorized" ? "var(--accent)" : "var(--surface)",
+              color: selectedFilter.kind === "uncategorized" ? "var(--accent-ink)" : "var(--ink)",
+              border: "1px solid",
+              borderColor: selectedFilter.kind === "uncategorized" ? "var(--accent)" : "var(--border)",
+            }}
           >
-            Retry refresh
+            Uncategorized
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       <input
         type="search"
@@ -905,12 +279,10 @@ export function Templates() {
           {error instanceof Error ? error.message : "Failed to load templates"}
         </p>
       )}
-      {data && filtered.length === 0 && (query || selectedGroup.kind !== "all") && (
-        <p style={{ color: "var(--muted)" }}>
-          {query ? "No templates match your search." : "No templates in this group."}
-        </p>
+      {data && filtered.length === 0 && (query || selectedFilter.kind !== "all") && (
+        <p style={{ color: "var(--muted)" }}>No templates match.</p>
       )}
-      {data && (data.templates ?? []).length === 0 && !query && selectedGroup.kind === "all" && (
+      {data && (data.templates ?? []).length === 0 && !query && selectedFilter.kind === "all" && (
         <EmptyTemplates />
       )}
       {!isFiltered && favTemplates.length > 0 && (
@@ -939,57 +311,6 @@ export function Templates() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map(cardFor)}
         </div>
-      )}
-
-      {selectedIds.size > 0 && (
-        <div
-          role="region"
-          aria-label="Selection actions"
-          className="sticky bottom-4 z-40 flex items-center justify-between gap-4 rounded-lg border p-3 shadow-lg"
-          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-        >
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-medium" style={{ color: "var(--ink)" }}>
-              {selectedIds.size} selected
-            </span>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(new Set())}
-              className="text-xs underline focus-visible:outline-none focus-visible:ring-2"
-              style={{ color: "var(--muted)" }}
-            >
-              Clear selection
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => setMovingTemplateIds(Array.from(selectedIds))}
-            className="rounded-md px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
-            style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
-          >
-            Move to…
-          </button>
-        </div>
-      )}
-
-      {movingTemplateIds && (
-        <MoveDialog
-          templateIds={movingTemplateIds}
-          templatesById={byId}
-          groupsInUse={groupsInUse}
-          onClose={() => setMovingTemplateIds(null)}
-          onSuccess={() => {
-            setSelectedIds(new Set());
-          }}
-        />
-      )}
-
-      {renamingGroup && (
-        <RenameDialog
-          groupPath={renamingGroup}
-          onClose={() => setRenamingGroup(null)}
-          onSuccess={handleRenameSuccess}
-        />
       )}
     </div>
   );

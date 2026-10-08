@@ -9,6 +9,7 @@ const single: TemplateDetail = {
   id: "t1",
   name: "Single",
   description: "",
+  categories: [],
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
@@ -24,6 +25,7 @@ const sheet: TemplateDetail = {
   id: "s1",
   name: "Sheet",
   description: "",
+  categories: [],
   unit: "mm",
   dpi: 300,
   format: {

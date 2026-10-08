@@ -345,7 +345,6 @@ layout:
     let t_sheet = parse_and_validate(yaml_sheet).unwrap();
     let t_sheet_def = TemplateDefinition {
         id: "sheet_test".to_string(),
-        group: None,
         content: t_sheet,
     };
     let labels = vec![LabelInput {

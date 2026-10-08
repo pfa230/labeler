@@ -5,9 +5,7 @@ import type { TemplateFormat } from "../api/types";
 // now, each sufficient on its own: the icon, the colour, and the text, since a sheet states its
 // position count.
 //
-// The border, not the fill, is what delineates the chip. A selected card is tinted --accent-soft
-// (pages/Templates.tsx:63), which is exactly what the single chip is filled with, so a fill-only
-// chip vanishes the moment a card is selected. See #201.
+// The border, not the fill, is what delineates the chip. See #201.
 const TOKENS = {
   single: { fg: "var(--accent)", fill: "var(--accent-soft)" },
   sheet: { fg: "var(--info)", fill: "var(--info-soft)" },

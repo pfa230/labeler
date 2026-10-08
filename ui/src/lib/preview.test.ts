@@ -73,6 +73,7 @@ describe("useTemplatePreview", () => {
       dpi: 200,
       format: { type: "single", width: 50, height: 20 },
       description: "",
+      categories: [],
       variables: [],
       inputs: {
         all: [

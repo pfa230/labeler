@@ -45,9 +45,9 @@ const THEMES = { light: palette(":root"), dark: palette("\\.dark") };
 // of silently skipping the comparison that would have caught it.
 const REQUIRED = ["accent", "accent-ink", "accent-soft", "info", "info-soft", "surface", "paper", "good", "bad"];
 
-// What the badge's text and border are painted in, and everything they can sit over: an unselected
-// card is --surface, the detail page is --paper, and a selected card is tinted --accent-soft
-// (pages/Templates.tsx:63). The cross product includes pairings that do not occur, which is cheaper
+// What the badge's text and border are painted in, and everything they can sit over: a card is
+// --surface, the detail page is --paper, and each badge fills itself with --accent-soft or
+// --info-soft. The cross product includes pairings that do not occur, which is cheaper
 // than encoding which are reachable and costs nothing but a few extra passing assertions.
 const FOREGROUNDS = ["accent", "info"];
 const BACKGROUNDS = ["accent-soft", "info-soft", "surface", "paper"];

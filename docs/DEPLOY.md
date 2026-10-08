@@ -62,11 +62,11 @@ The two boolean variables are on only for the exact value `true`. Their effects 
 4. For scripts and integrations, create an API token under Settings → API tokens and send it as `Authorization: Bearer $LABELER_API_TOKEN`.
 5. If your templates use `{vars.qr_base_url}`, set it under Settings → Variables.
 
-To install a catalog template without the UI, for example on an air-gapped host, PUT its YAML under its id:
+To install a catalog template without the UI, for example on an air-gapped host, POST its YAML under its id:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pfa230/labeler/main/catalog/tape/brother/brother_12mm.yaml \
-  | curl -fsS -X PUT http://localhost:8080/api/templates/brother_12mm \
+  | curl -fsS -X POST http://localhost:8080/api/templates/brother_12mm \
       -H "Authorization: Bearer $LABELER_API_TOKEN" --data-binary @-
 ```
 

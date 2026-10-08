@@ -1,4 +1,3 @@
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path as FsPath, PathBuf},
@@ -49,18 +48,17 @@ fn vars_token_keys(s: &str) -> Vec<&str> {
 pub struct TemplateContent {
     pub name: String,
     pub description: String,
+    pub categories: Vec<String>,
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
     pub params: indexmap::IndexMap<String, ParamSpec>,
     pub layout: Layout,
-    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TemplateDefinition {
     pub id: String,
-    pub group: Option<String>,
     pub content: TemplateContent,
 }
 
@@ -535,10 +533,11 @@ fn collect_single_line_names(layout: &Layout) -> HashSet<String> {
     names
 }
 
-/// A template file that could not be parsed, failed validation, or lost an id collision.
+/// A templates-folder entry the registry refused: not a template file, or a template file that
+/// could not be read, parsed or validated.
 #[derive(Debug, Clone)]
 pub struct BrokenTemplate {
-    /// Path of the file relative to the templates directory (e.g. `foo.yaml` or `Shipping/pallet.yaml`).
+    /// The entry's name in the templates folder (e.g. `foo.yaml`).
     pub path: String,
     /// Human-readable description of what went wrong.
     pub error: String,
@@ -547,17 +546,8 @@ pub struct BrokenTemplate {
 #[derive(Debug)]
 pub struct TemplateRegistry {
     templates: HashMap<String, TemplateDefinition>,
-    hashes: HashMap<String, String>,
-    paths: HashMap<String, PathBuf>,
-    rel_paths: HashMap<String, PathBuf>,
-    /// Files refused by a parse, validation or duplicate-id fault; excluded from the valid set
-    /// but not fatal.
+    /// Entries refused at load; excluded from the valid set but not fatal.
     broken: Vec<BrokenTemplate>,
-    // Files refused *specifically* for declaring an id another file already holds, keyed by that id.
-    // `broken` carries the same event as prose written for an operator; the write endpoints need it
-    // as data, to answer "is this id contested, and by which file?" without parsing a message
-    // (#183, #184).
-    duplicates: HashMap<String, Vec<PathBuf>>,
 }
 
 pub fn validate_template_id_stem(stem: &str) -> bool {
@@ -567,337 +557,86 @@ pub fn validate_template_id_stem(stem: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-struct DiscoveredFile {
-    rel_path_bytes: Vec<u8>,
-    rel_path: PathBuf,
-    abs_path: PathBuf,
-    is_utf8: bool,
-    dir_error: Option<String>,
-}
-
-fn collect_dir_entries(
-    root: &FsPath,
-    current_rel: &FsPath,
-    dir_error: Option<&str>,
-    out: &mut Vec<DiscoveredFile>,
-) -> Result<(), TemplateRegistryError> {
-    let current_abs = root.join(current_rel);
-    let entries = match std::fs::read_dir(&current_abs) {
-        Ok(e) => e,
-        Err(source) => {
-            return Err(TemplateRegistryError::Io {
-                path: current_abs,
-                source,
-            })
-        }
+/// Load the templates-folder entry `name`, or answer the message it is refused with.
+///
+/// A non-UTF-8 name arrives lossily converted, so its stem carries U+FFFD and fails the id rule.
+fn load_entry(dir: &FsPath, name: &str) -> Result<TemplateDefinition, String> {
+    let Some(stem) = name.strip_suffix(".yaml") else {
+        return Err("not a template file (expected <id>.yaml)".to_string());
     };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(source) => {
-                return Err(TemplateRegistryError::Io {
-                    path: current_abs,
-                    source,
-                })
-            }
-        };
-
-        let file_name = entry.file_name();
-        let name_bytes = file_name.as_encoded_bytes();
-        let abs_path = entry.path();
-
-        let meta = match std::fs::symlink_metadata(&abs_path) {
-            Ok(m) => m,
-            Err(source) => {
-                return Err(TemplateRegistryError::Io {
-                    path: abs_path,
-                    source,
-                })
-            }
-        };
-
-        let rel_path = if current_rel.as_os_str().is_empty() {
-            PathBuf::from(&file_name)
-        } else {
-            current_rel.join(&file_name)
-        };
-
-        if meta.is_dir() {
-            // Dot-directory skip outranks invalid-directory reporting at any depth
-            if name_bytes.starts_with(b".") {
-                continue;
-            }
-
-            let next_dir_error: Option<String> = if let Some(err) = dir_error {
-                Some(err.to_string())
-            } else if let Some(name_str) = file_name.to_str() {
-                match validate_group_segment(name_str) {
-                    Ok(()) => None,
-                    Err(err) => Some(format!(
-                        "directory '{}' is invalid: {err}",
-                        rel_path.display()
-                    )),
-                }
-            } else {
-                Some(format!(
-                    "directory '{}' name is not valid UTF-8",
-                    rel_path.to_string_lossy()
-                ))
-            };
-
-            collect_dir_entries(root, &rel_path, next_dir_error.as_deref(), out)?;
-        } else {
-            let is_utf8 = rel_path.to_str().is_some();
-            let is_yaml = if let Some(ext) = rel_path.extension().and_then(|e| e.to_str()) {
-                ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml")
-            } else {
-                false
-            };
-
-            let should_include = is_yaml
-                || (!is_utf8
-                    && (name_bytes.ends_with(b".yaml")
-                        || name_bytes.ends_with(b".YAML")
-                        || name_bytes.ends_with(b".yml")
-                        || name_bytes.ends_with(b".YML")));
-
-            if should_include {
-                let rel_path_bytes = rel_path.as_os_str().as_encoded_bytes().to_vec();
-                out.push(DiscoveredFile {
-                    rel_path_bytes,
-                    rel_path,
-                    abs_path,
-                    is_utf8,
-                    dir_error: dir_error.map(str::to_string),
-                });
-            }
-        }
+    if !validate_template_id_stem(stem) {
+        return Err(format!(
+            "template filename stem '{stem}' is not a valid id: must match ^[a-zA-Z0-9_-]+$"
+        ));
     }
-    Ok(())
-}
-
-fn collect_group_paths(
-    root: &FsPath,
-    current_rel: &FsPath,
-    out: &mut Vec<String>,
-) -> Result<(), TemplateRegistryError> {
-    let current_abs = root.join(current_rel);
-    let entries = match std::fs::read_dir(&current_abs) {
-        Ok(e) => e,
-        Err(source) => {
-            return Err(TemplateRegistryError::Io {
-                path: current_abs,
-                source,
-            })
+    let path = PathBuf::from(name);
+    let contents = std::fs::read_to_string(dir.join(name)).map_err(|source| {
+        TemplateRegistryError::Io {
+            path: path.clone(),
+            source,
         }
-    };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(source) => {
-                return Err(TemplateRegistryError::Io {
-                    path: current_abs,
-                    source,
-                })
-            }
-        };
-
-        let file_name = entry.file_name();
-        let name_bytes = file_name.as_encoded_bytes();
-        let abs_path = entry.path();
-
-        let meta = match std::fs::symlink_metadata(&abs_path) {
-            Ok(m) => m,
-            Err(source) => {
-                return Err(TemplateRegistryError::Io {
-                    path: abs_path,
-                    source,
-                })
-            }
-        };
-
-        if meta.is_dir() {
-            if name_bytes.starts_with(b".") {
-                continue;
-            }
-
-            let Some(name_str) = file_name.to_str() else {
-                continue;
-            };
-
-            if validate_group_segment(name_str).is_err() {
-                continue;
-            }
-
-            let rel_path = if current_rel.as_os_str().is_empty() {
-                PathBuf::from(name_str)
-            } else {
-                current_rel.join(name_str)
-            };
-
-            let rel_path_str = rel_path.to_string_lossy().replace('\\', "/");
-            if validate_group_name(&rel_path_str).is_ok() {
-                out.push(rel_path_str);
-                collect_group_paths(root, &rel_path, out)?;
-            }
+        .to_string()
+    })?;
+    let content = parse_template(&contents).map_err(|source| {
+        TemplateRegistryError::Parse {
+            path: path.clone(),
+            source,
         }
-    }
-    Ok(())
-}
-
-pub fn list_template_groups<P: AsRef<FsPath>>(
-    dir: P,
-) -> Result<Vec<String>, TemplateRegistryError> {
-    let mut groups = Vec::new();
-    collect_group_paths(dir.as_ref(), FsPath::new(""), &mut groups)?;
-    groups.sort();
-    Ok(groups)
+        .to_string()
+    })?;
+    content
+        .validate()
+        .map_err(|message| TemplateRegistryError::Validation { path, message }.to_string())?;
+    Ok(TemplateDefinition {
+        id: stem.to_string(),
+        content,
+    })
 }
 
 impl TemplateRegistry {
     pub fn load_from_dir<P: AsRef<FsPath>>(dir: P) -> Result<Self, TemplateRegistryError> {
         let dir = dir.as_ref();
-        let mut files = Vec::new();
-        collect_dir_entries(dir, FsPath::new(""), None, &mut files)?;
-        files.sort_by(|a, b| a.rel_path_bytes.cmp(&b.rel_path_bytes));
+        let read_error = |source| TemplateRegistryError::Io {
+            path: dir.to_path_buf(),
+            source,
+        };
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).map_err(read_error)? {
+            let entry = entry.map_err(read_error)?;
+            // A folder that lists but cannot be searched fails every read; abort here so a reload
+            // keeps the live set instead of quarantining every template.
+            std::fs::symlink_metadata(entry.path()).map_err(|source| {
+                TemplateRegistryError::Io {
+                    path: entry.path(),
+                    source,
+                }
+            })?;
+            names.push(entry.file_name());
+        }
+        names.sort_by(|a, b| a.as_encoded_bytes().cmp(b.as_encoded_bytes()));
 
         let mut templates = HashMap::new();
-        let mut hashes = HashMap::new();
-        let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
-        let mut seen_rel_paths: HashMap<String, PathBuf> = HashMap::new();
-        let mut broken: Vec<BrokenTemplate> = Vec::new();
-        let mut duplicates: HashMap<String, Vec<PathBuf>> = HashMap::new();
-
-        for file in files {
-            if !file.is_utf8 {
-                let lossy_path = file.rel_path.to_string_lossy().into_owned();
-                let error = format!("path '{lossy_path}' is not valid UTF-8");
-                tracing::warn!(%error, "skipping broken template");
-                broken.push(BrokenTemplate {
-                    path: lossy_path,
-                    error,
-                });
+        let mut broken = Vec::new();
+        for name in names {
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
                 continue;
             }
-
-            let rel_path_str = file.rel_path.to_str().unwrap().replace('\\', "/");
-
-            if let Some(dir_err) = file.dir_error {
-                tracing::warn!(error = %dir_err, "skipping broken template");
-                broken.push(BrokenTemplate {
-                    path: rel_path_str,
-                    error: dir_err,
-                });
-                continue;
-            }
-
-            let stem = file
-                .rel_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
-            if !validate_template_id_stem(stem) {
-                let error = format!(
-                    "template filename stem '{stem}' is not a valid id: must match ^[a-zA-Z0-9_-]+$"
-                );
-                tracing::warn!(%error, "skipping broken template");
-                broken.push(BrokenTemplate {
-                    path: rel_path_str,
-                    error,
-                });
-                continue;
-            }
-
-            let group = file.rel_path.parent().and_then(|p| {
-                let s = p.to_string_lossy().replace('\\', "/");
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
+            match load_entry(dir, &name) {
+                Ok(template) => {
+                    templates.insert(template.id.clone(), template);
                 }
-            });
-
-            let contents = match std::fs::read_to_string(&file.abs_path) {
-                Ok(c) => c,
-                Err(source) => {
-                    let error = TemplateRegistryError::Io {
-                        path: file.rel_path.clone(),
-                        source,
-                    }
-                    .to_string();
+                Err(error) => {
                     tracing::warn!(%error, "skipping broken template");
                     broken.push(BrokenTemplate {
-                        path: rel_path_str,
+                        path: name.into_owned(),
                         error,
                     });
-                    continue;
                 }
-            };
-
-            let content = match parse_template(&contents) {
-                Ok(c) => c,
-                Err(source) => {
-                    let error = TemplateRegistryError::Parse {
-                        path: file.rel_path.clone(),
-                        source,
-                    }
-                    .to_string();
-                    tracing::warn!(%error, "skipping broken template");
-                    broken.push(BrokenTemplate {
-                        path: rel_path_str,
-                        error,
-                    });
-                    continue;
-                }
-            };
-
-            if let Err(message) = content.validate() {
-                let error = TemplateRegistryError::Validation {
-                    path: file.rel_path.clone(),
-                    message,
-                }
-                .to_string();
-                tracing::warn!(%error, "skipping broken template");
-                broken.push(BrokenTemplate {
-                    path: rel_path_str,
-                    error,
-                });
-                continue;
             }
-
-            let id = stem.to_string();
-            if let Some(first_rel) = seen_rel_paths.get(&id) {
-                let error = TemplateRegistryError::DuplicateId {
-                    id: id.clone(),
-                    first: first_rel.clone(),
-                    second: file.rel_path.clone(),
-                }
-                .to_string();
-                tracing::warn!(%error, "skipping broken template");
-                broken.push(BrokenTemplate {
-                    path: rel_path_str,
-                    error,
-                });
-                duplicates.entry(id).or_default().push(file.rel_path);
-                continue;
-            }
-
-            seen_paths.insert(id.clone(), file.abs_path);
-            seen_rel_paths.insert(id.clone(), file.rel_path);
-            hashes.insert(id.clone(), hex::encode(Sha256::digest(contents.as_bytes())));
-            templates.insert(id.clone(), TemplateDefinition { id, group, content });
         }
 
-        Ok(Self {
-            templates,
-            hashes,
-            paths: seen_paths,
-            rel_paths: seen_rel_paths,
-            broken,
-            duplicates,
-        })
+        Ok(Self { templates, broken })
     }
 
     pub fn len(&self) -> usize {
@@ -913,41 +652,12 @@ impl TemplateRegistry {
     }
 
     #[cfg(test)]
-    pub fn insert_for_tests(
-        &mut self,
-        id: String,
-        group: Option<String>,
-        content: TemplateContent,
-    ) {
+    pub fn insert_for_tests(&mut self, id: String, content: TemplateContent) {
         self.templates
-            .insert(id.clone(), TemplateDefinition { id, group, content });
+            .insert(id.clone(), TemplateDefinition { id, content });
     }
 
-    /// Lowercase hex SHA-256 of the template's raw YAML, used as a strong ETag.
-    pub fn content_hash(&self, id: &str) -> Option<&str> {
-        self.hashes.get(id).map(String::as_str)
-    }
-
-    /// Files refused for declaring `id` while another file already held it, in load order.
-    ///
-    /// Empty for an uncontested id. Only files that parsed and validated can appear: one that fails
-    /// either never reaches the id check, so it never claims an id (see the create guard in
-    /// `api.rs`, which covers that case by filename instead).
-    pub fn duplicates(&self, id: &str) -> &[PathBuf] {
-        self.duplicates.get(id).map_or(&[], Vec::as_slice)
-    }
-
-    /// The file this id was loaded from, or `None` if the registry does not hold the id.
-    pub fn path(&self, id: &str) -> Option<&FsPath> {
-        self.paths.get(id).map(PathBuf::as_path)
-    }
-
-    /// The relative file path this id was loaded from, or `None` if the registry does not hold the id.
-    pub fn rel_path(&self, id: &str) -> Option<&FsPath> {
-        self.rel_paths.get(id).map(PathBuf::as_path)
-    }
-
-    /// Files refused during this load, by a parse, validation or duplicate-id fault.
+    /// Entries refused during this load.
     pub fn broken(&self) -> &[BrokenTemplate] {
         &self.broken
     }
@@ -984,12 +694,6 @@ pub enum TemplateRegistryError {
     },
     #[error("template {path} failed validation: {message}")]
     Validation { path: PathBuf, message: String },
-    #[error("duplicate template id '{id}' found in {first} and {second}")]
-    DuplicateId {
-        id: String,
-        first: PathBuf,
-        second: PathBuf,
-    },
 }
 
 impl TemplateContent {
@@ -1076,12 +780,12 @@ impl TemplateContent {
         TemplateContent {
             name: self.name.clone(),
             description: self.description.clone(),
+            categories: self.categories.clone(),
             unit: self.unit.clone(),
             dpi: self.dpi,
             format: instantiate_format_defaults(&self.format, &self.params),
             params: self.params.clone(),
             layout: instantiate_layout_defaults(&self.layout, &self.params),
-            version: self.version.clone(),
         }
     }
 
@@ -1207,71 +911,9 @@ impl TemplateDefinition {
     pub fn instantiate_with_defaults(&self) -> TemplateDefinition {
         TemplateDefinition {
             id: self.id.clone(),
-            group: self.group.clone(),
             content: self.content.instantiate_with_defaults(),
         }
     }
-}
-
-const RESERVED_DEVICE_NAMES: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "COM¹", "COM²",
-    "COM³", "LPT¹", "LPT²", "LPT³",
-];
-
-pub fn validate_group_segment(segment: &str) -> Result<(), String> {
-    if segment.is_empty() {
-        return Err("group path segment must not be empty".to_string());
-    }
-    if segment.chars().count() > 64 {
-        return Err("group path segment must be at most 64 characters".to_string());
-    }
-    if segment.len() > 255 {
-        return Err("group path segment must be at most 255 bytes".to_string());
-    }
-    if segment.chars().any(|c| c.is_control()) {
-        return Err("group path segment must not contain control characters".to_string());
-    }
-    if segment
-        .chars()
-        .any(|c| matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*'))
-    {
-        return Err("group path segment contains invalid characters".to_string());
-    }
-    if segment == "." || segment == ".." {
-        return Err("group path segment cannot be '.' or '..'".to_string());
-    }
-    if segment.starts_with(char::is_whitespace) || segment.ends_with(char::is_whitespace) {
-        return Err("group path segment must not have leading or trailing whitespace".to_string());
-    }
-    if segment.starts_with('.') || segment.ends_with('.') {
-        return Err("group path segment must not start or end with a period".to_string());
-    }
-    let base_name = segment.split('.').next().unwrap_or(segment);
-    let base_upper = base_name.to_uppercase();
-    if RESERVED_DEVICE_NAMES.iter().any(|&r| r == base_upper) {
-        return Err(format!(
-            "group path segment '{segment}' is a reserved device name"
-        ));
-    }
-    Ok(())
-}
-
-pub fn validate_group_name(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("group path must not be empty".to_string());
-    }
-    if trimmed.chars().count() > 255 {
-        return Err("group path must be at most 255 characters".to_string());
-    }
-    if trimmed.len() > 1024 {
-        return Err("group path must be at most 1024 bytes".to_string());
-    }
-    for segment in trimmed.split('/') {
-        validate_group_segment(segment)?;
-    }
-    Ok(trimmed.to_string())
 }
 
 fn validate_param_name(name: &str) -> Result<(), String> {
@@ -2366,7 +2008,7 @@ impl From<&TemplateDefinition> for TemplateSummary {
             id: template.id.clone(),
             name: template.name.clone(),
             description: template.description.clone(),
-            group: template.group.clone(),
+            categories: template.categories.clone(),
             unit: template.unit.clone(),
             dpi: template.dpi,
             params: template
@@ -2395,7 +2037,7 @@ impl TemplateDefinition {
             id: self.id.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
-            group: self.group.clone(),
+            categories: self.categories.clone(),
             unit: self.unit.clone(),
             dpi: self.dpi,
             format: self.format.clone(),
@@ -2407,8 +2049,6 @@ impl TemplateDefinition {
                     spec: spec.clone(),
                 })
                 .collect(),
-            layout: self.layout.clone(),
-            version: self.version.clone(),
             inputs: TemplateInputs {
                 default: default_inputs,
                 all: all_inputs,
@@ -2424,10 +2064,10 @@ impl TemplateDefinition {
 /// Nothing ships with the binary any more (#137): templates live in `catalog/` and users install
 /// what they want. The suite still needs all of them — sheet format, options, container rotation, QR
 /// layout and interpolation are only covered by catalog entries or the engine-demo fixtures moved out
-/// of `catalog/` in #135. Flattens both trees into a single temp dir because `load_from_dir` takes one
-/// path and does not recurse, and returns that dir so a test's `templates_dir` matches its registry —
-/// the source/save/delete endpoints read YAML off disk, so a registry that disagreed with the dir
-/// would 404 on them.
+/// of `catalog/` in #135. Flattens both trees into a single temp dir because the registry reads one
+/// flat folder, and returns that dir so a test's `templates_dir` matches its registry — the
+/// source/save/delete endpoints read YAML off disk, so a registry that disagreed with the dir would
+/// 404 on them.
 #[cfg(test)]
 pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -2438,33 +2078,25 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).expect("create merged template dir");
-    // The catalog is nested (tape/brother, sheet/avery, examples) but the registry — and
-    // {config}/templates, where installs land — is flat, so flatten while copying. Ids are unique
-    // across the tree, enforced by `template_ids_are_unique_and_match_filenames` (#135).
-    fn copy_tree_into(src_root: &FsPath, current: &FsPath, dest_root: &FsPath) {
+    // Copies each template by its file name alone. Ids are unique across both trees, enforced by
+    // `template_ids_are_unique_and_match_filenames` (#135).
+    fn copy_flat_into(current: &FsPath, dest: &FsPath) {
         for entry in std::fs::read_dir(current).unwrap_or_else(|e| panic!("read {current:?}: {e}"))
         {
             let path = entry.expect("dir entry").path();
-            let meta = std::fs::symlink_metadata(&path).expect("stat entry");
-            let rel = path.strip_prefix(src_root).expect("rel path");
-            let target = dest_root.join(rel);
-            if meta.is_dir() {
-                std::fs::create_dir_all(&target).expect("create dir");
-                copy_tree_into(src_root, &path, dest_root);
-            } else if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).expect("create parent dir");
-                }
-                std::fs::copy(&path, target).expect("copy template");
+            if std::fs::symlink_metadata(&path)
+                .expect("stat entry")
+                .is_dir()
+            {
+                copy_flat_into(&path, dest);
+            } else if path.extension().is_some_and(|e| e == "yaml") {
+                std::fs::copy(&path, dest.join(path.file_name().expect("file name")))
+                    .expect("copy template");
             }
         }
     }
-    copy_tree_into(FsPath::new("catalog"), FsPath::new("catalog"), &dir);
-    copy_tree_into(
-        FsPath::new("tests/fixtures/templates"),
-        FsPath::new("tests/fixtures/templates"),
-        &dir,
-    );
+    copy_flat_into(FsPath::new("catalog"), &dir);
+    copy_flat_into(FsPath::new("tests/fixtures/templates"), &dir);
     let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
     (registry, dir)
 }
@@ -2472,9 +2104,8 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::{
-        bare_token_names, list_template_groups, load_all_for_tests, validate_group_name,
-        validate_group_segment, validate_template_id_stem, TemplateContent, TemplateDefinition,
-        TemplateRegistry,
+        bare_token_names, load_all_for_tests, validate_template_id_stem, TemplateContent,
+        TemplateDefinition, TemplateRegistry,
     };
     use crate::errors::TemplateError;
     use crate::models::{
@@ -2685,6 +2316,7 @@ mod tests {
         let base_template = |layout: Vec<LayoutItem>| TemplateContent {
             name: "T".to_string(),
             description: String::new(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -2694,7 +2326,6 @@ mod tests {
             },
             params: IndexMap::new(),
             layout: Layout::Items(layout),
-            version: None,
         };
 
         // 1. Line stroke validation on model directly
@@ -3534,6 +3165,7 @@ layout:
         let template = TemplateContent {
             name: "Label".to_string(),
             description: "desc".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3554,7 +3186,6 @@ layout:
                 },
             )]),
             layout: Layout::Items(Vec::new()),
-            version: None,
         };
         let err = template.validate().expect_err("expected error");
         assert!(err.contains("options must not contain empty values"));
@@ -3588,29 +3219,9 @@ layout:
 "#,
         );
 
-        // A non-YAML file in the same dir is ignored: neither served nor reported broken. An
-        // uppercase extension is not, the filter lowercases before matching.
-        write_template(&dir, "notes.txt", "id: sample\n");
-        write_template(
-            &dir,
-            "SHOUTED.YAML",
-            r#"
-name: Shouted
-description: Uppercase extension
-unit: mm
-dpi: 300
-format:
-  type: single
-  width: 12.0
-  height: 25.0
-layout: []
-"#,
-        );
-
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 1);
         assert!(registry.get("sample").is_some());
-        assert!(registry.get("SHOUTED").is_some());
         assert!(registry.broken().is_empty());
 
         fs::remove_dir_all(&dir).ok();
@@ -3632,89 +3243,73 @@ layout: []
         )
     }
 
+    const NOT_A_TEMPLATE_FILE: &str = "not a template file (expected <id>.yaml)";
+
+    /// Only an entry named `<id>.yaml` directly in the folder is a template; every other entry is
+    /// reported, never silently skipped or recursed into ("Only .yaml files are templates").
     #[test]
-    fn duplicate_id_serves_first_filename_and_quarantines_the_collider() {
-        for (label, first_written, second_written) in [
-            ("dup_az", "a.yaml", "sub/a.yaml"),
-            ("dup_za", "sub/a.yaml", "a.yaml"),
-        ] {
-            let dir = temp_dir(label);
-            std::fs::create_dir_all(dir.join("sub")).unwrap();
-            write_template(&dir, first_written, &sample_yaml("dup"));
-            write_template(&dir, second_written, &sample_yaml("dup"));
-
-            let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
-
-            assert_eq!(registry.len(), 1, "{label}: only the winner is served");
-            assert!(registry.get("a").is_some(), "{label}: id is still served");
-            assert_eq!(
-                registry.path("a").and_then(|p| p.file_name()),
-                Some(std::ffi::OsStr::new("a.yaml")),
-                "{label}: a.yaml wins the id"
-            );
-
-            let broken = registry.broken();
-            assert_eq!(broken.len(), 1, "{label}: one file refused");
-            assert_eq!(
-                broken[0].path, "sub/a.yaml",
-                "{label}: sub/a.yaml is refused"
-            );
-            assert!(
-                broken[0].error.contains("a") && broken[0].error.contains("a.yaml"),
-                "{label}: message names the id and the file it collides with: {}",
-                broken[0].error
-            );
-
-            fs::remove_dir_all(&dir).ok();
-        }
-    }
-
-    #[test]
-    fn duplicates_records_the_refused_file_per_id() {
-        let dir = temp_dir("dup_map");
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        write_template(&dir, "a.yaml", &sample_yaml("dup"));
-        write_template(&dir, "sub/a.yaml", &sample_yaml("dup"));
-        write_template(&dir, "solo.yaml", &sample_yaml("solo"));
+    fn load_from_dir_reports_every_non_yaml_entry_as_broken() {
+        let dir = temp_dir("non_yaml_entries");
+        write_template(&dir, "pallet.yml", &sample_yaml("Pallet"));
+        write_template(&dir, "notes.txt", "hello\n");
+        fs::create_dir_all(dir.join("Shipping")).unwrap();
+        write_template(&dir, "Shipping/inner.yaml", &sample_yaml("Inner"));
 
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
 
-        let refused: Vec<_> = registry
-            .duplicates("a")
+        assert_eq!(registry.len(), 0, "nothing is served");
+        let broken: Vec<(&str, &str)> = registry
+            .broken()
             .iter()
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .map(|b| (b.path.as_str(), b.error.as_str()))
             .collect();
-        assert_eq!(refused, vec!["sub/a.yaml"], "the loser is recorded for 'a'");
-        assert!(
-            registry.duplicates("solo").is_empty(),
-            "an uncontested id records no duplicate"
-        );
-        assert!(
-            registry.duplicates("absent").is_empty(),
-            "an id the registry does not hold records no duplicate"
+        assert_eq!(
+            broken,
+            vec![
+                ("Shipping", NOT_A_TEMPLATE_FILE),
+                ("notes.txt", NOT_A_TEMPLATE_FILE),
+                ("pallet.yml", NOT_A_TEMPLATE_FILE),
+            ]
         );
 
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// "A dot-entry is invisible": neither served nor listed under `broken`, folder or file.
     #[test]
-    fn duplicate_id_leaves_unrelated_templates_served() {
-        let dir = temp_dir("dup_sibling");
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        write_template(&dir, "a.yaml", &sample_yaml("dup"));
-        write_template(&dir, "sub/a.yaml", &sample_yaml("dup"));
-        write_template(&dir, "other.yaml", &sample_yaml("other"));
+    fn load_from_dir_neither_serves_nor_reports_dot_entries() {
+        let dir = temp_dir("dot_entries");
+        fs::create_dir_all(dir.join(".attic")).unwrap();
+        write_template(&dir, ".attic/x.yaml", &sample_yaml("Attic"));
+        write_template(&dir, ".old.yaml", &sample_yaml("Old"));
+        write_template(&dir, "kept.yaml", &sample_yaml("Kept"));
 
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
 
-        assert_eq!(registry.len(), 2);
-        assert!(registry.get("other").is_some());
-        assert_eq!(
-            registry.path("other").and_then(|p| p.file_name()),
-            Some(std::ffi::OsStr::new("other.yaml"))
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get("kept").is_some());
+        assert!(
+            registry.broken().is_empty(),
+            "dot entries are not reported: {:?}",
+            registry.broken()
         );
-        assert_eq!(registry.broken().len(), 1);
-        assert_eq!(registry.broken()[0].path, "sub/a.yaml");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The suffix match is exact: `.YAML` is not `.yaml`.
+    #[test]
+    fn load_from_dir_reports_an_uppercase_extension_as_not_a_template_file() {
+        let dir = temp_dir("uppercase_ext");
+        write_template(&dir, "SHOUTED.YAML", &sample_yaml("Shouted"));
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+
+        assert!(registry.get("SHOUTED").is_none(), "not served");
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].path, "SHOUTED.YAML");
+        assert_eq!(broken[0].error, NOT_A_TEMPLATE_FILE);
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -3819,6 +3414,7 @@ layout: []
         let template = TemplateContent {
             name: "w".to_string(),
             description: "w".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3842,7 +3438,6 @@ layout: []
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         let err = template.validate().expect_err("350 must not validate");
         assert!(err.contains("font_weight"), "unexpected message: {err}");
@@ -3853,6 +3448,7 @@ layout: []
         let template = TemplateContent {
             name: "dup".to_string(),
             description: "dup".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3906,7 +3502,6 @@ layout: []
                     when: None,
                 },
             ]),
-            version: None,
         };
         let err = template.validate().expect_err("expected error");
         assert!(err.contains("duplicate layout item name"));
@@ -3937,6 +3532,7 @@ layout:
         let template = TemplateContent {
             name: "Empty Text".to_string(),
             description: "test".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -3960,7 +3556,6 @@ layout:
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         let err = template.validate().expect_err("expected error");
         assert_eq!(err, "text value must not be empty");
@@ -3971,6 +3566,7 @@ layout:
         let template = TemplateContent {
             name: "Empty Qr".to_string(),
             description: "test".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -3988,7 +3584,6 @@ layout:
                 params: None,
                 when: None,
             }]),
-            version: None,
         };
         let err = template.validate().expect_err("expected error");
         assert_eq!(err, "qr value must not be empty");
@@ -3999,6 +3594,7 @@ layout:
         let template = TemplateContent {
             name: "ln".to_string(),
             description: "ln".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4016,7 +3612,6 @@ layout:
                 }),
                 when: None,
             }]),
-            version: None,
         };
         let err = template.validate().expect_err("expected error");
         assert!(err.contains("line start and end must differ"));
@@ -4026,6 +3621,7 @@ layout:
         TemplateContent {
             name: "ln".to_string(),
             description: "ln".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4043,7 +3639,6 @@ layout:
                 }),
                 when: None,
             }]),
-            version: None,
         }
     }
 
@@ -4088,6 +3683,7 @@ layout:
         let template = TemplateContent {
             name: "Tape".to_string(),
             description: "tape".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4114,7 +3710,6 @@ layout:
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         let err = template.validate().expect_err("expected error");
         assert!(
@@ -4128,6 +3723,7 @@ layout:
         let template = TemplateContent {
             name: "Tape2".to_string(),
             description: "tape".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4154,7 +3750,6 @@ layout:
                 repeat: None,
                 items: vec![],
             }]),
-            version: None,
         };
         template
             .validate()
@@ -4166,6 +3761,7 @@ layout:
         let template = TemplateContent {
             name: "Tape Multiline".to_string(),
             description: "tape".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4192,7 +3788,6 @@ layout:
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         template
             .validate()
@@ -4204,6 +3799,7 @@ layout:
         let template = TemplateContent {
             name: "Tape Single Line".to_string(),
             description: "tape".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4230,7 +3826,6 @@ layout:
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         template
             .validate()
@@ -4242,6 +3837,7 @@ layout:
         let template = TemplateContent {
             name: "Fixed Multiline".to_string(),
             description: "fixed".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4265,7 +3861,6 @@ layout:
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
-            version: None,
         };
         template
             .validate()
@@ -4277,6 +3872,7 @@ layout:
         let build = |mw: Option<f32>| TemplateContent {
             name: "MW Test".to_string(),
             description: "test".to_string(),
+            categories: Vec::new(),
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -4286,7 +3882,6 @@ layout:
             },
             params: IndexMap::new(),
             layout: Layout::Items(vec![]),
-            version: None,
         };
         for bad in [Some(0.0), Some(-1.0)] {
             let err = build(bad).validate().expect_err("expected error");
@@ -4298,23 +3893,6 @@ layout:
         build(Some(12.0))
             .validate()
             .expect("positive media_width should validate");
-    }
-
-    #[test]
-    fn registry_exposes_per_template_content_hash() {
-        let dir = std::env::temp_dir().join(format!("tmpl_hash_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        write_template(
-            &dir,
-            "a.yaml",
-            "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [10,5]\n    font_size: 6\n",
-        );
-        let reg = TemplateRegistry::load_from_dir(&dir).expect("load");
-        let hash = reg.content_hash("a").expect("hash present");
-        assert_eq!(hash.len(), 64, "sha-256 hex is 64 chars");
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-        assert!(reg.content_hash("missing").is_none());
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -4840,171 +4418,6 @@ layout:
         assert!(!validate_template_id_stem("has/slash"));
     }
 
-    #[test]
-    fn group_segment_validation_rules() {
-        assert!(validate_group_segment("Warehouse").is_ok());
-        assert!(validate_group_segment("").is_err());
-        assert!(validate_group_segment("   ").is_err());
-        assert!(validate_group_segment("trailing-dot.").is_err());
-        assert!(validate_group_segment("trailing-space ").is_err());
-        assert!(validate_group_segment(" leading-space").is_err());
-        assert!(validate_group_segment(".leading-dot").is_err());
-        assert!(validate_group_segment(".").is_err());
-        assert!(validate_group_segment("..").is_err());
-        assert!(validate_group_segment("CON").is_err());
-        assert!(validate_group_segment("con").is_err());
-        assert!(validate_group_segment("CON.txt").is_err());
-        assert!(validate_group_segment("LPT1").is_err());
-        assert!(validate_group_segment("COM¹").is_err());
-        assert!(validate_group_segment("contains/slash").is_err());
-        assert!(validate_group_segment("has\nnewline").is_err());
-        assert!(validate_group_segment("has\ttab").is_err());
-        let long_65 = "a".repeat(65);
-        assert!(validate_group_segment(&long_65).is_err());
-    }
-
-    #[test]
-    fn group_name_path_validation() {
-        assert_eq!(
-            validate_group_name("Shipping/Pallets").unwrap(),
-            "Shipping/Pallets"
-        );
-        assert_eq!(
-            validate_group_name("  Shipping/Pallets  ").unwrap(),
-            "Shipping/Pallets"
-        );
-        assert!(validate_group_name("").is_err());
-        assert!(validate_group_name("   ").is_err());
-        assert!(validate_group_name("Shipping//Pallets").is_err());
-        assert!(validate_group_name("/Shipping").is_err());
-        assert!(validate_group_name("Shipping/").is_err());
-        assert!(validate_group_name("CON/Pallets").is_err());
-        assert!(validate_group_name("Shipping/CON").is_err());
-        assert!(validate_group_name("Shipping/./Pallets").is_err());
-        assert!(validate_group_name("Shipping/../Pallets").is_err());
-        let long_256 = format!("{}/{}", "a".repeat(64), "b".repeat(64)).repeat(3);
-        assert!(validate_group_name(&long_256).is_err());
-    }
-
-    #[test]
-    fn list_template_groups_orders_and_filters() {
-        let temp = std::env::temp_dir().join(format!("test-groups-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp);
-        std::fs::create_dir_all(temp.join("Shipping/Pallets")).unwrap();
-        std::fs::create_dir_all(temp.join("Shipping/Boxes")).unwrap();
-        std::fs::create_dir_all(temp.join("Archive")).unwrap();
-        std::fs::create_dir_all(temp.join(".hidden/Sub")).unwrap();
-        std::fs::create_dir_all(temp.join("Invalid:Name/Sub")).unwrap();
-
-        let groups = list_template_groups(&temp).unwrap();
-        assert_eq!(
-            groups,
-            vec!["Archive", "Shipping", "Shipping/Boxes", "Shipping/Pallets"]
-        );
-        let _ = std::fs::remove_dir_all(&temp);
-    }
-
-    #[test]
-    fn load_from_dir_handles_nesting_dot_precedence_invalid_dirs_and_stems() {
-        let dir = temp_dir("load_nesting");
-        std::fs::create_dir_all(dir.join("nested/sub")).unwrap();
-        std::fs::create_dir_all(dir.join(".dot_dir/invalid:name")).unwrap();
-        std::fs::create_dir_all(dir.join("invalid:group")).unwrap();
-
-        write_template(&dir, "nested/sub/t1.yaml", &sample_yaml("Nested 1"));
-        write_template(
-            &dir,
-            ".dot_dir/invalid:name/t2.yaml",
-            &sample_yaml("Dot Ignored"),
-        );
-        write_template(&dir, "invalid:group/t3.yaml", &sample_yaml("Invalid Dir"));
-        write_template(&dir, "bad stem.yaml", &sample_yaml("Bad Stem"));
-        write_template(&dir, "good_stem.yaml", &sample_yaml("Good Stem"));
-
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
-
-        assert_eq!(registry.len(), 2);
-        let t1 = registry.get("t1").expect("t1 loaded");
-        assert_eq!(t1.group.as_deref(), Some("nested/sub"));
-        let good = registry.get("good_stem").expect("good_stem loaded");
-        assert_eq!(good.group, None);
-
-        // Dot dir is completely skipped (no broken entry for t2)
-        assert!(registry.get("t2").is_none());
-
-        let broken = registry.broken();
-        assert_eq!(broken.len(), 2);
-
-        let invalid_dir_broken = broken
-            .iter()
-            .find(|b| b.path == "invalid:group/t3.yaml")
-            .expect("invalid dir reported broken");
-        assert!(invalid_dir_broken.error.contains("invalid:group"));
-
-        let bad_stem_broken = broken
-            .iter()
-            .find(|b| b.path == "bad stem.yaml")
-            .expect("bad stem reported broken");
-        assert!(bad_stem_broken.error.contains("bad stem"));
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn id_contest_won_by_location_valid_file() {
-        let dir = temp_dir("id_contest_validity");
-        std::fs::create_dir_all(dir.join("invalid:dir")).unwrap();
-        std::fs::create_dir_all(dir.join("valid")).unwrap();
-
-        // invalid:dir/contest.yaml sorts before valid/contest.yaml lexically,
-        // but invalid:dir fails group name validation and cannot contest the ID.
-        write_template(
-            &dir,
-            "invalid:dir/contest.yaml",
-            &sample_yaml("Invalid Loc"),
-        );
-        write_template(&dir, "valid/contest.yaml", &sample_yaml("Valid Loc"));
-
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
-
-        assert_eq!(registry.len(), 1);
-        let contest = registry.get("contest").expect("contest loaded");
-        assert_eq!(contest.group.as_deref(), Some("valid"));
-        assert!(
-            registry.duplicates("contest").is_empty(),
-            "invalid location file does not register as an id duplicate"
-        );
-
-        let broken = registry.broken();
-        assert_eq!(broken.len(), 1);
-        assert_eq!(broken[0].path, "invalid:dir/contest.yaml");
-        assert!(broken[0].error.contains("invalid:dir"));
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn load_from_dir_skips_symlink_directories() {
-        let dir = temp_dir("symlink_dir_skip");
-        let target = dir.join("real_dir");
-        std::fs::create_dir_all(&target).unwrap();
-        write_template(&dir, "real_dir/real.yaml", &sample_yaml("Real"));
-
-        let symlink = dir.join("sym_dir");
-        std::os::unix::fs::symlink(&target, &symlink).unwrap();
-
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
-        assert_eq!(registry.len(), 1);
-        assert_eq!(
-            registry.get("real").unwrap().group.as_deref(),
-            Some("real_dir")
-        );
-        assert!(registry.broken().is_empty());
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
     #[cfg(unix)]
     #[test]
     fn load_from_dir_handles_non_utf8_paths() {
@@ -5032,7 +4445,12 @@ layout:
         assert_eq!(registry.len(), 0);
         let broken = registry.broken();
         assert_eq!(broken.len(), 1);
-        assert!(broken[0].error.contains("not valid UTF-8"));
+        // The lossy stem carries U+FFFD, which the id rule refuses.
+        assert!(
+            broken[0].error.contains("is not a valid id"),
+            "{}",
+            broken[0].error
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -9047,7 +8465,6 @@ layout:
         // 4. TemplateSummary and TemplateDetail params match declaration order
         let def = TemplateDefinition {
             id: "ordering_test".to_string(),
-            group: None,
             content: template,
         };
         let summary = crate::models::TemplateSummary::from(&def);

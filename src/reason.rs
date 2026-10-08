@@ -29,9 +29,6 @@ macro_rules! reasons {
 reasons! {
     // TemplateInvalid
     TemplateValidationFailed => "template_validation_failed",
-    TemplateGroupInvalid => "template_group_invalid",
-    TemplateGroupCaseConflict => "template_group_case_conflict",
-    TemplateGroupUnsafePath => "template_group_unsafe_path",
     ParamDefaultUnresolvable => "param_default_unresolvable",
 
     // UnsupportedLayoutItem
@@ -73,8 +70,6 @@ reasons! {
     FormatUnknown => "format_unknown",
     InterpolationSyntax => "interpolation_syntax",
     TemplateIdInvalid => "template_id_invalid",
-    TemplateGroupMismatch => "template_group_mismatch",
-    UnsupportedPrecondition => "unsupported_precondition",
     PrinterIdInvalid => "printer_id_invalid",
     VariableKeyInvalid => "variable_key_invalid",
     SettingValueInvalid => "setting_value_invalid",

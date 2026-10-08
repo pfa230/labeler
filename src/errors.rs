@@ -16,7 +16,6 @@ const CODE_UNAUTHORIZED: &str = "Unauthorized";
 const CODE_FORBIDDEN: &str = "Forbidden";
 const CODE_NOT_FOUND: &str = "NotFound";
 const CODE_CONFLICT: &str = "Conflict";
-const CODE_PRECONDITION_FAILED: &str = "PreconditionFailed";
 const CODE_PAYLOAD_TOO_LARGE: &str = "PayloadTooLarge";
 const CODE_UNSUPPORTED_MEDIA_TYPE: &str = "UnsupportedMediaType";
 const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
@@ -40,8 +39,6 @@ pub struct AppError {
 pub enum NotFoundKind {
     Route,
     Template,
-    /// A template group directory; goes with groups (#411).
-    Group,
     Printer,
     Connection,
     Setting,
@@ -54,7 +51,6 @@ impl NotFoundKind {
         match self {
             NotFoundKind::Route => "route",
             NotFoundKind::Template => "template",
-            NotFoundKind::Group => "group",
             NotFoundKind::Printer => "printer",
             NotFoundKind::Connection => "connection",
             NotFoundKind::Setting => "setting",
@@ -321,14 +317,6 @@ impl AppError {
         )
     }
 
-    pub fn template_group_invalid(message: impl Into<String>) -> Self {
-        Self::template_invalid(Reason::TemplateGroupInvalid, message)
-    }
-
-    pub fn template_group_case_conflict(message: impl Into<String>) -> Self {
-        Self::template_invalid(Reason::TemplateGroupCaseConflict, message)
-    }
-
     pub fn param_default_unresolvable(failure: &crate::render::ParamDefaultFailure) -> Self {
         let mut extra = serde_json::Map::new();
         extra.insert(
@@ -350,23 +338,6 @@ impl AppError {
             Reason::ParamDefaultUnresolvable,
             &failure.message,
             Some(extra),
-        )
-    }
-
-    pub fn template_group_mismatch(message: impl Into<String>) -> Self {
-        Self::invalid_request(Reason::TemplateGroupMismatch, message)
-    }
-
-    pub fn unsupported_precondition(message: impl Into<String>) -> Self {
-        Self::invalid_request(Reason::UnsupportedPrecondition, message)
-    }
-
-    pub fn precondition_failed(message: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::PRECONDITION_FAILED,
-            CODE_PRECONDITION_FAILED,
-            message,
-            None,
         )
     }
 
