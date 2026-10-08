@@ -7,35 +7,60 @@ import { PrintersSection } from "./PrintersSection";
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-type P = { id: string; name: string; kind: string; config: { uri: string } };
+type P = {
+  id: string;
+  name: string;
+  uri: string;
+  username?: string;
+  ca_cert?: string;
+  insecure: boolean;
+  render?: { color_mode?: string; resolution?: number };
+};
+type Setting = { value: string | null; is_default: boolean };
 
-// Stateful stub: POST/PUT/DELETE mutate `state`, GET returns it, so an invalidate+refetch shows the
-// real post-mutation table. `/printers/probe` returns a canned reachable printer.
-function stubFetch() {
-  let state: P[] = [{ id: "front", name: "Front Desk", kind: "cups", config: { uri: "ipp://x/y" } }];
+const FRONT: P = { id: "front", name: "Front Desk", uri: "ipp://x/y", insecure: false };
+
+// Stateful stub mirroring the server: POST/PUT/DELETE mutate `printers`, GET returns them, so an
+// invalidate+refetch shows the real post-mutation table. `default_printer_id` lives in the settings
+// map and a printer DELETE clears it when it named that printer. `/printers/probe` returns a canned
+// reachable printer.
+function stubFetch({ printers = [FRONT], defaultPrinterId = null }: { printers?: P[]; defaultPrinterId?: string | null } = {}) {
+  let state = [...printers];
+  let defaultPrinter: Setting = { value: defaultPrinterId, is_default: defaultPrinterId === null };
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url === "/api/settings" && method === "GET") return json({ default_printer_id: defaultPrinter });
+    if (url === "/api/settings/default_printer_id" && method === "PUT") {
+      defaultPrinter = { value: (JSON.parse(init!.body as string) as { value: string }).value, is_default: false };
+      return json(defaultPrinter);
+    }
+    if (url === "/api/settings/default_printer_id" && method === "DELETE") {
+      defaultPrinter = { value: null, is_default: true };
+      return new Response(null, { status: 204 });
+    }
     if (url === "/api/printers/probe" && method === "POST") {
       return json({ status: "ok", capabilities: { model: "Brother PT-2730", media_width_mm: 24, resolution_dpi: 180, color: "bilevel", accepts_png: true } });
     }
     if (url.startsWith("/api/printers/") && method === "DELETE") {
       const id = decodeURIComponent(url.slice("/api/printers/".length));
       state = state.filter((p) => p.id !== id);
+      if (defaultPrinter.value === id) defaultPrinter = { value: null, is_default: true };
       return new Response(null, { status: 204 });
     }
     if (url.startsWith("/api/printers/") && method === "PUT") {
-      const p = JSON.parse(init!.body as string) as P;
-      state = state.map((x) => (x.id === p.id ? p : x));
+      const id = decodeURIComponent(url.slice("/api/printers/".length));
+      const p = { insecure: false, ...JSON.parse(init!.body as string), id } as P;
+      state = state.map((x) => (x.id === id ? p : x));
       return json(p);
     }
-    if (url.startsWith("/api/printers") && method === "POST") {
-      const p = JSON.parse(init!.body as string) as P;
+    if (url === "/api/printers" && method === "POST") {
+      const p = { insecure: false, ...JSON.parse(init!.body as string) } as P;
       state = [...state, p];
       return json(p, 201);
     }
-    if (url.startsWith("/api/printers")) return json(state);
-    throw new Error(`unexpected fetch: ${url}`);
+    if (url === "/api/printers") return json(state);
+    throw new Error(`unexpected fetch: ${method} ${url}`);
   });
 }
 
@@ -65,13 +90,13 @@ describe("PrintersSection", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists printers with name, kind and uri", async () => {
+  it("lists printers with name and uri", async () => {
     renderSection();
     expect(await screen.findByText("Front Desk")).toBeInTheDocument();
     expect(screen.getByText("ipp://x/y")).toBeInTheDocument();
   });
 
-  it("adds a printer via POST with a cups config", async () => {
+  it("adds a printer via POST with a flat body", async () => {
     renderSection();
     await screen.findByText("Front Desk");
     fireEvent.click(screen.getByRole("button", { name: /add printer/i }));
@@ -81,11 +106,11 @@ describe("PrintersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
     const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
-    expect(body).toEqual({ id: "back", name: "Back Office", kind: "cups", config: { uri: "ipp://b/q" } });
+    expect(body).toEqual({ id: "back", name: "Back Office", uri: "ipp://b/q" });
     expect(await screen.findByText("Back Office")).toBeInTheDocument();
   });
 
-  it("edits a printer via PUT; the id is structurally immutable (no field on edit)", async () => {
+  it("edits a printer via PUT without an id; the id has no field on edit", async () => {
     renderSection();
     const row = (await screen.findByText("Front Desk")).closest("tr") as HTMLElement;
     fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
@@ -95,20 +120,21 @@ describe("PrintersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers/front", "PUT")).toBeTruthy());
     const body = JSON.parse((lastCall("/api/printers/front", "PUT")![1] as RequestInit).body as string);
-    expect(body).toEqual({ id: "front", name: "Lobby", kind: "cups", config: { uri: "ipp://x/z" } });
+    expect(body).toEqual({ name: "Lobby", uri: "ipp://x/z", insecure: false });
     expect(await screen.findByText("Lobby")).toBeInTheDocument();
   });
 
-  it("preserves existing auth config on edit even though the card hides it", async () => {
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.startsWith("/api/printers/") && method === "PUT") return json(JSON.parse(init!.body as string));
-      if (url.startsWith("/api/printers")) {
-        return json([{ id: "auth", name: "Auth", kind: "cups", config: { uri: "ipps://h/q", username: "u", ca_cert: "PEM", insecure: true } }]);
-      }
-      throw new Error(`unexpected fetch: ${url}`);
-    });
+  it("puts back the stored username, ca_cert, insecure and render on edit, with no id or password", async () => {
+    const stored: P = {
+      id: "auth",
+      name: "Auth",
+      uri: "ipps://h/q",
+      username: "u",
+      ca_cert: "PEM",
+      insecure: true,
+      render: { color_mode: "bilevel", resolution: 203 },
+    };
+    fetchMock = stubFetch({ printers: [stored] });
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
     const row = (await screen.findByText("Auth")).closest("tr") as HTMLElement;
@@ -117,8 +143,14 @@ describe("PrintersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers/auth", "PUT")).toBeTruthy());
     const body = JSON.parse((lastCall("/api/printers/auth", "PUT")![1] as RequestInit).body as string);
-    // username/ca_cert/insecure carried forward untouched; password never echoed.
-    expect(body.config).toEqual({ uri: "ipps://h/q", username: "u", ca_cert: "PEM", insecure: true });
+    expect(body).toEqual({
+      name: "Auth2",
+      uri: "ipps://h/q",
+      username: "u",
+      ca_cert: "PEM",
+      insecure: true,
+      render: { color_mode: "bilevel", resolution: 203 },
+    });
   });
 
   it("blocks an invalid printer id client-side", async () => {
@@ -173,6 +205,7 @@ describe("PrintersSection", () => {
         return json({ status: "unreachable", detail: "connection refused" });
       }
       if (url.startsWith("/api/printers")) return json([]);
+      if (url === "/api/settings") return json({ default_printer_id: { value: null, is_default: true } });
       throw new Error(`unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -204,7 +237,7 @@ describe("PrintersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
     const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
-    expect(body.config.render).toEqual({ color_mode: "bilevel", resolution: 203 });
+    expect(body.render).toEqual({ color_mode: "bilevel", resolution: 203 });
   });
 
   it("omits render when color mode is auto (the default)", async () => {
@@ -216,25 +249,34 @@ describe("PrintersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
     const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
-    expect("render" in body.config).toBe(false);
+    expect("render" in body).toBe(false);
   });
 
-  it("sets a printer as the default via its radio", async () => {
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (/\/api\/printers\/.+\/default$/.test(url) && method === "POST") {
-        return new Response(null, { status: 204 });
-      }
-      if (url.startsWith("/api/printers")) {
-        return json([{ id: "front", name: "Front Desk", kind: "cups", config: { uri: "ipp://x/y" }, is_default: false }]);
-      }
-      throw new Error(`unexpected fetch: ${url}`);
+  it("writes default_printer_id from a printer's radio and clears it from No default printer", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByLabelText("default Front Desk"));
+    await waitFor(() => expect(lastCall("/api/settings/default_printer_id", "PUT")).toBeTruthy());
+    const body = JSON.parse((lastCall("/api/settings/default_printer_id", "PUT")![1] as RequestInit).body as string);
+    expect(body).toEqual({ value: "front" });
+    await waitFor(() => expect(screen.getByLabelText("default Front Desk")).toBeChecked());
+    fireEvent.click(screen.getByLabelText("no default printer"));
+    await waitFor(() => expect(lastCall("/api/settings/default_printer_id", "DELETE")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("no default printer")).toBeChecked());
+  });
+
+  it("checks No default printer after the default printer is deleted", async () => {
+    fetchMock = stubFetch({
+      printers: [FRONT, { id: "back", name: "Back Office", uri: "ipp://b/q", insecure: false }],
+      defaultPrinterId: "front",
     });
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
-    fireEvent.click(await screen.findByLabelText("default Front Desk"));
-    await waitFor(() => expect(lastCall("/api/printers/front/default", "POST")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("default Front Desk")).toBeChecked());
+    const row = screen.getByText("Front Desk").closest("tr") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
+    fireEvent.click(within(row).getByRole("button", { name: /confirm/i }));
+    await waitFor(() => expect(screen.queryByText("Front Desk")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("no default printer")).toBeChecked());
   });
 
   it("shows a server validation error inline when save is rejected", async () => {
@@ -245,6 +287,7 @@ describe("PrintersSection", () => {
         return json({ error: { code: "InvalidRequest", message: "cups uri rejected by server", details: { reason: "printer_invalid" } } }, 400);
       }
       if (url.startsWith("/api/printers")) return json([]);
+      if (url === "/api/settings") return json({ default_printer_id: { value: null, is_default: true } });
       throw new Error(`unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);

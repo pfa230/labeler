@@ -652,17 +652,15 @@ fn resolve_and_coerce_default(
     }
 }
 
-fn check_dimension_limit(
-    val: f32,
-    unit: &str,
-    max_dim_mm: f32,
-    label: &str,
-) -> Result<(), AppError> {
+/// Largest resolved label dimension (errors spec, `dimension_exceeds_limit`).
+const MAX_LABEL_DIMENSION_MM: f32 = 1000.0;
+
+fn check_dimension_limit(val: f32, unit: &str, label: &str) -> Result<(), AppError> {
     let val_mm = if unit == "in" { val * 25.4 } else { val };
-    if !val_mm.is_finite() || val_mm <= 0.0 || val_mm > max_dim_mm {
+    if !val_mm.is_finite() || val_mm <= 0.0 || val_mm > MAX_LABEL_DIMENSION_MM {
         return Err(AppError::unsupported_layout_item(
             Reason::DimensionExceedsLimit,
-            format!("{label} {val} {unit} exceeds limit of {max_dim_mm} mm"),
+            format!("{label} {val} {unit} exceeds limit of {MAX_LABEL_DIMENSION_MM} mm"),
         ));
     }
     Ok(())
@@ -752,13 +750,6 @@ fn compile_label_source(
     let items = select_layout_items(template)?;
     let images = RefCell::new(ImageCollector::default());
 
-    let max_dim_mm = crate::settings::resolve_max_label_dimension_mm_from(
-        env.settings
-            .get(crate::settings::MAX_LABEL_DIMENSION_MM)
-            .cloned(),
-    )
-    .unwrap_or(crate::settings::DEFAULT_MAX_LABEL_DIMENSION_MM);
-
     // Resolve initial width/height; Dynamic single may be overridden after measurement.
     let (mut width_units, height_units) = match &template.format {
         TemplateFormat::Single { width, height, .. } => (
@@ -772,7 +763,7 @@ fn compile_label_source(
         } => (*label_width, *label_height),
     };
 
-    check_dimension_limit(height_units, unit, max_dim_mm, "height")?;
+    check_dimension_limit(height_units, unit, "height")?;
 
     let geometry_values = render_geometry_values(resolved_data, template);
 
@@ -794,8 +785,8 @@ fn compile_label_source(
             .transpose()?
             .ok_or_else(|| AppError::internal("dynamic single width requires min"))?;
 
-        check_dimension_limit(min_w, unit, max_dim_mm, "width min")?;
-        check_dimension_limit(max_w, unit, max_dim_mm, "width max")?;
+        check_dimension_limit(min_w, unit, "width min")?;
+        check_dimension_limit(max_w, unit, "width max")?;
 
         if min_w > max_w {
             let min_param = match min.as_ref() {
@@ -821,10 +812,10 @@ fn compile_label_source(
             "layout",
         )?;
         width_units = root_w_req.clamp(min_w, max_w);
-        check_dimension_limit(width_units, unit, max_dim_mm, "width")?;
+        check_dimension_limit(width_units, unit, "width")?;
         measured = m_tree;
     } else {
-        check_dimension_limit(width_units, unit, max_dim_mm, "width")?;
+        check_dimension_limit(width_units, unit, "width")?;
         let probe = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
             .with_instants(&resolved.instants);
         let (m_tree, _) = probe.measure_items(
@@ -996,17 +987,10 @@ pub fn render_sheet_pages(
     let unit = &template.unit;
     let items = select_layout_items(template)?;
 
-    let max_dim_mm = crate::settings::resolve_max_label_dimension_mm_from(
-        env.settings
-            .get(crate::settings::MAX_LABEL_DIMENSION_MM)
-            .cloned(),
-    )
-    .unwrap_or(crate::settings::DEFAULT_MAX_LABEL_DIMENSION_MM);
-
-    check_dimension_limit(page_width_units, unit, max_dim_mm, "paper width")?;
-    check_dimension_limit(page_height_units, unit, max_dim_mm, "paper height")?;
-    check_dimension_limit(*label_width, unit, max_dim_mm, "label width")?;
-    check_dimension_limit(*label_height, unit, max_dim_mm, "label height")?;
+    check_dimension_limit(page_width_units, unit, "paper width")?;
+    check_dimension_limit(page_height_units, unit, "paper height")?;
+    check_dimension_limit(*label_width, unit, "label width")?;
+    check_dimension_limit(*label_height, unit, "label height")?;
 
     let slots_per_page = positions.len();
     let mut placements: Vec<(usize, usize)> = Vec::with_capacity(labels.len());
@@ -8178,6 +8162,43 @@ layout:
 
         let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(matches!(res, Err(err) if err.code() == "UnsupportedLayoutItem"));
+    }
+
+    /// The 1000 mm limit is a constant: a variable named like the removed setting does not lift it.
+    #[test]
+    fn dimension_limit_ignores_a_variable_named_max_label_dimension_mm() {
+        let yaml = r#"
+name: Dim Limit Variable
+unit: mm
+dpi: 200
+params:
+  - name: target_width
+    type: length
+    default: 60
+format:
+  type: single
+  height: 18
+  width:
+    min: 25
+    max: "{target_width}"
+layout:
+  - type: text
+    value: "Test"
+    at: [0, 0]
+    size: [content, 18]
+    font_size: { min: 8, max: 24 }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let data = HashMap::from([("target_width".to_string(), json!(1500.0))]);
+        let variables =
+            BTreeMap::from([("max_label_dimension_mm".to_string(), "5000".to_string())]);
+
+        let res = render_single_label(&template, &data, &variables, &resolver());
+        assert!(
+            matches!(&res, Err(err) if err.reason() == Some("dimension_exceeds_limit")),
+            "expected dimension_exceeds_limit, got {:?}",
+            res.as_ref().map(|_| "rendered")
+        );
     }
 
     #[test]

@@ -5,8 +5,8 @@ use crate::{
     api::{
         AuthStatus, ConnectionCreate, ConnectionUpdate, ConnectionView, Credentials,
         DatetimePreviewRequest, DatetimePreviewResponse, OkResponse, PasswordChange,
-        ProbeCapabilities, ProbeRequest, ProbeResponse, ResolvedSetting, SettingValue, TokenCreate,
-        TokenCreated, TokenSummary, UserSummary,
+        ProbeCapabilities, ProbeResponse, ResolvedSetting, SettingValue, TokenCreate, TokenCreated,
+        TokenSummary, UserSummary,
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
@@ -16,14 +16,14 @@ use crate::{
     models::{
         BatchRequest, BatchRowError, BatchSummary, Color, Dimension, ErrorBody, ErrorResponse,
         Extent, Fit, Flow, FlowDirection, FlowOverflow, FontSize, HealthResponse, HorizontalAlign,
-        InputControl, InputSpec, LabelInput, Layout, LayoutItem, Overflow, ParamDefaultError,
-        ParamDefaultReport, ParamEntry, ParamSpec, ParamType, ParamValue, Placement, Point,
-        Position, PrintRequest, QrParams, ReloadResponse, RenameGroupRequest, RenameGroupResponse,
-        RenderLabelRequest, Shape, SheetPosition, Size, SizeValue, Stroke, TemplateDetail,
+        InputControl, InputSpec, LabelInput, Layout, LayoutItem, NewPrinter, Overflow,
+        ParamDefaultError, ParamDefaultReport, ParamEntry, ParamSpec, ParamType, ParamValue,
+        Placement, Point, Position, PrintRequest, Printer, PrinterConnection, PrinterUpdate,
+        QrParams, ReloadResponse, RenameGroupRequest, RenameGroupResponse, RenderLabelRequest,
+        RenderProfile, Shape, SheetPosition, Size, SizeValue, Stroke, TemplateDetail,
         TemplateFormat, TemplateGroupUpdate, TemplateInputs, TemplateInputsRequest,
         TemplateInputsResponse, TemplateList, TemplateSummary, VariableValue, VerticalAlign,
     },
-    store::Printer,
 };
 
 #[derive(OpenApi)]
@@ -47,8 +47,6 @@ use crate::{
         api::get_printer,
         api::replace_printer,
         api::delete_printer,
-        api::set_printer_default,
-        api::clear_printer_default,
         api::probe_printer,
         api::get_variables,
         api::put_variable,
@@ -95,7 +93,10 @@ use crate::{
             DatetimePreviewResponse,
             ReloadResponse,
             Printer,
-            ProbeRequest,
+            NewPrinter,
+            PrinterUpdate,
+            PrinterConnection,
+            RenderProfile,
             ProbeResponse,
             ProbeCapabilities,
             TemplateList,

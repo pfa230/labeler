@@ -15,10 +15,14 @@ use crate::errors::AppError;
 pub const SESSION_COOKIE: &str = "labeler_session";
 
 /// Who is making the request (after auth). Inserted into request extensions for handlers that need it.
+/// A token acts as its owner; `by_token` only matters where a token may not do what a session can.
 #[derive(Clone)]
 pub enum Principal {
-    User { id: String, username: String },
-    Token { id: String },
+    User {
+        id: String,
+        username: String,
+        by_token: bool,
+    },
     Local,
 }
 
@@ -27,8 +31,15 @@ impl Principal {
     pub fn actor_id(&self) -> String {
         match self {
             Principal::User { id, .. } => id.clone(),
-            Principal::Token { id } => format!("token:{id}"),
             Principal::Local => "local".to_string(),
+        }
+    }
+
+    fn from_user(user: crate::store::User, by_token: bool) -> Self {
+        Principal::User {
+            id: user.id,
+            username: user.username,
+            by_token,
         }
     }
 }
@@ -129,6 +140,18 @@ fn is_auth_managed(path: &str) -> bool {
 /// drive-by CSRF protection without a session. Mirrors `origin_ok`'s host/authority extraction but treats
 /// a missing Origin as allowed rather than rejected.
 fn origin_present_and_mismatched(req: &Request<Body>, trust_proxy: bool) -> bool {
+    let origin = match req
+        .headers()
+        .get(header::ORIGIN)
+        .or_else(|| req.headers().get(header::REFERER))
+    {
+        Some(o) => o,
+        None => return false, // no Origin: non-browser caller, allow
+    };
+    // Present but not readable as text: as unparseable as a malformed URI, so reject.
+    let Ok(origin) = origin.to_str() else {
+        return true;
+    };
     let fwd_host = if trust_proxy {
         req.headers()
             .get("x-forwarded-host")
@@ -142,16 +165,7 @@ fn origin_present_and_mismatched(req: &Request<Body>, trust_proxy: bool) -> bool
             .and_then(|v| v.to_str().ok())
     }) {
         Some(h) => h,
-        None => return false,
-    };
-    let origin = req
-        .headers()
-        .get(header::ORIGIN)
-        .or_else(|| req.headers().get(header::REFERER))
-        .and_then(|v| v.to_str().ok());
-    let origin = match origin {
-        Some(o) => o,
-        None => return false, // no Origin: non-browser caller, allow
+        None => return true, // an Origin with no host to compare against cannot match
     };
     match origin.parse::<axum::http::Uri>() {
         Ok(uri) => !uri
@@ -202,7 +216,9 @@ pub async fn require_auth(
                 .lookup_token(&crate::auth::sha256_hex(secret))
                 .await
             {
-                Ok(Some(id)) => return run_with(req, next, Principal::Token { id }).await,
+                Ok(Some(owner)) => {
+                    return run_with(req, next, Principal::from_user(owner, true)).await
+                }
                 Ok(None) => return AppError::unauthorized().into_response(),
                 Err(_) => return AppError::internal("token lookup failed").into_response(),
             }
@@ -220,17 +236,7 @@ pub async fn require_auth(
             .lookup_session(&crate::auth::sha256_hex(cookie.value()))
             .await
         {
-            Ok(Some(user)) => {
-                return run_with(
-                    req,
-                    next,
-                    Principal::User {
-                        id: user.id,
-                        username: user.username,
-                    },
-                )
-                .await
-            }
+            Ok(Some(user)) => return run_with(req, next, Principal::from_user(user, false)).await,
             Ok(None) => return AppError::unauthorized().into_response(),
             Err(_) => return AppError::internal("session lookup failed").into_response(),
         }
@@ -273,12 +279,12 @@ pub async fn resolve_optional(
         .and_then(|v| v.to_str().ok())
         .and_then(|a| a.strip_prefix("Bearer "))
     {
-        if let Ok(Some(id)) = state
+        if let Ok(Some(owner)) = state
             .store()
             .lookup_token(&crate::auth::sha256_hex(secret))
             .await
         {
-            return Some(Principal::Token { id });
+            return Some(Principal::from_user(owner, true));
         }
         return None;
     }
@@ -289,10 +295,7 @@ pub async fn resolve_optional(
         .lookup_session(&crate::auth::sha256_hex(cookie.value()))
         .await
     {
-        Ok(Some(user)) => Some(Principal::User {
-            id: user.id,
-            username: user.username,
-        }),
+        Ok(Some(user)) => Some(Principal::from_user(user, false)),
         _ => None,
     }
 }

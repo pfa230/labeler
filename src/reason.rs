@@ -76,7 +76,6 @@ reasons! {
     TemplateGroupMismatch => "template_group_mismatch",
     UnsupportedPrecondition => "unsupported_precondition",
     PrinterIdInvalid => "printer_id_invalid",
-    PrinterIdMismatch => "printer_id_mismatch",
     VariableKeyInvalid => "variable_key_invalid",
     SettingValueInvalid => "setting_value_invalid",
     DatetimePatternInvalid => "datetime_pattern_invalid",

@@ -49,16 +49,14 @@ Set these in `.env` for Compose, or with `-e` for `docker run`. Nothing is requi
 | `LABELER_CONFIG_DIR` | `/config` | All persistent state. In the container, mount a volume here rather than changing it. |
 | `LABELER_FONTS_DIR` | `fonts`, relative to the working directory (`/app` in the image) | Font directory; must contain `InterVariable.ttf`. Baked into the image. |
 | `LABELER_UI_DIR` | `ui/dist`; image sets `/app/ui/dist` | Built web UI. Baked into the image. |
-| `LABELER_INIT_USER` | unset | With `LABELER_INIT_PASSWORD`, creates the first user at startup when none exist. |
-| `LABELER_INIT_PASSWORD` | unset | Password for `LABELER_INIT_USER`. |
 | `LABELER_TRUST_PROXY` | `false` | `true` behind a TLS-terminating reverse proxy that sets `X-Forwarded-Proto` and `X-Forwarded-Host`. |
 | `LABELER_NO_AUTH` | `false` | `true` removes the login wall, for single-user trusted-LAN use. |
 
-The two boolean variables are on only for the exact value `true`. Their effects are specified in [auth](../openspec/specs/auth/spec.md) (Origin check, Startup bootstrap, No-auth mode). Do not set `LABELER_TRUST_PROXY` unless a trusted proxy really sets those headers, or a LAN client can spoof them.
+The two boolean variables are on only for the exact value `true`. Their effects are specified in [auth](../openspec/specs/auth/spec.md) (Origin check, No-auth mode). Do not set `LABELER_TRUST_PROXY` unless a trusted proxy really sets those headers, or a LAN client can spoof them.
 
 ## First run
 
-1. Open the UI. With no users, it shows the setup screen that creates the first account. For a headless deploy, set `LABELER_INIT_USER` and `LABELER_INIT_PASSWORD` instead; they have no effect once a user exists.
+1. Open the UI. With no users, it shows the setup screen that creates the first account. For a scripted install, create it with `curl -X POST https://<host>/api/auth/setup -H 'Origin: https://<host>' -H 'Content-Type: application/json' -d '{"username":"admin","password":"<password>"}'`; setup without `Authorization` needs an `Origin` matching the host.
 2. Install templates. The config starts empty; the Labels screen offers the catalog and a **Paste YAML** option. The catalog lives in this repo under `catalog/` (`catalog/index.json` lists it), and only your browser fetches it.
 3. Add a printer under Settings → Printers (see [Printing](#printing-cups--ipp)).
 4. For scripts and integrations, create an API token under Settings → API tokens and send it as `Authorization: Bearer $LABELER_API_TOKEN`.
@@ -106,7 +104,7 @@ There is no downgrade path. An older binary refuses a database migrated by a new
 
 ## Printing (CUPS / IPP)
 
-Labeler is an IPP client. Each printer's URI must start with `ipp://` or `ipps://` and be reachable from the container network; no host socket, host networking or privileged mode is needed. The printer config (credentials, CA certificate, `insecure`, render overrides) is specified in [printing](../openspec/specs/printing/spec.md).
+Labeler is an IPP client. Each printer's URI must start with `ipp://` or `ipps://` and be reachable from the container network; no host socket, host networking or privileged mode is needed. The printer fields (credentials, CA certificate, `insecure`, render overrides) are specified in [printing](../openspec/specs/printing/spec.md).
 
 | Printer | URI |
 | --- | --- |
@@ -129,7 +127,7 @@ Test reachability from inside the container. Any HTTP response, including `401`,
 docker compose exec labeler sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends curl >/dev/null && curl -sS -o /dev/null -w "%{http_code}\n" http://host.docker.internal:631/'
 ```
 
-Then add the printer under Settings → Printers and print a label. For `ipps://` with a self-signed or private-CA certificate, paste the CA certificate into the printer's config; the image trusts the public CA bundle otherwise.
+Then add the printer under Settings → Printers and print a label. For `ipps://` with a self-signed or private-CA certificate, set the printer's `ca_cert` to the CA certificate; the image trusts the public CA bundle otherwise.
 
 ## Debugging
 

@@ -1272,6 +1272,165 @@ pub struct PrintRequest {
     pub copies: u32,
 }
 
+/// Deserialize a present key as `Some`. Paired with `#[serde(default)]`, an absent key stays `None`
+/// while a key written as `null` fails as `json_malformed`, which the errors spec requires and
+/// serde's plain `Option` would accept as absent.
+pub fn non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// A printer's render overrides; an absent field is negotiated with the printer.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenderProfile {
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(nullable = false)]
+    pub color_mode: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(nullable = false)]
+    pub resolution: Option<u32>,
+}
+
+/// How to reach a printer: the `POST /printers/probe` body, and what a driver is built from.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PrinterConnection {
+    pub uri: String,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub username: Option<String>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub password: Option<String>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub ca_cert: Option<String>,
+    #[serde(default)]
+    pub insecure: bool,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub render: Option<RenderProfile>,
+}
+
+// serde cannot combine `flatten` with `deny_unknown_fields`, so the two printer bodies spell the
+// connection fields out and `connection()` is the one place they are copied.
+
+/// `POST /printers` body.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewPrinter {
+    pub id: String,
+    pub name: String,
+    pub uri: String,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub username: Option<String>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub password: Option<String>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub ca_cert: Option<String>,
+    #[serde(default)]
+    pub insecure: bool,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub render: Option<RenderProfile>,
+}
+
+impl NewPrinter {
+    pub fn connection(&self) -> PrinterConnection {
+        PrinterConnection {
+            uri: self.uri.clone(),
+            username: self.username.clone(),
+            password: self.password.clone(),
+            ca_cert: self.ca_cert.clone(),
+            insecure: self.insecure,
+            render: self.render.clone(),
+        }
+    }
+}
+
+/// `PUT /printers/{id}` body: the whole record without `id`. An omitted `password` keeps the
+/// stored one, `""` clears it.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PrinterUpdate {
+    pub name: String,
+    pub uri: String,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub username: Option<String>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub password: Option<String>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub ca_cert: Option<String>,
+    #[serde(default)]
+    pub insecure: bool,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub render: Option<RenderProfile>,
+}
+
+impl PrinterUpdate {
+    pub fn connection(&self) -> PrinterConnection {
+        PrinterConnection {
+            uri: self.uri.clone(),
+            username: self.username.clone(),
+            password: self.password.clone(),
+            ca_cert: self.ca_cert.clone(),
+            insecure: self.insecure,
+            render: self.render.clone(),
+        }
+    }
+}
+
+/// A configured printer as the API returns it. There is no `password` field, so it cannot leak.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct Printer {
+    pub id: String,
+    pub name: String,
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub ca_cert: Option<String>,
+    pub insecure: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub render: Option<RenderProfile>,
+}
+
+impl Printer {
+    pub fn new(id: String, name: String, conn: PrinterConnection) -> Self {
+        Self {
+            id,
+            name,
+            uri: conn.uri,
+            username: conn.username,
+            ca_cert: conn.ca_cert,
+            insecure: conn.insecure,
+            render: conn.render,
+        }
+    }
+}
+
 #[cfg(test)]
 mod rotation_tests {
     use super::Rotation;

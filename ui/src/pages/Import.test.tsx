@@ -24,7 +24,7 @@ const detail = {
   },
 };
 const list = { templates: [{ id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format }] };
-const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null }];
+const printers = [{ id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false }];
 const summary = { total: 2, succeeded: 2, failed: [], jobs: 1 };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });

@@ -88,45 +88,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if let (Ok(u), Ok(p)) = (
-        std::env::var("LABELER_INIT_USER"),
-        std::env::var("LABELER_INIT_PASSWORD"),
-    ) {
-        if store.count_users().await.unwrap_or(0) == 0 && !u.is_empty() && !p.is_empty() {
-            let hash = match labeler::auth::hash_password(&p) {
-                Ok(h) => h,
-                Err(err) => fatal!(%err, "failed to hash init password"),
-            };
-            if let Err(err) = store.create_user(&u, &hash).await {
-                fatal!(user = %u, %err, "failed to create init user");
-            }
-            tracing::info!(user = %u, "bootstrapped initial user from env");
-        }
-    }
-
     let state = Arc::new(AppState::new(templates, templates_dir, store));
-
-    // Job-log retention is an app setting, resolved live each run; no env var.
-    // Prune once at startup, then daily. The ticker always runs because the setting can change at runtime.
-    match labeler::settings::prune_job_log_once(state.store()).await {
-        Ok(n) => tracing::info!(deleted = n, "pruned job log at startup"),
-        Err(err) => tracing::warn!(%err, "startup job-log prune failed"),
-    }
-    {
-        let prune_state = state.clone();
-        tokio::spawn(async move {
-            let period = std::time::Duration::from_secs(24 * 60 * 60);
-            // interval_at starts one period out so this does not double-prune the startup run.
-            let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-            loop {
-                ticker.tick().await;
-                match labeler::settings::prune_job_log_once(prune_state.store()).await {
-                    Ok(n) => tracing::info!(deleted = n, "pruned job log"),
-                    Err(err) => tracing::warn!(%err, "job-log prune failed"),
-                }
-            }
-        });
-    }
 
     let server_app = app(state);
 

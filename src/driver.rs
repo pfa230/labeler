@@ -1,10 +1,8 @@
-//! Printer driver abstraction. A configured printer's `kind` selects a driver that declares
-//! the artifact format it accepts and knows how to send it. Phase 1 ships one driver (`cups`, PDF over
-//! IPP); later families register here without touching the `/print` dispatch.
+//! Printer driver abstraction. Every printer is reached over IPP (`CupsDriver`); the trait keeps
+//! the `/print` dispatch independent of the transport and lets tests substitute a fake.
 
+use crate::models::{PrinterConnection, RenderProfile};
 use async_trait::async_trait;
-use serde::Deserialize;
-use serde_json::Value as JsonValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactFormat {
@@ -53,9 +51,7 @@ impl Default for PrintOptions {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
-    #[error("unknown printer kind '{0}'")]
-    UnknownKind(String),
-    #[error("invalid printer config: {0}")]
+    #[error("invalid printer: {0}")]
     Config(String),
 }
 
@@ -94,89 +90,49 @@ pub trait PrinterDriver: Send + Sync {
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError>;
 }
 
-/// Strip write-only secrets from a printer config before returning it to a client. cups: drop `password`.
-pub fn redact_config(kind: &str, config: &JsonValue) -> JsonValue {
-    let mut config = config.clone();
-    if kind == "cups" {
-        if let Some(obj) = config.as_object_mut() {
-            obj.remove("password");
-        }
+/// Reserved host (RFC 2606, never resolves) that routes a printer to `FakeDriver` in the test build,
+/// so printer tests run the real validation and dispatch without a network.
+#[cfg(test)]
+const FAKE_HOST: &str = "fake.test";
+
+/// Validate a printer's connection fields and build its driver. Used by printer CRUD (validation
+/// only), probe and `/print` dispatch.
+pub fn driver_for(connection: &PrinterConnection) -> Result<Box<dyn PrinterDriver>, DriverError> {
+    let driver = CupsDriver::new(connection)?;
+    #[cfg(test)]
+    if let Some(fake) = FakeDriver::for_fake_host(connection) {
+        return Ok(Box::new(fake));
     }
-    config
+    Ok(Box::new(driver))
 }
 
-/// Merge the write-only `password` from the existing stored config into `incoming` (cups). By the
-/// presence of the `password` key in `incoming`: absent -> keep existing; string -> set; null -> clear.
-pub fn merge_secrets(kind: &str, incoming: &mut JsonValue, existing: Option<&JsonValue>) {
-    if kind != "cups" {
-        return;
-    }
-    let Some(obj) = incoming.as_object_mut() else {
-        return;
-    };
-    match obj.get("password") {
-        None => {
-            if let Some(prev) = existing
-                .and_then(|e| e.get("password"))
-                .filter(|v| v.is_string())
-            {
-                obj.insert("password".to_string(), prev.clone());
-            }
-        }
-        Some(JsonValue::Null) => {
-            obj.remove("password");
-        }
-        Some(_) => {}
-    }
+/// Per-field overrides from a printer's `render`; a missing field stays `None` (negotiate it).
+fn render_override(render: Option<&RenderProfile>) -> RenderOverride {
+    render
+        .map(|r| RenderOverride {
+            color_mode: match r.color_mode.as_deref() {
+                Some("bilevel") => Some(crate::render::ColorMode::BiLevel),
+                Some("color") => Some(crate::render::ColorMode::Color),
+                _ => None,
+            },
+            resolution_dpi: r.resolution,
+        })
+        .unwrap_or_default()
 }
 
-/// Validate that `kind` is known and `config` parses for that driver (used by printer CRUD).
-pub fn validate_config(kind: &str, config: &JsonValue) -> Result<(), DriverError> {
-    match kind {
-        "cups" => CupsConfig::from_value(config).map(|_| ()),
-        #[cfg(test)]
-        "fake" => Ok(()),
-        other => Err(DriverError::UnknownKind(other.to_string())),
-    }
-}
-
-/// Build a driver from a stored printer's `kind` + `config` (used by `/print` dispatch).
-pub fn build_driver(kind: &str, config: &JsonValue) -> Result<Box<dyn PrinterDriver>, DriverError> {
-    match kind {
-        "cups" => Ok(Box::new(CupsDriver::from_value(config)?)),
-        #[cfg(test)]
-        "fake" => Ok(Box::new(FakeDriver::from_value(config))),
-        other => Err(DriverError::UnknownKind(other.to_string())),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct RenderProfileConfig {
-    #[serde(default)]
-    color_mode: Option<String>,
-    #[serde(default)]
-    resolution: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CupsConfig {
+/// Sends a rendered PDF to a CUPS queue or an IPP-Everywhere printer via IPP `Print-Job`.
+pub struct CupsDriver {
     uri: String,
-    #[serde(default)]
     username: Option<String>,
-    #[serde(default)]
     password: Option<String>,
-    #[serde(default)]
     ca_cert: Option<String>,
-    #[serde(default)]
     insecure: bool,
-    #[serde(default)]
-    render: Option<RenderProfileConfig>,
+    render: RenderOverride,
 }
 
-impl CupsConfig {
-    fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
-        let cfg: CupsConfig = serde_json::from_value(config.clone())
-            .map_err(|err| DriverError::Config(err.to_string()))?;
+impl CupsDriver {
+    /// Check each connection field against its rule (printing spec, "Printer fields").
+    fn new(cfg: &PrinterConnection) -> Result<Self, DriverError> {
         if !(cfg.uri.starts_with("ipp://") || cfg.uri.starts_with("ipps://")) {
             return Err(DriverError::Config(format!(
                 "cups uri must start with ipp:// or ipps:// (got '{}')",
@@ -225,43 +181,13 @@ impl CupsConfig {
                 }
             }
         }
-        Ok(cfg)
-    }
-}
-
-/// Sends a rendered PDF to a CUPS queue or an IPP-Everywhere printer via IPP `Print-Job`.
-pub struct CupsDriver {
-    uri: String,
-    username: Option<String>,
-    password: Option<String>,
-    ca_cert: Option<String>,
-    insecure: bool,
-    render: RenderOverride,
-}
-
-impl CupsDriver {
-    fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
-        let cfg = CupsConfig::from_value(config)?;
-        // Per-field: a missing key stays `None` (negotiate it), not a concrete default.
-        let render = cfg
-            .render
-            .as_ref()
-            .map(|r| RenderOverride {
-                color_mode: match r.color_mode.as_deref() {
-                    Some("bilevel") => Some(crate::render::ColorMode::BiLevel),
-                    Some("color") => Some(crate::render::ColorMode::Color),
-                    _ => None,
-                },
-                resolution_dpi: r.resolution,
-            })
-            .unwrap_or_default();
         Ok(Self {
-            uri: cfg.uri,
-            username: cfg.username,
-            password: cfg.password,
-            ca_cert: cfg.ca_cert,
+            uri: cfg.uri.clone(),
+            username: cfg.username.clone(),
+            password: cfg.password.clone(),
+            ca_cert: cfg.ca_cert.clone(),
             insecure: cfg.insecure,
-            render,
+            render: render_override(cfg.render.as_ref()),
         })
     }
 
@@ -518,67 +444,53 @@ pub fn effective_render(
     }
 }
 
-/// Test-only driver that records nothing and either succeeds or fails, for exercising the `/print`
-/// dispatch without a real printer.
+/// Test-only driver for `ipp://fake.test/?<knobs>`: records nothing and succeeds or fails, for
+/// exercising the `/print` dispatch without a real printer. Knobs: `fail=1`, `probe=unreachable`,
+/// `password=<s>`, and capabilities `bilevel`, `png` (0/1), `dpi`, `media` (loaded width, mm),
+/// `model`; the printer reports capabilities iff at least one capability knob is present.
 #[cfg(test)]
 struct FakeDriver {
     fail: bool,
     render: RenderOverride,
     caps: Option<PrinterCapabilities>,
     probe_unreachable: bool,
+    /// `send` fails unless this equals the connection's password (absent on both sides is equal),
+    /// so a test can observe the stored secret reaching dispatch.
+    expected_password: Option<String>,
+    password: Option<String>,
 }
 
 #[cfg(test)]
 impl FakeDriver {
-    fn from_value(config: &JsonValue) -> Self {
-        let fail = config
-            .get("fail")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        let probe_unreachable = config.get("probe").and_then(|v| v.as_str()) == Some("unreachable");
-        let render = config
-            .get("render")
-            .map(|r| RenderOverride {
-                color_mode: match r.get("color_mode").and_then(|v| v.as_str()) {
-                    Some("bilevel") => Some(crate::render::ColorMode::BiLevel),
-                    Some("color") => Some(crate::render::ColorMode::Color),
-                    _ => None,
-                },
-                resolution_dpi: r
-                    .get("resolution")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as u32),
-            })
-            .unwrap_or_default();
-        let caps = config.get("capabilities").map(|c| PrinterCapabilities {
-            bilevel: c.get("bilevel").and_then(|v| v.as_bool()).unwrap_or(false),
-            color_known: c
-                .get("color_known")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            accepts_png: c
-                .get("accepts_png")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            resolution_dpi: c
-                .get("resolution")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32),
-            loaded_media_width_mm: c
-                .get("loaded_media_width")
-                .and_then(|v| v.as_f64())
-                .map(|n| n as f32),
-            model: c
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        });
-        Self {
-            fail,
-            render,
-            caps,
-            probe_unreachable,
+    fn for_fake_host(connection: &PrinterConnection) -> Option<Self> {
+        let url = url::Url::parse(&connection.uri).ok()?;
+        if url.host_str() != Some(FAKE_HOST) {
+            return None;
         }
+        let knobs: std::collections::HashMap<String, String> =
+            url.query_pairs().into_owned().collect();
+        let knob = |k: &str| knobs.get(k).map(String::as_str);
+        let number = |k: &str| knob(k).map(|v| v.parse::<u32>().expect("numeric fake knob"));
+        let has_caps = ["bilevel", "png", "dpi", "media", "model"]
+            .iter()
+            .any(|k| knobs.contains_key(*k));
+        let bilevel = knob("bilevel") == Some("1");
+        let caps = has_caps.then(|| PrinterCapabilities {
+            bilevel,
+            color_known: bilevel,
+            accepts_png: knob("png") == Some("1"),
+            resolution_dpi: number("dpi"),
+            loaded_media_width_mm: number("media").map(|mm| mm as f32),
+            model: knob("model").map(str::to_string),
+        });
+        Some(Self {
+            fail: knob("fail") == Some("1"),
+            render: render_override(connection.render.as_ref()),
+            caps,
+            probe_unreachable: knob("probe") == Some("unreachable"),
+            expected_password: knob("password").map(str::to_string),
+            password: connection.password.clone(),
+        })
     }
 
     fn capabilities_sync(&self) -> Option<PrinterCapabilities> {
@@ -607,6 +519,9 @@ impl PrinterDriver for FakeDriver {
         if self.fail {
             return Err(PrintError::Transport("fake failure".to_string()));
         }
+        if self.password != self.expected_password {
+            return Err(PrintError::Transport("fake: wrong password".to_string()));
+        }
         // Mirror the print path's per-field precedence (override else negotiated else default).
         let effective = effective_render(
             &self.configured_render_override(),
@@ -627,7 +542,19 @@ impl PrinterDriver for FakeDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value as JsonValue};
+
+    fn connection(v: JsonValue) -> PrinterConnection {
+        serde_json::from_value(v).expect("connection fields")
+    }
+
+    fn cups(v: JsonValue) -> Result<CupsDriver, DriverError> {
+        CupsDriver::new(&connection(v))
+    }
+
+    fn fake(uri: &str) -> FakeDriver {
+        FakeDriver::for_fake_host(&connection(json!({ "uri": uri }))).expect("fake.test host")
+    }
 
     #[test]
     fn capabilities_from_parts_detects_bilevel() {
@@ -807,7 +734,7 @@ mod tests {
 
     #[test]
     fn cups_config_parses_all_fields() {
-        let cfg = CupsConfig::from_value(&json!({
+        let cfg = cups(json!({
             "uri": "ipps://host/printers/q",
             "username": "u",
             "password": "p",
@@ -824,7 +751,7 @@ mod tests {
 
     #[test]
     fn cups_config_minimal_defaults() {
-        let cfg = CupsConfig::from_value(&json!({ "uri": "ipp://h/q" })).unwrap();
+        let cfg = cups(json!({ "uri": "ipp://h/q" })).unwrap();
         assert!(
             cfg.username.is_none()
                 && cfg.password.is_none()
@@ -835,107 +762,46 @@ mod tests {
 
     #[test]
     fn cups_config_rejects_non_pem_ca_cert() {
-        assert!(
-            CupsConfig::from_value(&json!({ "uri": "ipps://h/q", "ca_cert": "not a cert" }))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn build_driver_accepts_full_cups_config() {
-        assert!(build_driver(
-            "cups",
-            &json!({
-                "uri": "ipp://h/q", "username": "u", "password": "p", "insecure": false
-            })
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn validate_and_build_cups() {
-        assert!(validate_config("cups", &json!({ "uri": "ipp://h/p" })).is_ok());
-        assert!(validate_config("cups", &json!({})).is_err()); // missing uri
-        assert!(validate_config("zebra", &json!({})).is_err()); // unknown kind
-
-        let driver = build_driver("cups", &json!({ "uri": "ipp://h/p" })).unwrap();
-        // no render config -> both fields None (auto-negotiated at print time)
-        let ovr = driver.configured_render_override();
-        assert!(ovr.color_mode.is_none() && ovr.resolution_dpi.is_none());
-        assert!(build_driver("zebra", &json!({})).is_err());
-    }
-
-    #[test]
-    fn redact_config_omits_cups_password() {
-        let c = redact_config(
-            "cups",
-            &json!({ "uri": "ipp://h/q", "username": "u", "password": "p" }),
-        );
-        assert!(c.get("password").is_none());
-        assert_eq!(c["username"], "u");
-    }
-
-    #[test]
-    fn merge_secrets_keep_set_clear() {
-        let existing = json!({ "uri": "ipp://h/q", "password": "old" });
-        // absent -> keep
-        let mut a = json!({ "uri": "ipp://h/q" });
-        merge_secrets("cups", &mut a, Some(&existing));
-        assert_eq!(a["password"], "old");
-        // present string -> set
-        let mut b = json!({ "uri": "ipp://h/q", "password": "new" });
-        merge_secrets("cups", &mut b, Some(&existing));
-        assert_eq!(b["password"], "new");
-        // null -> clear
-        let mut c = json!({ "uri": "ipp://h/q", "password": null });
-        merge_secrets("cups", &mut c, Some(&existing));
-        assert!(c.get("password").is_none());
-        // create (no existing), absent -> no password
-        let mut d = json!({ "uri": "ipp://h/q" });
-        merge_secrets("cups", &mut d, None);
-        assert!(d.get("password").is_none());
+        assert!(cups(json!({ "uri": "ipps://h/q", "ca_cert": "not a cert" })).is_err());
     }
 
     #[test]
     fn cups_config_parses_render_profile() {
-        let cfg = CupsConfig::from_value(&json!({
+        let cfg = cups(json!({
             "uri": "ipp://h/q",
             "render": { "color_mode": "bilevel", "resolution": 203 }
         }))
         .unwrap();
-        let r = cfg.render.as_ref().unwrap();
-        assert_eq!(r.color_mode.as_deref(), Some("bilevel"));
-        assert_eq!(r.resolution, Some(203));
+        assert!(matches!(
+            cfg.render.color_mode,
+            Some(crate::render::ColorMode::BiLevel)
+        ));
+        assert_eq!(cfg.render.resolution_dpi, Some(203));
     }
 
     #[test]
     fn cups_config_rejects_bad_render_profile() {
-        assert!(CupsConfig::from_value(
-            &json!({ "uri": "ipp://h/q", "render": { "color_mode": "nope" } })
-        )
-        .is_err());
-        assert!(CupsConfig::from_value(
-            &json!({ "uri": "ipp://h/q", "render": { "resolution": 99999 } })
-        )
-        .is_err());
+        assert!(cups(json!({ "uri": "ipp://h/q", "render": { "color_mode": "nope" } })).is_err());
+        assert!(cups(json!({ "uri": "ipp://h/q", "render": { "resolution": 99999 } })).is_err());
     }
 
     #[test]
     fn cups_driver_render_options_reflects_profile() {
         use crate::render::ColorMode;
-        let d = CupsDriver::from_value(&json!({ "uri": "ipp://h/q", "render": { "color_mode": "bilevel", "resolution": 203 } })).unwrap();
+        let d = cups(
+            json!({ "uri": "ipp://h/q", "render": { "color_mode": "bilevel", "resolution": 203 } }),
+        )
+        .unwrap();
         let ovr = d.configured_render_override();
         assert!(matches!(ovr.color_mode, Some(ColorMode::BiLevel)));
         assert_eq!(ovr.resolution_dpi, Some(203));
         // only resolution set -> color_mode stays None (negotiate it)
-        let d_res =
-            CupsDriver::from_value(&json!({ "uri": "ipp://h/q", "render": { "resolution": 203 } }))
-                .unwrap();
+        let d_res = cups(json!({ "uri": "ipp://h/q", "render": { "resolution": 203 } })).unwrap();
         let ovr_res = d_res.configured_render_override();
         assert!(ovr_res.color_mode.is_none());
         assert_eq!(ovr_res.resolution_dpi, Some(203));
         // absent render config -> both None
-        let d2 = CupsDriver::from_value(&json!({ "uri": "ipp://h/q" })).unwrap();
+        let d2 = cups(json!({ "uri": "ipp://h/q" })).unwrap();
         let ovr2 = d2.configured_render_override();
         assert!(ovr2.color_mode.is_none() && ovr2.resolution_dpi.is_none());
     }
@@ -974,22 +840,23 @@ mod tests {
     #[test]
     fn fake_driver_render_options_from_config() {
         use crate::render::ColorMode;
-        let d = FakeDriver::from_value(
-            &json!({ "fail": false, "render": { "color_mode": "bilevel" } }),
-        );
+        let d = FakeDriver::for_fake_host(&connection(json!({
+            "uri": "ipp://fake.test/", "render": { "color_mode": "bilevel" }
+        })))
+        .expect("fake.test host");
         let ovr = d.configured_render_override();
         assert!(matches!(ovr.color_mode, Some(ColorMode::BiLevel)));
         // no render -> both None
-        let d2 = FakeDriver::from_value(&json!({ "fail": false }));
-        let ovr2 = d2.configured_render_override();
+        let ovr2 = fake("ipp://fake.test/").configured_render_override();
         assert!(ovr2.color_mode.is_none() && ovr2.resolution_dpi.is_none());
         // capabilities parsed correctly
-        let d3 = FakeDriver::from_value(
-            &json!({ "fail": false, "capabilities": { "bilevel": true, "accepts_png": true, "resolution": 203 } }),
-        );
-        let caps = d3.capabilities_sync().expect("caps present");
+        let caps = fake("ipp://fake.test/?bilevel=1&png=1&dpi=203")
+            .capabilities_sync()
+            .expect("caps present");
         assert!(caps.bilevel && caps.accepts_png);
         assert_eq!(caps.resolution_dpi, Some(203));
+        // another host is not the fake
+        assert!(FakeDriver::for_fake_host(&connection(json!({ "uri": "ipp://h/q" }))).is_none());
     }
 
     #[test]
@@ -1005,19 +872,18 @@ mod tests {
     #[test]
     fn cups_config_rejects_malformed_uri() {
         // prefixed but no host -> rejected (feeds the probe endpoint's 422 contract)
-        assert!(CupsConfig::from_value(&json!({ "uri": "ipp://" })).is_err());
-        assert!(CupsConfig::from_value(&json!({ "uri": "ipps://" })).is_err());
+        assert!(cups(json!({ "uri": "ipp://" })).is_err());
+        assert!(cups(json!({ "uri": "ipps://" })).is_err());
+        assert!(cups(json!({ "uri": "http://host/ipp/print" })).is_err());
         // a well-formed one still parses
-        assert!(CupsConfig::from_value(&json!({ "uri": "ipp://host:631/ipp/print" })).is_ok());
+        assert!(cups(json!({ "uri": "ipp://host:631/ipp/print" })).is_ok());
     }
 
     #[tokio::test]
     async fn fake_probe_outcomes_flow_through() {
-        let d = FakeDriver::from_value(&json!({ "probe": "unreachable" }));
+        let d = fake("ipp://fake.test/?probe=unreachable");
         assert!(matches!(d.probe().await, ProbeOutcome::Unreachable(_)));
-        let d2 = FakeDriver::from_value(
-            &json!({ "capabilities": { "bilevel": true, "accepts_png": true } }),
-        );
+        let d2 = fake("ipp://fake.test/?bilevel=1&png=1");
         assert!(matches!(d2.probe().await, ProbeOutcome::Ok(_)));
         // capabilities() provided default mirrors probe(): Ok -> Some, Unreachable -> None.
         assert!(d.capabilities().await.is_none());
@@ -1028,7 +894,7 @@ mod tests {
     #[ignore = "requires a real IPP/CUPS endpoint in LABELER_TEST_IPP_URI"]
     async fn cups_send_live() {
         let uri = std::env::var("LABELER_TEST_IPP_URI").expect("LABELER_TEST_IPP_URI");
-        let driver = build_driver("cups", &json!({ "uri": uri })).unwrap();
+        let driver = driver_for(&connection(json!({ "uri": uri }))).unwrap();
         driver
             .send(b"%PDF-1.4\n%%EOF\n", &PrintOptions::default())
             .await

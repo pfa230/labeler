@@ -41,8 +41,8 @@ const list = {
 // (it only auto-picks a lone printer or an explicit default) and Print stays gated on an
 // explicit printer selection — which is what this suite exercises.
 const printers = [
-  { id: "p1", name: "Label Printer", kind: "cups", config: null },
-  { id: "p2", name: "Backup Printer", kind: "cups", config: null },
+  { id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false },
+  { id: "p2", name: "Backup Printer", uri: "ipp://p2/q", insecure: false },
 ];
 const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 
@@ -89,6 +89,12 @@ function stubFetch() {
     }
     if (url.startsWith("/api/printers")) {
       return new Response(JSON.stringify(printers), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url === "/api/settings") {
+      return new Response(JSON.stringify({ default_printer_id: { value: null, is_default: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     if (url.startsWith("/api/render/label")) {
       return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });

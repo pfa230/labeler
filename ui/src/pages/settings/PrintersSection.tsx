@@ -1,64 +1,32 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   usePrinters,
   useSavePrinter,
   useDeletePrinter,
-  useSetDefaultPrinter,
-  useClearDefaultPrinter,
   useProbePrinter,
+  useSettings,
+  useUpdateSetting,
+  useResetSetting,
 } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
-import type { Printer, ProbeResult } from "../../api/types";
+import type { Printer, ProbeResult, RenderProfile } from "../../api/types";
 
 const ID_RE = /^[A-Za-z0-9_-]+$/; // mirrors the server's accepted printer-id charset
+const DEFAULT_PRINTER_KEY = "default_printer_id";
 const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 
-function cupsUri(p: Printer): string {
-  // config is `unknown`; narrow with a guard (not an assertion) and only accept a string uri.
-  const config = p.config;
-  if (typeof config === "object" && config !== null && "uri" in config) {
-    const uri = (config as { uri?: unknown }).uri;
-    if (typeof uri === "string") return uri;
-  }
-  return "";
-}
-
-function cupsRenderStringField(p: Printer, field: string): string {
-  const config = p.config;
-  if (typeof config !== "object" || config === null || !("render" in config)) return "";
-  const render = (config as Record<string, unknown>).render;
-  if (typeof render !== "object" || render === null || !(field in render)) return "";
-  const val = (render as Record<string, unknown>)[field];
-  if (typeof val === "string") return val;
-  if (typeof val === "number") return String(val);
-  return "";
-}
-
-// Carry forward the non-secret auth config (username/ca_cert/insecure) on edit so saving through the
-// auth-less card does not strip it (a PUT replaces config, and the server only merges the write-only
-// password). Surfacing these fields for editing is #118.
-function cupsAuthConfig(p: Printer): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  const config = p.config;
-  if (typeof config === "object" && config !== null) {
-    const c = config as Record<string, unknown>;
-    if (typeof c.username === "string") out.username = c.username;
-    if (typeof c.ca_cert === "string") out.ca_cert = c.ca_cert;
-    if (c.insecure === true) out.insecure = true;
-  }
-  return out;
-}
+type ColorModeChoice = "auto" | NonNullable<RenderProfile["color_mode"]>;
 
 function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: () => void }) {
   const isNew = initial === null;
   const [id, setId] = useState(initial?.id ?? "");
   const [name, setName] = useState(initial?.name ?? "");
-  const [uri, setUri] = useState(initial ? cupsUri(initial) : "");
-  // "auto" means: omit from config so the printer's reported value is negotiated at print time.
-  const [colorMode, setColorMode] = useState(initial ? cupsRenderStringField(initial, "color_mode") || "auto" : "auto");
-  const [resolution, setResolution] = useState(initial ? cupsRenderStringField(initial, "resolution") : "");
+  const [uri, setUri] = useState(initial?.uri ?? "");
+  // "auto" means: omit from render so the printer's reported value is negotiated at print time.
+  const [colorMode, setColorMode] = useState<ColorModeChoice>(initial?.render?.color_mode ?? "auto");
+  const [resolution, setResolution] = useState(initial?.render?.resolution?.toString() ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [probeRes, setProbeRes] = useState<ProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,16 +34,15 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
   const probe = useProbePrinter();
   const { push } = useToast();
 
-  // Auth config is not editable here (#118) but is preserved verbatim across an edit.
-  const carriedAuth = useMemo(() => (initial ? cupsAuthConfig(initial) : {}), [initial]);
+  // The form has no fields for these, and a PUT replaces the record, so an edit sends the stored
+  // values back. Undefined keys drop out of the JSON body, which is how an unset field is omitted.
+  const carried = { username: initial?.username, ca_cert: initial?.ca_cert, insecure: initial?.insecure };
 
-  const buildConfig = (): Record<string, unknown> => {
-    const config: Record<string, unknown> = { uri: uri.trim(), ...carriedAuth };
-    const render: Record<string, unknown> = {};
+  const buildRender = (): RenderProfile | undefined => {
+    const render: RenderProfile = {};
     if (colorMode !== "auto") render.color_mode = colorMode;
     if (resolution.trim() !== "") render.resolution = Number(resolution.trim());
-    if (Object.keys(render).length > 0) config.render = render;
-    return config;
+    return Object.keys(render).length > 0 ? render : undefined;
   };
 
   const onTest = () => {
@@ -84,7 +51,7 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
       return;
     }
     probe.mutate(
-      { uri: uri.trim(), ...carriedAuth },
+      { uri: uri.trim(), ...carried },
       {
         onSuccess: (r) => setProbeRes(r),
         onError: (err) =>
@@ -108,9 +75,8 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
       return;
     }
     setError(null);
-    const printer: Printer = { id, name: name.trim(), kind: "cups", config: buildConfig() };
     save.mutate(
-      { printer, isNew },
+      { id, printer: { name: name.trim(), uri: uri.trim(), ...carried, render: buildRender() }, isNew },
       {
         onSuccess: () => {
           push({ kind: "ok", message: `Saved ${id}` });
@@ -201,7 +167,7 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
           <div className="mt-2 flex flex-wrap gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs" style={{ color: "var(--muted)" }}>color mode</span>
-              <select aria-label="color mode" value={colorMode} onChange={(e) => setColorMode(e.target.value)} className={inputClass} style={inputStyle}>
+              <select aria-label="color mode" value={colorMode} onChange={(e) => setColorMode(e.target.value as ColorModeChoice)} className={inputClass} style={inputStyle}>
                 <option value="auto">auto (use printer)</option>
                 <option value="color">color</option>
                 <option value="bilevel">bilevel</option>
@@ -230,11 +196,13 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
 
 function PrinterRow({
   printer,
+  isDefault,
   onEdit,
   onDeleted,
   onSetDefault,
 }: {
   printer: Printer;
+  isDefault: boolean;
   onEdit: () => void;
   onDeleted: (id: string) => void;
   onSetDefault: (id: string) => void;
@@ -246,14 +214,13 @@ function PrinterRow({
   return (
     <tr style={{ borderTop: "1px solid var(--border)" }}>
       <td className={td}>{printer.name}</td>
-      <td className={`${td} font-mono`}>{printer.kind}</td>
-      <td className={`${td} font-mono`}>{cupsUri(printer)}</td>
+      <td className={`${td} font-mono`}>{printer.uri}</td>
       <td className={td}>
         <input
           type="radio"
           name="default-printer"
           aria-label={`default ${printer.name}`}
-          checked={printer.is_default ?? false}
+          checked={isDefault}
           onChange={() => onSetDefault(printer.id)}
         />
       </td>
@@ -290,9 +257,11 @@ function PrinterRow({
 export function PrintersSection() {
   const { data: printers, isPending, isError } = usePrinters();
   const [editing, setEditing] = useState<Printer | "new" | null>(null);
-  const setDefault = useSetDefaultPrinter();
-  const clearDefault = useClearDefaultPrinter();
-  const currentDefaultId = (printers ?? []).find((p) => p.is_default)?.id;
+  const { data: settings } = useSettings();
+  const setDefault = useUpdateSetting();
+  const clearDefault = useResetSetting();
+  const storedDefault = settings?.[DEFAULT_PRINTER_KEY]?.value;
+  const currentDefaultId = typeof storedDefault === "string" ? storedDefault : null;
   const th = "px-3 py-2 text-left text-xs font-medium";
   const td = "px-3 py-2 text-sm";
   // If the printer currently being edited is deleted, close the now-stale form (a Save would 404).
@@ -334,7 +303,6 @@ export function PrintersSection() {
           <thead>
             <tr>
               <th className={th} style={{ color: "var(--muted)" }}>Name</th>
-              <th className={th} style={{ color: "var(--muted)" }}>Kind</th>
               <th className={th} style={{ color: "var(--muted)" }}>URI</th>
               <th className={th} style={{ color: "var(--muted)" }}>Default</th>
               <th className={th} style={{ color: "var(--muted)" }}></th>
@@ -345,20 +313,21 @@ export function PrintersSection() {
               <PrinterRow
                 key={p.id}
                 printer={p}
+                isDefault={p.id === currentDefaultId}
                 onEdit={() => setEditing(p)}
                 onDeleted={onDeleted}
-                onSetDefault={(id) => setDefault.mutate(id)}
+                onSetDefault={(id) => setDefault.mutate({ key: DEFAULT_PRINTER_KEY, value: id })}
               />
             ))}
             <tr style={{ borderTop: "1px solid var(--border)" }}>
-              <td className={td} colSpan={3} style={{ color: "var(--muted)" }}>No default printer</td>
+              <td className={td} colSpan={2} style={{ color: "var(--muted)" }}>No default printer</td>
               <td className={td}>
                 <input
                   type="radio"
                   name="default-printer"
                   aria-label="no default printer"
-                  checked={!currentDefaultId}
-                  onChange={() => currentDefaultId && clearDefault.mutate(currentDefaultId)}
+                  checked={currentDefaultId === null}
+                  onChange={() => clearDefault.mutate(DEFAULT_PRINTER_KEY)}
                 />
               </td>
               <td className={td}></td>
