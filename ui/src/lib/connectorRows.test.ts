@@ -4,9 +4,9 @@ import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, validateMapp
 describe("connectorRows", () => {
   it("defaultMapping matches template fields to identically-named connector keys", () => {
     const inputs = [
-      { name: "name", control: "text" as const },
-      { name: "sku", control: "text" as const },
-      { name: "qty", control: "text" as const },
+      { name: "name", type: "string" as const, control: "text" as const },
+      { name: "sku", type: "string" as const, control: "text" as const },
+      { name: "qty", type: "string" as const, control: "text" as const },
     ];
     const columns = [
       { key: "name", label: "Name", ty: "text" as const, tier: "cheap" as const, multi_valued: false },
@@ -18,8 +18,8 @@ describe("connectorRows", () => {
   });
 
   it("defaultMapping considers cardinality: leaves string parameter unmapped for multi-valued column, pre-fills list parameter", () => {
-    const scalarInput = { name: "tags", control: "text" as const };
-    const listInput = { name: "tags", control: "list" as const };
+    const scalarInput = { name: "tags", type: "string" as const, control: "text" as const };
+    const listInput = { name: "tags", type: "list" as const, control: "list" as const };
     const multiCol = { key: "tags", label: "Tags", ty: "text" as const, tier: "cheap" as const, multi_valued: true };
 
     const mScalar = defaultMapping([scalarInput], [multiCol]);
@@ -31,9 +31,9 @@ describe("connectorRows", () => {
 
   it("validateMapping reports mismatch in both directions naming column and parameter, and nothing for valid mapping", () => {
     const inputs = [
-      { name: "scalarParam", control: "text" as const },
-      { name: "listParam", control: "list" as const },
-      { name: "unmappedParam", control: "list" as const },
+      { name: "scalarParam", type: "string" as const, control: "text" as const },
+      { name: "listParam", type: "list" as const, control: "list" as const },
+      { name: "unmappedParam", type: "list" as const, control: "list" as const },
     ];
     const columns = [
       { key: "multiCol", label: "Multi", ty: "text" as const, tier: "cheap" as const, multi_valued: true },

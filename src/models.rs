@@ -62,31 +62,6 @@ pub struct TemplateSummary {
     pub format: TemplateFormat,
 }
 
-#[derive(Serialize, Deserialize, ToSchema, Clone, Debug, PartialEq)]
-pub struct TemplateInputs {
-    pub default: Vec<InputSpec>,
-    pub all: Vec<InputSpec>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
-pub struct ParamDefaultError {
-    pub reason: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
-#[serde(untagged)]
-pub enum ParamDefaultReport {
-    Resolved { resolved: ParamValue },
-    Error { error: ParamDefaultError },
-}
-
-pub type ResolvedDefaults = BTreeMap<String, ParamDefaultReport>;
-
 #[derive(Serialize, ToSchema, Clone)]
 pub struct TemplateDetail {
     pub id: String,
@@ -97,14 +72,13 @@ pub struct TemplateDetail {
     pub dpi: u32,
     pub format: TemplateFormat,
     pub params: Vec<ParamEntry>,
-    pub inputs: TemplateInputs,
     pub variables: Vec<String>,
-    pub param_defaults: BTreeMap<String, ParamDefaultReport>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+/// The input control a client shows for a parameter (`parameters` spec, type table).
+#[derive(Debug, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum InputControl {
+pub enum ParamControl {
     Text,
     Textarea,
     Integer,
@@ -115,40 +89,6 @@ pub enum InputControl {
     Datetime,
     Image,
     List,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
-pub struct InputSpec {
-    pub name: String,
-    pub control: InputControl,
-    pub slider: bool,
-    pub required: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<ParamValue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_error: Option<ParamDefaultError>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub values: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unit: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub interpolated: bool,
-    pub truncated_elsewhere: bool,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct TemplateInputsRequest {
-    pub labels: Vec<LabelInput>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TemplateInputsResponse {
-    pub inputs: Vec<Vec<InputSpec>>,
 }
 
 /// For an optional key that may be omitted but not written as `null`: with `#[serde(default)]`,
@@ -201,29 +141,56 @@ impl ParamType {
 #[serde(untagged)]
 pub enum ParamValue {
     Integer(i64),
-    Float(f32),
+    Float(f64),
     Boolean(bool),
     List(Vec<String>),
     String(String),
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+impl From<&ParamValue> for Value {
+    fn from(value: &ParamValue) -> Self {
+        match value {
+            ParamValue::Integer(i) => Value::from(*i),
+            ParamValue::Float(f) => Value::from(*f),
+            ParamValue::Boolean(b) => Value::from(*b),
+            ParamValue::List(items) => Value::from(items.clone()),
+            ParamValue::String(s) => Value::from(s.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
 pub struct ParamSpec {
     #[serde(flatten)]
     pub param_type: ParamType,
+    /// A literal default holds its coerced value; a tokened default holds its declared text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<ParamValue>,
+    /// The instant of a literal `datetime` default, whose `default` holds its `%Y-%m-%d` form.
+    #[serde(skip)]
+    pub default_instant: Option<chrono::DateTime<chrono::Local>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min: Option<f32>,
+    pub min: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<f32>,
+    pub max: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+impl ParamSpec {
+    /// The declared text of a tokened default: a string default containing a brace.
+    pub fn tokened_default(&self) -> Option<&str> {
+        match &self.default {
+            Some(ParamValue::String(s)) if s.contains('{') || s.contains('}') => Some(s),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
 pub struct ParamEntry {
     pub name: String,
+    pub control: ParamControl,
     #[serde(flatten)]
     pub spec: ParamSpec,
 }

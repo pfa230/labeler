@@ -81,7 +81,7 @@ A `sheet` batch SHALL fill the sheet's `positions` in declared order with labels
 
 ### Requirement: All-or-nothing validation
 
-`/render` and `/print` SHALL judge every label before executing anything: its `data` keys name declared parameters, its parameters resolve (both `parameters`), and it measures and renders. If any label fails, the request SHALL return `422 BatchInvalid` whose `details.failures` (shape: `errors`) holds one entry per failing label, and SHALL produce no file, page or print job. Request-level refusals (unknown template or printer, label cap, empty batch, `format`, `start_slot`) SHALL keep their own status and are decided before any label (`errors`).
+`/render` and `/print` SHALL judge every label before executing anything: its `data` keys name declared parameters, its parameters resolve (both `parameters`), and it measures and renders. If any label fails, the request SHALL return `422 BatchInvalid` whose `details.failures` (shape: `errors`) holds one entry per failing label, and SHALL produce no file, page or print job. Request-level refusals (unknown template or printer, label cap, empty batch, `format`, `start_slot`, a template whose snapshot does not resolve: `interpolation`) SHALL keep their own status and are decided before any label (`errors`).
 
 #### Scenario: Two labels failing different ways
 

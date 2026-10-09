@@ -556,28 +556,41 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
     }
 }
 
-fn convert_raw_default(
+/// Store a declared default on `spec`. A tokened default (a string containing a brace) keeps its
+/// text, for `resolve_environment` to resolve per request. A literal default is judged now by the
+/// supplied-value rule of the parameter's type, bounds included, and stored coerced; one the rule
+/// refuses, or reads as an omission, is refused at `default`.
+fn set_default(
+    spec: &mut ParamSpec,
     default_raw: Option<serde_yaml_ng::Value>,
-    is_integer: bool,
-) -> Option<ParamValue> {
-    match default_raw {
-        None => None,
-        Some(serde_yaml_ng::Value::Bool(b)) => Some(ParamValue::Boolean(b)),
-        Some(serde_yaml_ng::Value::Number(n)) => {
-            if let Some(i) = n.as_i64() {
-                if is_integer {
-                    Some(ParamValue::Integer(i))
-                } else {
-                    Some(ParamValue::Float(i as f32))
-                }
-            } else if let Some(f) = n.as_f64() {
-                Some(ParamValue::Float(f as f32))
-            } else {
-                Some(ParamValue::String(n.to_string()))
-            }
+) -> Result<(), TemplateError> {
+    let Some(raw) = default_raw else {
+        return Ok(());
+    };
+    if let serde_yaml_ng::Value::String(text) = &raw {
+        if text.contains('{') || text.contains('}') {
+            spec.default = Some(ParamValue::String(text.clone()));
+            return Ok(());
         }
-        Some(serde_yaml_ng::Value::String(s)) => Some(ParamValue::String(s)),
-        Some(other) => Some(ParamValue::String(format!("{other:?}"))),
+    }
+    let refused = |msg: String| TemplateError::Validation {
+        path: "default".to_string(),
+        msg,
+    };
+    let value = serde_json::to_value(&raw)
+        .map_err(|err| refused(format!("default cannot be read as a value: {err}")))?;
+    match crate::render::coerce_param_value(&value, spec) {
+        Ok(Some(coerced)) => {
+            spec.default = Some(coerced.value);
+            spec.default_instant = coerced.instant;
+            Ok(())
+        }
+        // Only a blank string or a non-finite number reads as an omission here: YAML `null` is
+        // refused before this.
+        Ok(None) => Err(refused(
+            "default must be a value of the parameter's type, not blank or non-finite".to_string(),
+        )),
+        Err(refusal) => Err(refused(format!("default {}", refusal.message))),
     }
 }
 
@@ -592,11 +605,13 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             });
         }
 
-        // Collapse an explicit YAML null default: to None for every type before any type-specific check runs.
-        let default_raw = match raw.default {
-            Some(serde_yaml_ng::Value::Null) | None => None,
-            Some(val) => Some(val),
-        };
+        if let Some(serde_yaml_ng::Value::Null) = raw.default {
+            return Err(TemplateError::Validation {
+                path: "default".to_string(),
+                msg: "default cannot be null".to_string(),
+            });
+        }
+        let default_raw = raw.default;
 
         if raw.param_type != crate::raw::RawParamType::List {
             if let Some(serde_yaml_ng::Value::Sequence(_)) = default_raw {
@@ -644,15 +659,16 @@ impl TryFrom<RawParamSpec> for ParamSpec {
                 }
             };
 
-            let default = convert_raw_default(default_raw, false);
-
-            return Ok(ParamSpec {
+            let mut spec = ParamSpec {
                 param_type: ParamType::Datetime { time },
-                default,
+                default: None,
+                default_instant: None,
                 min: None,
                 max: None,
                 description: raw.description,
-            });
+            };
+            set_default(&mut spec, default_raw)?;
+            return Ok(spec);
         }
 
         if raw.param_type == crate::raw::RawParamType::List {
@@ -718,6 +734,7 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             return Ok(ParamSpec {
                 param_type: ParamType::List,
                 default,
+                default_instant: None,
                 min: None,
                 max: None,
                 description: raw.description,
@@ -749,15 +766,29 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             crate::raw::RawParamType::Datetime | crate::raw::RawParamType::List => unreachable!(),
         };
 
-        let default = convert_raw_default(default_raw, matches!(param_type, ParamType::Integer));
+        if let ParamType::Enum { values } = &param_type {
+            let refused = |msg: &str| TemplateError::Validation {
+                path: "values".to_string(),
+                msg: msg.to_string(),
+            };
+            if values.is_empty() {
+                return Err(refused("enum values must not be empty"));
+            }
+            if values.iter().any(|value| value.trim().is_empty()) {
+                return Err(refused("enum values must not contain an empty value"));
+            }
+        }
 
-        Ok(ParamSpec {
+        let mut spec = ParamSpec {
             param_type,
-            default,
+            default: None,
+            default_instant: None,
             min,
             max,
             description: raw.description,
-        })
+        };
+        set_default(&mut spec, default_raw)?;
+        Ok(spec)
     }
 }
 
@@ -1046,7 +1077,7 @@ mod tests {
     #[test]
     fn datetime_param_rejects_forbidden_attributes() {
         assert!(try_build_param("type: datetime\ndefault: \"2026-08-19\"\n").is_ok());
-        assert!(try_build_param("type: datetime\ndefault:\n").is_ok());
+        assert!(try_build_param("type: datetime\ndefault:\n").is_err());
         assert!(try_build_param("type: datetime\nformat: short_date\n").is_err());
         assert!(try_build_param("type: datetime\nmin: 0\n").is_err());
         assert!(try_build_param("type: datetime\nmax: 100\n").is_err());
@@ -1144,8 +1175,11 @@ mod tests {
             Some(crate::models::ParamValue::List(vec![]))
         );
 
-        let absent_default = try_build_param("type: list\ndefault:\n").unwrap();
-        assert_eq!(absent_default.default, None);
+        let null_default = try_build_param("type: list\ndefault:\n").unwrap_err();
+        assert!(
+            null_default.contains("default cannot be null"),
+            "{null_default}"
+        );
 
         let absent_key = try_build_param("type: list\n").unwrap();
         assert_eq!(absent_key.default, None);

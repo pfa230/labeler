@@ -12,16 +12,10 @@ const detail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  inputs: {
-    all: [
-      { name: "sku", control: "text" },
-      { name: "color", control: "select", values: ["red", "blue"] },
-    ],
-    default: [
-      { name: "sku", control: "text" },
-      { name: "color", control: "select", values: ["red", "blue"] },
-    ],
-  },
+  params: [
+    { name: "sku", type: "string", control: "text" },
+    { name: "color", type: "enum", control: "select", values: ["red", "blue"] },
+  ],
 };
 const list = { templates: [{ id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format }] };
 const printers = [{ id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false }];
@@ -37,16 +31,6 @@ function stubFetch(
 ) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("/inputs")) {
-      const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
-      const labels = parsedBody.labels ?? [{ data: {} }];
-      return json({
-        inputs: labels.map(() => [
-          { name: "sku", control: "text" },
-          { name: "color", control: "select", values: ["red", "blue"] },
-        ]),
-      });
-    }
     if (url.startsWith("/api/templates/t1")) return json(detail);
     if (url.startsWith("/api/templates")) return json(list);
     if (url.startsWith("/api/printers")) return json(printers);
@@ -308,7 +292,7 @@ describe("CSV Import screen", () => {
     expect(body.labels[0]).toEqual({ data: { sku: "9", color: "blue" } });
   });
 
-  it("defaults a per-row select input when initialized from template defaults", async () => {
+  it("omits a select column the CSV does not carry", async () => {
     renderPage();
     const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
     await screen.findByRole("option", { name: "Tag" });
@@ -324,34 +308,18 @@ describe("CSV Import screen", () => {
     expect(body.labels[0]).toEqual({ data: { sku: "1" } });
   });
 
-  it("renders an input as a column in the grid", async () => {
+  it("renders a parameter as a column in the grid", async () => {
     const detail2 = {
       ...detail,
       id: "t2",
       name: "Tag2",
-      inputs: {
-        all: [
-          { name: "sku", control: "text" as const },
-          { name: "finish", control: "select" as const, values: ["matte"] },
-        ],
-        default: [
-          { name: "sku", control: "text" as const },
-          { name: "finish", control: "select" as const, values: ["matte"] },
-        ],
-      },
+      params: [
+        { name: "sku", type: "string" as const, control: "text" as const },
+        { name: "finish", type: "enum" as const, control: "select" as const, values: ["matte"] },
+      ],
     };
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map(() => [
-            { name: "sku", control: "text" },
-            { name: "finish", control: "select", values: ["matte"] },
-          ]),
-        });
-      }
       if (url.startsWith("/api/templates/t2")) return json(detail2);
       if (url.startsWith("/api/templates")) return json({ templates: [{ id: "t2", name: "Tag2", description: "", unit: "mm", dpi: 300, format: detail2.format }] });
       if (url.startsWith("/api/printers")) return json(printers);
@@ -421,30 +389,14 @@ describe("CSV Import screen", () => {
       ...detail,
       id: "t3",
       name: "Tag3",
-      inputs: {
-        all: [
-          { name: "sku", control: "text" as const },
-          { name: "message", control: "textarea" as const },
-        ],
-        default: [
-          { name: "sku", control: "text" as const },
-          { name: "message", control: "textarea" as const },
-        ],
-      },
+      params: [
+        { name: "sku", type: "string" as const, control: "text" as const },
+        { name: "message", type: "string" as const, control: "textarea" as const },
+      ],
     };
 
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map(() => [
-            { name: "sku", control: "text" },
-            { name: "message", control: "textarea" },
-          ]),
-        });
-      }
       if (url.startsWith("/api/templates/t3")) return json(multilineDetail);
       if (url.startsWith("/api/templates")) return json({ templates: [{ id: "t3", name: "Tag3", description: "", unit: "mm", dpi: 300, format: detail.format }] });
       if (url.startsWith("/api/printers")) return json(printers);
@@ -496,47 +448,24 @@ describe("CSV Import screen", () => {
 // that cannot be parsed must stop the run before it is submitted.
 describe("CSV Import screen: datetime parameters", () => {
   let dtControl: "datetime" | "date" = "datetime";
-  let dtRequired = false;
   const dtDetail = {
     ...detail,
-    inputs: {
-      all: [
-        { name: "sku", control: "text" as const },
-        { name: "printed_on", control: "datetime" as const, description: "Print date" },
-      ],
-      default: [
-        { name: "sku", control: "text" as const },
-        { name: "printed_on", control: "datetime" as const, description: "Print date" },
-      ],
-    },
+    params: [
+      { name: "sku", type: "string" as const, control: "text" as const },
+      { name: "printed_on", type: "datetime" as const, control: "datetime" as const, description: "Print date" },
+    ],
   };
   const dtList = { templates: [{ ...list.templates[0], format: dtDetail.format }] };
 
   function stubDatetimeFetch() {
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map(() => [
-            { name: "sku", control: "text" },
-            { name: "printed_on", control: dtControl, required: dtRequired, description: "Print date" },
-          ]),
-        });
-      }
       const tDetail = {
         ...dtDetail,
-        inputs: {
-          all: [
-            { name: "sku", control: "text" as const },
-            { name: "printed_on", control: dtControl, required: dtRequired, description: "Print date" },
-          ],
-          default: [
-            { name: "sku", control: "text" as const },
-            { name: "printed_on", control: dtControl, required: dtRequired, description: "Print date" },
-          ],
-        },
+        params: [
+          { name: "sku", type: "string" as const, control: "text" as const },
+          { name: "printed_on", type: "datetime" as const, control: dtControl, description: "Print date" },
+        ],
       };
       if (url.startsWith("/api/templates/t1")) return json(tDetail);
       if (url.startsWith("/api/templates")) return json(dtList);
@@ -555,7 +484,6 @@ describe("CSV Import screen: datetime parameters", () => {
 
   beforeEach(() => {
     dtControl = "datetime";
-    dtRequired = false;
     vi.unstubAllGlobals();
     fetchMock = stubDatetimeFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -613,17 +541,6 @@ describe("CSV Import screen: datetime parameters", () => {
     );
   });
 
-  it("flags a blank datetime cell when required and blocks the run", async () => {
-    dtRequired = true;
-    renderPage();
-    await loadCsv("");
-
-    const download = await screen.findByRole("button", { name: /download/i });
-    await waitFor(() => expect(download).toBeDisabled());
-  });
-
-  // A `datetime` parameter declaring `time: false` is reported as the `date` control, which the
-  // grid must validate exactly as it validates `datetime`.
   it("flags an unparseable cell on a date control and blocks the run", async () => {
     dtControl = "date";
     renderPage();
@@ -635,85 +552,17 @@ describe("CSV Import screen: datetime parameters", () => {
     expect(countCalls("/api/batch")).toBe(0);
   });
 
-  it("surfaces default_error.message for an empty cell whose input carries a broken default", async () => {
-    // Override stub to return an input with default_error
-    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        return json({
-          inputs: [
-            [
-              {
-                name: "sku",
-                control: "text",
-                required: true,
-                default_error: {
-                  reason: "param_default_unresolvable",
-                  message: "vars.missing not found",
-                  token: "vars.missing",
-                },
-              },
-            ],
-          ],
-        });
-      }
-      if (url.startsWith("/api/templates/t1")) {
-        return json({
-          ...detail,
-          inputs: {
-            all: [{ name: "sku", control: "text", required: true, default_error: { reason: "param_default_unresolvable", message: "vars.missing not found", token: "vars.missing" } }],
-            default: [{ name: "sku", control: "text", required: true, default_error: { reason: "param_default_unresolvable", message: "vars.missing not found", token: "vars.missing" } }],
-          },
-        });
-      }
-      if (url.startsWith("/api/templates")) return json(list);
-      if (url.startsWith("/api/printers")) return json(printers);
-      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderPage();
-    // Load a CSV where sku is empty, so the required + default_error path is exercised
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "sku,other\n,foo\n" } });
-    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByLabelText(/copies/i);
-    // The grid validation should contain the default_error message, not generic "required"
-    expect(await screen.findByText(/vars\.missing/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /download/i })).toBeDisabled();
-  });
-
-  it("skips list inputs when building grid columns and does not break import", async () => {
+  it("skips list parameters when building grid columns and does not break import", async () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        return json({
-          inputs: [
-            [
-              { name: "sku", control: "text" },
-              { name: "tags", control: "list", required: true },
-            ],
-          ],
-        });
-      }
       if (url.startsWith("/api/templates/t1")) {
         return json({
           ...detail,
-          inputs: {
-            all: [
-              { name: "sku", control: "text" },
-              { name: "tags", control: "list", required: true },
-            ],
-            default: [
-              { name: "sku", control: "text" },
-              { name: "tags", control: "list", required: true },
-            ],
-          },
+          params: [
+            { name: "sku", type: "string", control: "text" },
+            { name: "tags", type: "list", control: "list" },
+          ],
         });
       }
       if (url.startsWith("/api/templates")) return json(list);
@@ -753,345 +602,6 @@ describe("CSV Import screen: datetime parameters", () => {
     expect(body.labels[0].data.sku).toBe("123");
     expect(body.labels[0].data.tags).toBeUndefined();
   });
-
-  it("does not require a value for a required list input when the CSV has no column for it", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        return json({
-          inputs: [
-            [
-              { name: "sku", control: "text" },
-              { name: "tags", control: "list", required: true },
-            ],
-          ],
-        });
-      }
-      if (url.startsWith("/api/templates/t1")) {
-        return json({
-          ...detail,
-          inputs: {
-            all: [
-              { name: "sku", control: "text" },
-              { name: "tags", control: "list", required: true },
-            ],
-            default: [
-              { name: "sku", control: "text" },
-              { name: "tags", control: "list", required: true },
-            ],
-          },
-        });
-      }
-      if (url.startsWith("/api/templates")) return json(list);
-      if (url.startsWith("/api/printers")) return json(printers);
-      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) {
-        return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-      }
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderPage();
-
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    // CSV has no column for the required list — validateRow must skip it (Import.tsx:142)
-    fireEvent.change(csv, { target: { value: "sku\n123\n" } });
-    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByLabelText(/copies/i);
-
-    expect(await screen.findByDisplayValue("123")).toBeInTheDocument();
-    const download = await screen.findByRole("button", { name: /download/i });
-    // If the `if (input.control === "list") continue` guard regresses, every row is flagged
-    // as missing `tags` and Download is disabled — ordinary import is blocked.
-    expect(download).toBeEnabled();
-    fireEvent.click(download);
-    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/batch"))).toBe(true));
-    const batchCall = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/batch"))!;
-    const body = JSON.parse((batchCall[1] as RequestInit).body as string);
-    expect(body.labels[0].data.sku).toBe("123");
-    expect(body.labels[0].data.tags).toBeUndefined();
-  });
-});
-
-describe("issue-385: CSV import grid shows fields of every variant", () => {
-  it("parameter read only inside one branch is offered for every row and editable there without refusal (3.7)", async () => {
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as { labels?: Array<{ data?: Record<string, unknown> }> }) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map((l) => {
-            if (l.data?.orientation === "horizontal") {
-              return [
-                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
-                { name: "subtitle", control: "text" },
-              ];
-            }
-            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"] }];
-          }),
-        });
-      }
-      if (url.startsWith("/api/templates/t1")) {
-        return json({
-          ...detail,
-          inputs: {
-            all: [
-              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
-              { name: "subtitle", control: "text" },
-            ],
-            default: [
-              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
-            ],
-          },
-        });
-      }
-      if (url.startsWith("/api/templates")) return json(list);
-      if (url.startsWith("/api/printers")) return json(printers);
-      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderPage();
-
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "orientation\nvertical\n" } });
-    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByLabelText(/copies/i);
-
-    expect(await screen.findByRole("columnheader", { name: "subtitle" })).toBeInTheDocument();
-    const dataRows = screen.getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
-    const cells = within(dataRows[0]).getAllByRole("gridcell");
-    // columns: preview(0), orientation(1), subtitle(2), status(3), actions(4)
-    fireEvent.doubleClick(cells[2]);
-    const subtitleInput = await screen.findByLabelText("edit subtitle");
-    expect(subtitleInput).toBeInTheDocument();
-    fireEvent.blur(subtitleInput);
-
-    expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
-  });
-
-  it("keeps CSV header order and appends the rest in inputs.all order (3.8)", async () => {
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map(() => [
-            { name: "title", control: "text" },
-            { name: "subtitle", control: "text" },
-          ]),
-        });
-      }
-      if (url.startsWith("/api/templates/t1")) {
-        return json({
-          ...detail,
-          inputs: {
-            all: [
-              { name: "title", control: "text" },
-              { name: "subtitle", control: "text" },
-              { name: "code", control: "text" },
-            ],
-            default: [
-              { name: "title", control: "text" },
-              { name: "subtitle", control: "text" },
-            ],
-          },
-        });
-      }
-      if (url.startsWith("/api/templates")) return json(list);
-      if (url.startsWith("/api/printers")) return json(printers);
-      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderPage();
-
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "subtitle,title\nsub,tit\n" } });
-    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByLabelText(/copies/i);
-
-    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
-    const fieldHeaders = headers.filter((h) => ["title", "subtitle", "code"].includes(h ?? ""));
-    expect(fieldHeaders).toEqual(["subtitle", "title", "code"]);
-  });
-
-  it("yields columns and validation in title, subtitle, code order with code appended (3.9)", async () => {
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map(() => [
-            { name: "title", control: "text", required: true },
-            { name: "subtitle", control: "text", required: true },
-            { name: "code", control: "text", required: true },
-          ]),
-        });
-      }
-      if (url.startsWith("/api/templates/t1")) {
-        return json({
-          ...detail,
-          inputs: {
-            all: [
-              { name: "title", control: "text", required: true },
-              { name: "subtitle", control: "text", required: true },
-              { name: "code", control: "text", required: true },
-            ],
-            default: [
-              { name: "title", control: "text", required: true },
-              { name: "subtitle", control: "text", required: true },
-              { name: "code", control: "text", required: true },
-            ],
-          },
-        });
-      }
-      if (url.startsWith("/api/templates")) return json(list);
-      if (url.startsWith("/api/printers")) return json(printers);
-      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderPage();
-
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "title,subtitle\nt,s\n" } });
-    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByLabelText(/copies/i);
-
-    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
-    const fieldHeaders = headers.filter((h) => ["title", "subtitle", "code"].includes(h ?? ""));
-    expect(fieldHeaders).toEqual(["title", "subtitle", "code"]);
-
-    const grid = await screen.findByRole("grid", { name: /label rows/i });
-    const getRowCells = () => {
-      const rows = within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
-      return within(rows[0]).getAllByRole("gridcell");
-    };
-
-    // Clear title and subtitle so all three require values
-    fireEvent.doubleClick(getRowCells()[1]);
-    const titleInput = await screen.findByLabelText("edit title");
-    fireEvent.change(titleInput, { target: { value: "" } });
-    fireEvent.blur(titleInput);
-
-    fireEvent.doubleClick(getRowCells()[2]);
-    const subtitleInput = await screen.findByLabelText("edit subtitle");
-    fireEvent.change(subtitleInput, { target: { value: "" } });
-    fireEvent.blur(subtitleInput);
-
-    // columns: preview(0), title(1), subtitle(2), code(3), status(4), actions(5)
-    await waitFor(() => {
-      expect(within(getRowCells()[1]).getByLabelText(/title required/i)).toBeInTheDocument();
-      expect(within(getRowCells()[2]).getByLabelText(/subtitle required/i)).toBeInTheDocument();
-      expect(within(getRowCells()[3]).getByLabelText(/code required/i)).toBeInTheDocument();
-    });
-  });
-
-  it("two rows selecting different branches require different inputs and both columns are editable (3.10)", async () => {
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/inputs")) {
-        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as { labels?: Array<{ data?: Record<string, unknown> }> }) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map((l) => {
-            if (l.data?.orientation === "horizontal") {
-              return [
-                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
-                { name: "subtitle", control: "text", required: true },
-              ];
-            }
-            if (l.data?.orientation === "vertical") {
-              return [
-                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
-                { name: "tracking_url", control: "text", required: true },
-              ];
-            }
-            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"] }];
-          }),
-        });
-      }
-      if (url.startsWith("/api/templates/t1")) {
-        return json({
-          ...detail,
-          inputs: {
-            all: [
-              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
-              { name: "subtitle", control: "text", required: true },
-              { name: "tracking_url", control: "text", required: true },
-            ],
-            default: [
-              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
-            ],
-          },
-        });
-      }
-      if (url.startsWith("/api/templates")) return json(list);
-      if (url.startsWith("/api/printers")) return json(printers);
-      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderPage();
-
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "orientation,subtitle,tracking_url\nhorizontal,,\nvertical,,\n" } });
-    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByLabelText(/copies/i);
-
-    expect(screen.getByRole("columnheader", { name: "subtitle" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "tracking_url" })).toBeInTheDocument();
-
-    const dataRows = screen.getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
-    expect(dataRows).toHaveLength(2);
-
-    // Row 1 (horizontal): invalid only for missing subtitle
-    await waitFor(() => {
-      expect(within(dataRows[0]).getByLabelText(/subtitle required/i)).toBeInTheDocument();
-      expect(within(dataRows[0]).queryByLabelText(/tracking_url required/i)).toBeNull();
-    });
-
-    // Row 1: tracking_url is editable
-    const row1Cells = within(dataRows[0]).getAllByRole("gridcell");
-    // columns: preview(0), orientation(1), subtitle(2), tracking_url(3), status(4), actions(5)
-    const trackingInput1 = within(row1Cells[3]).getByLabelText("edit tracking_url");
-    expect(trackingInput1).toBeInTheDocument();
-
-    // Row 2 (vertical): invalid only for missing tracking_url
-    await waitFor(() => {
-      expect(within(dataRows[1]).getByLabelText(/tracking_url required/i)).toBeInTheDocument();
-      expect(within(dataRows[1]).queryByLabelText(/subtitle required/i)).toBeNull();
-    });
-
-    // Row 2: subtitle is editable
-    const row2Cells = within(dataRows[1]).getAllByRole("gridcell");
-    const subtitleInput2 = within(row2Cells[2]).getByLabelText("edit subtitle");
-    expect(subtitleInput2).toBeInTheDocument();
-  });
 });
 
 describe("issue-386: sheet preview", () => {
@@ -1107,10 +617,7 @@ describe("issue-386: sheet preview", () => {
       height: 297,
       positions: Array.from({ length: 30 }, () => ({ x: 0, y: 0 })),
     },
-    inputs: {
-      all: [{ name: "sku", control: "text", required: true }],
-      default: [{ name: "sku", control: "text", required: true }],
-    },
+    params: [{ name: "sku", type: "string", control: "text" }],
   };
 
   const importTemplates = [
@@ -1129,7 +636,6 @@ describe("issue-386: sheet preview", () => {
     batch?: (body: Record<string, unknown>) => Response;
     renderLabel?: () => Response;
     templateDetails?: Record<string, unknown>;
-    inputsResponse?: (body: unknown) => Promise<Response> | Response;
   };
 
   function stubSheetFetch(opts?: StubOpts) {
@@ -1137,16 +643,6 @@ describe("issue-386: sheet preview", () => {
       const url = typeof input === "string" ? input : input.toString();
       const method = (init?.method ?? "GET").toUpperCase();
 
-      if (url.includes("/inputs")) {
-        if (opts?.inputsResponse) return opts.inputsResponse(init?.body ? JSON.parse(String(init.body)) : null);
-        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
-        const labels = parsedBody.labels ?? [{ data: {} }];
-        return json({
-          inputs: labels.map(() => [
-            { name: "sku", control: "text", required: true },
-          ]),
-        });
-      }
 
       if (url === "/api/templates") {
         return json({ templates: importTemplates });
@@ -1300,9 +796,20 @@ describe("issue-386: sheet preview", () => {
     expect(document.activeElement).toBe(picker);
   });
 
-  it("5.3 Sheet template with one row missing a required value: no /api/batch request, no <object>, pane reads Fix row N to preview the sheet.; filling the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
-    let capturedBatchBodies: BatchPayload[] = [];
-    await loadSheetAndCsv("sku\n1\n2\n", {
+  // A row the grid refuses is one holding a datetime it cannot parse; the CSV is the only way to put
+  // such a value into a cell, since the picker itself only produces well-formed ones.
+  const datedSheet = {
+    ...sheetDetail,
+    params: [
+      { name: "sku", type: "string", control: "text" },
+      { name: "printed_on", type: "datetime", control: "datetime", time: true },
+    ],
+  };
+
+  it("5.3 Sheet template with one row holding an unparseable datetime: no /api/batch request, no <object>, pane reads Fix row N to preview the sheet.; fixing the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
+    const capturedBatchBodies: BatchPayload[] = [];
+    await loadSheetAndCsv("sku,printed_on\n1,\n2,not a date\n", {
+      templateDetails: { "sheet-tpl": datedSheet },
       batch: (body) => {
         capturedBatchBodies.push(body);
         return new Response(new Blob(["%PDF"]), {
@@ -1312,13 +819,6 @@ describe("issue-386: sheet preview", () => {
       },
     });
 
-    await waitFor(() => expect(capturedBatchBodies.length).toBeGreaterThan(0));
-    capturedBatchBodies = [];
-
-    const grid = screen.getByRole("grid", { name: /label rows/i });
-    const textboxes = within(grid).getAllByRole("textbox", { name: /edit sku/i });
-    fireEvent.change(textboxes[1], { target: { value: "" } });
-
     await waitFor(() => {
       expect(screen.getByText("Fix row 2 to preview the sheet.")).toBeInTheDocument();
     });
@@ -1326,13 +826,15 @@ describe("issue-386: sheet preview", () => {
     expect(document.querySelector("object")).toBeNull();
     expect(capturedBatchBodies.length).toBe(0);
 
-    fireEvent.change(textboxes[1], { target: { value: "3" } });
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    const pickers = within(grid).getAllByLabelText("edit printed_on");
+    fireEvent.change(pickers[1], { target: { value: "2026-08-19T10:00" } });
     await waitFor(() => {
       expect(capturedBatchBodies.length).toBe(1);
     });
     expect(capturedBatchBodies[0].labels).toEqual([
       { data: { sku: "1" } },
-      { data: { sku: "3" } },
+      { data: { sku: "2", printed_on: "2026-08-19T10:00" } },
     ]);
     await waitFor(() => {
       expect(document.querySelector("object")).not.toBeNull();
@@ -1340,21 +842,9 @@ describe("issue-386: sheet preview", () => {
   });
 
   it("5.4 Sheet template with a 5-row grid whose rows 2 and 5 are invalid: pane reads exactly Fix rows 2, 5 to preview the sheet. and the text does not begin with Preview failed", async () => {
-    await loadSheetAndCsv();
-    const grid = screen.getByRole("grid", { name: /label rows/i });
-    for (let i = 0; i < 3; i++) {
-      const dupButtons = within(grid).getAllByRole("button", { name: /duplicate row/i });
-      fireEvent.click(dupButtons[0]);
-      await waitFor(() => {
-        expect(within(grid).getAllByRole("button", { name: /duplicate row/i }).length).toBe(3 + i);
-      });
-    }
-
-    const textboxes = within(grid).getAllByRole("textbox", { name: /edit sku/i });
-    expect(textboxes.length).toBe(5);
-
-    fireEvent.change(textboxes[1], { target: { value: "" } });
-    fireEvent.change(textboxes[4], { target: { value: "" } });
+    await loadSheetAndCsv("sku,printed_on\n1,\n2,nope\n3,\n4,\n5,2026-02-30\n", {
+      templateDetails: { "sheet-tpl": datedSheet },
+    });
 
     await waitFor(() => {
       expect(screen.getByText("Fix rows 2, 5 to preview the sheet.")).toBeInTheDocument();
@@ -1388,80 +878,14 @@ describe("issue-386: sheet preview", () => {
     expect(capturedBatchBodies.length).toBe(0);
   });
 
-  it("5.6 Pending precedence: hold the inputs endpoint open for one row whose fallback (inputs.default) marks a required entry missing that its resolved inputs do not carry; while held, the pane reads as rendering, names no row and no batch request is sent; resolving the inputs sends one batch request holding every row", async () => {
-    let resolveInputs!: (res: Response) => void;
-    const inputsPromise = new Promise<Response>((resolve) => {
-      resolveInputs = resolve;
-    });
-
-    let batchCalled = false;
-    const tplWithFallbackRequired = {
-      ...sheetDetail,
-      inputs: {
-        all: [
-          { name: "sku", control: "text" },
-          { name: "extra_req", control: "text", required: true },
-        ],
-        default: [
-          { name: "sku", control: "text" },
-          { name: "extra_req", control: "text", required: true },
-        ],
-      },
-    };
-
-    fetchMock = stubSheetFetch({
-      templateDetails: {
-        "sheet-tpl": tplWithFallbackRequired,
-      },
-      inputsResponse: () => inputsPromise,
-      batch: () => {
-        batchCalled = true;
-        return new Response(new Blob(["%PDF"]), {
-          status: 200,
-          headers: { "content-type": "application/pdf" },
-        });
-      },
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage();
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Sheet" });
-    fireEvent.change(picker, { target: { value: "sheet-tpl" } });
-    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "sku\n1\n" } });
-    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByRole("grid", { name: /label rows/i });
-
-    await waitFor(() => {
-      expect(screen.getByText("rendering preview…")).toBeInTheDocument();
-    });
-    await new Promise((r) => setTimeout(r, 400));
-    expect(screen.queryByText(/Fix row/i)).toBeNull();
-    expect(batchCalled).toBe(false);
-
-    resolveInputs(
-      json({
-        inputs: [[{ name: "sku", control: "text" }]],
-      }),
-    );
-
-    await waitFor(() => {
-      expect(batchCalled).toBe(true);
-    });
-  });
-
-  it("5.7 Single template: select row 2, clear a required value in it, and stub /api/render/label to return a non-2xx envelope; row 2 stays the row requested, the pane shows Preview failed: with the service's message, and Download is disabled", async () => {
+  it("5.7 Single template: select row 2, clear its value, and stub /api/render/label to return a non-2xx envelope; row 2 stays the row requested, the pane shows Preview failed: with the service's message, and Download stays enabled", async () => {
     let shouldFailRender = false;
 
     fetchMock = stubSheetFetch({
       templateDetails: {
         t1: {
           ...detail,
-          inputs: {
-            all: [{ name: "sku", control: "text", required: true }],
-            default: [{ name: "sku", control: "text", required: true }],
-          },
+          params: [{ name: "sku", type: "string", control: "text" }],
         },
       },
       renderLabel: () => {
@@ -1498,7 +922,7 @@ describe("issue-386: sheet preview", () => {
 
     const radio2 = screen.getByLabelText("preview row 2") as HTMLInputElement;
     expect(radio2.checked).toBe(true);
-    expect(screen.getByRole("button", { name: /^download$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled();
   });
 
   it("5.8 Sheet template: a settled edit to a cell, then to copies, then to start slot, each sends one batch request carrying the new labels count or start_slot; a re-render with the batch unchanged sends none", async () => {
@@ -1538,5 +962,122 @@ describe("issue-386: sheet preview", () => {
     fireEvent.change(screen.getByLabelText(/^printer$/i), { target: { value: "p1" } });
     await new Promise((r) => setTimeout(r, 400));
     expect(batchCalls.length).toBe(4);
+  });
+});
+
+// #413: every screen works from the template detail's published `params`; the per-label inputs
+// endpoint is gone, and a checkbox always sends its value.
+describe("issue-413: Import reads the published parameter list", () => {
+  const paramsDetail = {
+    id: "t1",
+    name: "Tag",
+    description: "",
+    categories: [],
+    unit: "mm",
+    dpi: 300,
+    format: { type: "single", width: 80, height: 24 },
+    params: [
+      { name: "title", type: "string", control: "text" },
+      { name: "subtitle", type: "string", control: "text" },
+      { name: "code", type: "string", control: "text" },
+      { name: "tags", type: "list", control: "list" },
+      { name: "flag", type: "boolean", control: "checkbox" },
+      { name: "on", type: "boolean", control: "checkbox", default: true },
+    ],
+    variables: [],
+  };
+
+  function stubParams() {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/templates/t1")) return json(paramsDetail);
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) {
+        void init;
+        return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+  }
+
+  async function loadCsv(text: string) {
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+    fetchMock = stubParams();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("A18: draws columns from detail.params and never requests /inputs", async () => {
+    renderPage();
+    await loadCsv("subtitle,title\nsub,tit\n");
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    const fieldHeaders = headers.filter((h) => paramsDetail.params.some((p) => p.name === h));
+    expect(fieldHeaders).toEqual(["subtitle", "title", "code", "flag", "on"]);
+    const download = screen.getByRole("button", { name: /^download$/i });
+    await waitFor(() => expect(download).toBeEnabled());
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes("/inputs"))).toEqual([]);
+  });
+
+  it("A20: an untouched row submits each checkbox's start state, and a held value unchanged", async () => {
+    renderPage();
+    // `flag` is held blank in row 1 and "yes" in row 2; `on` has no CSV column at all.
+    await loadCsv("title,flag\nfirst,\nsecond,yes\n");
+    const first = { title: "first", flag: false, on: true };
+    // A blank or absent cell shows its parameter's start state; "yes" shows unchecked beside its text.
+    const boxes = (name: string) => (screen.getAllByLabelText(`edit ${name}`) as HTMLInputElement[]).map((b) => b.checked);
+    expect(boxes("flag")).toEqual([false, false]);
+    expect(boxes("on")).toEqual([true, true]);
+    expect(screen.getByText("yes")).toBeInTheDocument();
+    // Row 1 is previewed by default: the preview body is what the submit path sends for it.
+    await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
+    const previewBody = JSON.parse((lastCall("/api/render/label")![1] as RequestInit).body as string);
+    expect(previewBody.data).toEqual(first);
+
+    const download = screen.getByRole("button", { name: /^download$/i });
+    await waitFor(() => expect(download).toBeEnabled());
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    expect(body.labels).toEqual([
+      { data: first },
+      { data: { title: "second", flag: "yes", on: true } },
+    ]);
+  });
+
+  it("A20: a checkbox cell toggles between two states and is never indeterminate", async () => {
+    renderPage();
+    await loadCsv("title,flag\nfirst,\n");
+    const box = () => screen.getByLabelText("edit flag") as HTMLInputElement;
+    const seen: Array<[boolean, boolean]> = [[box().checked, box().indeterminate]];
+    for (let i = 0; i < 3; i += 1) {
+      fireEvent.click(box());
+      await waitFor(() => expect(box().checked).toBe(i % 2 === 0));
+      seen.push([box().checked, box().indeterminate]);
+    }
+    expect(seen).toEqual([
+      [false, false],
+      [true, false],
+      [false, false],
+      [true, false],
+    ]);
   });
 });

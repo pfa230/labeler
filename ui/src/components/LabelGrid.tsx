@@ -21,7 +21,7 @@ import {
 import "@svar-ui/react-grid/style.css";
 import type { LabelGridRow } from "../lib/labelGrid";
 import { displayCellText } from "../lib/connectorRows";
-import type { InputSpec } from "../api/types";
+import type { Param } from "../api/types";
 
 // Which rows an edit touched, by index. Import and Connect clear a prior run's annotation on
 // exactly those rows, so the shape outlives the grid library that first supplied it.
@@ -29,10 +29,13 @@ export interface LabelGridRowsChange {
   indexes: number[];
 }
 
+// The part of a parameter a grid cell reads.
+export type GridCellParam = Pick<Param, "name" | "control" | "values" | "min" | "max" | "default">;
+
 export interface LabelGridProps {
   rows: LabelGridRow[];
   fields: string[];
-  cellInput?: (row: LabelGridRow, field: string) => InputSpec | undefined;
+  cellInput?: (row: LabelGridRow, field: string) => GridCellParam | undefined;
   onRowsChange: (rows: LabelGridRow[], change: LabelGridRowsChange) => void;
   onDuplicate: (id: string) => void;
   onRemove: (id: string) => void;
@@ -75,37 +78,17 @@ function useGridProps(): GridContextValue {
   return props;
 }
 
-type CheckboxState = "checked" | "unchecked" | "unset";
-
-function parseCheckboxState(val: unknown): CheckboxState | null {
-  if (val === true || val === "true" || val === "1" || val === 1) return "checked";
-  if (val === false || val === "false" || val === "0" || val === 0) return "unchecked";
-  if (val === "" || val === undefined || val === null) return "unset";
+// What a checkbox cell shows: the held value when the control can show it, the parameter's start
+// state (its published default, else unchecked) when the cell is blank, and null when the cell holds a
+// value the control cannot show, which the row still submits unchanged.
+// Strings are trimmed as the server trims them (Unicode White_Space, which String.trim does not match:
+// it strips U+FEFF and keeps U+0085), so a cell never shows a state the render contradicts.
+function parseCheckboxState(val: unknown, start: boolean): boolean | null {
+  const v = typeof val === "string" ? val.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "") : val;
+  if (v === true || v === "true" || v === "1" || v === 1) return true;
+  if (v === false || v === "false" || v === "0" || v === 0) return false;
+  if (v === "" || v === undefined || v === null) return start;
   return null;
-}
-
-function nextCheckboxState(current: CheckboxState | null): CheckboxState {
-  switch (current) {
-    case "unset":
-      return "checked";
-    case "checked":
-      return "unchecked";
-    case "unchecked":
-      return "unset";
-    default:
-      return "checked";
-  }
-}
-
-function checkboxStateToString(state: CheckboxState): string {
-  switch (state) {
-    case "checked":
-      return "true";
-    case "unchecked":
-      return "false";
-    case "unset":
-      return "";
-  }
 }
 
 function computeNumericInvalid(val: string, min?: number, max?: number, isInteger?: boolean): boolean {
@@ -215,10 +198,9 @@ function DataCell({ row, column }: ICellProps) {
 
   // Operable controls
   if (spec.control === "checkbox") {
-    const checkboxState = parseCheckboxState(rawVal);
-    const isUnrepresentable =
-      rawVal !== "" && rawVal !== undefined && rawVal !== null && checkboxState === null;
-    const state = isUnrepresentable ? "unset" : (checkboxState ?? "unset");
+    const checkboxState = parseCheckboxState(rawVal, spec.default === true);
+    const isUnrepresentable = checkboxState === null;
+    const checked = checkboxState === true;
     const adornId = isUnrepresentable ? `adorn-${labelRow.id}-${field}` : undefined;
     const describedBy = [adornId, errId].filter(Boolean).join(" ") || undefined;
     const title = err
@@ -228,21 +210,15 @@ function DataCell({ row, column }: ICellProps) {
     return (
       <div ref={setCellRef} className="flex items-center gap-1.5 w-full" title={title}>
         <input
-          ref={(el) => {
-            if (el) {
-              el.indeterminate = state === "unset";
-            }
-          }}
           type="checkbox"
           aria-label={`edit ${field}`}
           aria-describedby={describedBy}
           aria-invalid={err ? "true" : undefined}
-          checked={state === "checked"}
+          checked={checked}
           onChange={() => {}}
           onClick={(e) => {
             e.stopPropagation();
-            const next = nextCheckboxState(isUnrepresentable ? "unset" : checkboxState);
-            commitCell(labelRow.id, field, checkboxStateToString(next));
+            commitCell(labelRow.id, field, String(!checked));
           }}
           onMouseDown={handleMouseDown}
           onFocus={handleFocus}

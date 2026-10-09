@@ -10,7 +10,7 @@ Covers a template's `params:` declarations and types, declared defaults and how 
 
 A template SHALL declare its parameters as a YAML sequence under the top-level `params:` key, each element carrying a required `name` plus the attributes its `type` permits. An omitted `params:` SHALL mean no parameters. A mapping-shaped `params:` SHALL be refused naming the file and `params`. A `name` SHALL be non-empty and match `^[a-zA-Z0-9_-]+$`, and two entries SHALL NOT share a `name`. Every refusal at load in this spec follows the invalid-template rule (`templates`): the file is quarantined while the server still starts, and a write of it is `422 TemplateInvalid` naming the key's path.
 
-Every response carrying a template's `params` (the template list, the template detail, and the create and replace responses) SHALL publish them as one static JSON array in declaration order, `[]` when there are none, whatever any `when:` would select. Each element carries `name`, `type`, `control` (see the type table), the declared attributes, and `default` exactly as declared (not resolved). `multiline` appears only when true; `time` always appears on a `datetime`.
+Every response carrying a template's `params` (the template list, the template detail, and the create and replace responses) SHALL publish them as one static JSON array in declaration order, `[]` when there are none, whatever any `when:` would select. Each element carries `name`, `type`, `control` (see the type table), the declared attributes, and `default`: a literal default's coerced value, or a tokened default resolved against the response's snapshot (see "Declared defaults"). When that template's snapshot does not resolve, its tokened defaults are omitted and its literal defaults are still published. Only `default` may differ between responses; the array's elements and order do not. `multiline` appears only when true; `time` always appears on a `datetime`.
 
 #### Scenario: Declaration order is the wire order
 
@@ -31,6 +31,12 @@ Every response carrying a template's `params` (the template list, the template d
 
 - **WHEN** two entries both declare `name: title`
 - **THEN** the template is refused naming the file and `title`
+
+#### Scenario: Defaults are published by value
+
+- **WHEN** a template declares `bold: { type: boolean, default: "false" }`, `copies: { type: integer, default: "3" }` and `url: { type: string, default: "{vars.base}" }`, and the store holds `base = https://ex.co/`
+- **THEN** the detail publishes `bold` with `default: false`, `copies` with `default: 3` and `url` with `default: "https://ex.co/"`
+- **AND** with no `base` in the store the detail is still `200`, `url` carries no `default`, and `copies` still carries `default: 3`
 
 ### Requirement: Parameter types and attributes
 
@@ -66,9 +72,9 @@ A `list` value is an ordered list of strings, which the service SHALL NOT sort, 
 
 A `boolean` that declares no `default:` SHALL default to `false`.
 
-A default that is not a string containing `{` or `}` is literal. A literal default SHALL be judged at load by the rule for a supplied value of its type (including `values`, `min` and `max`); one that rule refuses, or would treat as an omission, SHALL be refused naming the parameter, and otherwise the coerced value is used. A `list` default is therefore a YAML sequence of strings, and a token written in one of its elements is literal text.
+A default that is not a string containing `{` or `}` is literal. A literal default SHALL be judged at load by the rule for a supplied value of its type (including `values`, `min` and `max`); one that rule refuses, or would treat as an omission, SHALL be refused naming the parameter, and otherwise the coerced value is the default. A `list` default is therefore a YAML sequence of strings, and a token written in one of its elements is literal text.
 
-A string default containing a brace is tokened: it is interpolated with the `vars` and `sys` namespaces only (`interpolation`). A tokened default SHALL resolve only when a label omits the parameter and the render reads it; one the render does not read never resolves and never fails. A token that fails SHALL give the error it gives anywhere else, and a resolved value the supplied-value rule refuses SHALL give that rule's error.
+A string default containing a brace is tokened: it is interpolated with the `vars` and `sys` namespaces only (`interpolation`). Every tokened default SHALL be resolved once per request against the request's snapshot (`interpolation`), whatever the labels carry and whether or not the render reads it, and its value SHALL pass the supplied-value rule for its type. A token that fails, or a value that rule refuses, SHALL fail the request with `422 TemplateInvalid` and reason `reference_unresolved` (`errors`).
 
 #### Scenario: A literal enum default outside values is refused
 
@@ -98,17 +104,17 @@ A string default containing a brace is tokened: it is interpolated with the `var
 #### Scenario: A tokened default naming an absent variable
 
 - **WHEN** a template declares `url: { type: string, default: "{vars.base}" }`, the store holds no `base`, and a render omits `url` while an active item prints `{url}`
-- **THEN** the response is `422 UnsupportedLayoutItem` with reason `missing_field` naming `vars.base`
+- **THEN** the response is `422 TemplateInvalid` with reason `reference_unresolved` and `details.field` `vars.base`
 
-#### Scenario: A broken default nothing reads does not fail
+#### Scenario: A broken default fails even when nothing reads it
 
-- **WHEN** the same `url` is read by no active item and a render omits it
-- **THEN** the label renders
+- **WHEN** the same `url` is read by no active item, or the label supplies `url`
+- **THEN** the response is the same `422 TemplateInvalid` with reason `reference_unresolved`
 
 #### Scenario: A tokened default resolving to a refused value
 
 - **WHEN** `size: { type: enum, values: [small, large], default: "{vars.size}" }` is printed, the store holds `size = medium`, and a render omits `size`
-- **THEN** the response is `400 InvalidRequest` with reason `param_value_invalid` naming `size`
+- **THEN** the response is `422 TemplateInvalid` with reason `reference_unresolved` and `details.field` `size`
 
 #### Scenario: A datetime default of sys.now is the render date
 
@@ -264,7 +270,7 @@ A thumbnail SHALL render with no `data`, every declared parameter taking its def
 | --- | --- |
 | `string` | Its name; a sample PNG for the `image` control |
 | `list` | `[<name>]` |
-| `number`, `integer` | `42`, clamped into `[min, max]` |
+| `number`, `integer` | `42`, clamped into `[min, max]`; for an `integer`, into the whole numbers that range admits |
 | `enum` | The first of `values` |
 | `datetime` | The request's captured instant |
 
@@ -288,4 +294,4 @@ Gates are evaluated against these values. A default that fails SHALL fail the th
 #### Scenario: A broken default fails the thumbnail
 
 - **WHEN** `title: { type: string, default: "{vars.base}" }` is printed and the store holds no `base`
-- **THEN** the thumbnail fails with `422 UnsupportedLayoutItem` reason `missing_field` naming `vars.base`
+- **THEN** the thumbnail fails with `422 TemplateInvalid` reason `reference_unresolved` and `details.field` `vars.base`

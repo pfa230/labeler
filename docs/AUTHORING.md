@@ -263,7 +263,7 @@ Governing spec: [flow](../openspec/specs/layout/spec.md#requirement-a-flow-block
 
 ## Parameters and tokens
 
-Every `{name}` a layout reads must be declared in `params:`; a value comes from the request's `data` or the declared `default:`, and nothing else. `{vars.key}` reads the server's variables store, and `{sys.now}` the render instant. A format attaches with a colon and applies only to an instant, using a named pattern from the `datetime_formats` setting. `tests/fixtures/templates/homebox-qr.yaml` builds its QR from a stored base URL and a request field, `value: "{vars.qr_base_url}/{id}"`, and prints the date with `value: "{sys.now:iso_date}"`.
+Every `{name}` a layout reads must be declared in `params:`; a value comes from the request's `data` or the declared `default:`, and nothing else, except that a `boolean` without a `default:` is `false`. `{vars.key}` reads the server's variables store, and `{sys.now}` the render instant. A format attaches with a colon and applies only to an instant, using a named pattern from the `datetime_formats` setting. `tests/fixtures/templates/homebox-qr.yaml` builds its QR from a stored base URL and a request field, `value: "{vars.qr_base_url}/{id}"`, and prints the date with `value: "{sys.now:iso_date}"`.
 
 Use `{sys.now}` when the label must say when it was printed. Declare a `type: datetime` parameter when the caller chooses the date, as `tests/fixtures/templates/brother_24mm_printed_on.yaml` does with `value: "Printed {printed_on:short_date}"`. Write `{{` and `}}` for literal braces.
 
@@ -271,15 +271,16 @@ Governing specs: [parameters](../openspec/specs/parameters/spec.md), [interpolat
 
 ## Troubleshooting
 
-Load refuses whatever the template alone shows to be wrong; on an auto-length label it checks geometry against `width.max`. A template that loads can still fail one request, when that request's data is missing or unusable, or produces a width the layout cannot live in: look at the data, not the template. Match on `error.code` and `error.details.reason`, never on the message ([errors](../openspec/specs/errors/spec.md)).
+Load refuses whatever the template alone shows to be wrong; on an auto-length label it checks geometry against `width.max`. A template that loads can still fail every request, when it reads a variable or format name the server lacks (`reference_unresolved`), or one request, when that request's data is missing or unusable, or produces a width the layout cannot live in. Match on `error.code` and `error.details.reason`, never on the message ([errors](../openspec/specs/errors/spec.md)).
 
 | Symptom or reason | Fix |
 | --- | --- |
 | Template missing, listed under `broken` | Read its message: it names the key or the item path (`layout[0].items[2]`). Fix, then reload. |
 | `template_validation_failed` | Follow the key or item path in the message. Common: a misspelled, misplaced or `null` key, geometry past `width.max`, `size` and `to` together or neither, a `when:` naming an undeclared parameter, a `qr` sized `content` without `module_size`, an unbalanced brace (write literal braces as `{{` and `}}`). |
-| `missing_field` | Supply the named field, or declare a `default:`. For `vars.x` set the variable; for `x:fmt` add the format to `datetime_formats`. |
+| `missing_field` | Supply the named field, or declare a `default:`. |
+| `reference_unresolved` | The template reads something the server lacks, so every request for it fails until fixed: for `vars.x` set the variable, for a format name add it to `datetime_formats`, and for a parameter name fix what its tokened `default:` resolves to. |
 | `data_key_unknown` | The request sends a key the template does not declare. Declare it or drop it. |
-| `param_value_invalid` | Send a value the parameter's type accepts: one of an enum's `values`, a number within `min`/`max`, a whole number for `integer`. The same applies to what a tokened `default:` resolves to. |
+| `param_value_invalid` | Send a value the parameter's type accepts: one of an enum's `values`, a number within `min`/`max`, a whole number for `integer`. |
 | `text_does_not_fit` | Enlarge the box, lower `font_size.min`, or (under `fail` only) switch to `ellipsis`. |
 | `item_out_of_frame`, `coord_out_of_frame`, `line_endpoint_out_of_frame` | Children resolve against the padded inner box, not the container's outer size. In a flow, cap `content`/`fill` children with `max_w`/`max_h`. |
 | `edge_rect_inverted` | Check signs: `-0.0` is the far edge, `0.0` the near one. |

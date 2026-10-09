@@ -196,7 +196,7 @@ impl AppError {
         )
     }
 
-    /// A value the render needs is absent; `field` names it.
+    /// A parameter an active item reads has no value and no default; `field` names it.
     pub fn missing_field(field: &str) -> Self {
         let mut extra = serde_json::Map::new();
         extra.insert("field".to_string(), Value::from(field));
@@ -317,26 +317,16 @@ impl AppError {
         )
     }
 
-    pub fn param_default_unresolvable(failure: &crate::render::ParamDefaultFailure) -> Self {
+    /// A part of the template that does not come from a label does not resolve against the
+    /// request's snapshot; `field` names the variable key, format name or parameter.
+    pub fn reference_unresolved(field: &str, message: impl Into<String>) -> Self {
         let mut extra = serde_json::Map::new();
-        extra.insert(
-            "param".to_string(),
-            serde_json::Value::String(failure.param.clone()),
-        );
-        if let Some(token) = &failure.token {
-            extra.insert(
-                "token".to_string(),
-                serde_json::Value::String(token.clone()),
-            );
-        }
-        if let Some(val) = &failure.value {
-            extra.insert("value".to_string(), serde_json::Value::String(val.clone()));
-        }
+        extra.insert("field".to_string(), Value::from(field));
         Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,
             CODE_TEMPLATE_INVALID,
-            Reason::ParamDefaultUnresolvable,
-            &failure.message,
+            Reason::ReferenceUnresolved,
+            message,
             Some(extra),
         )
     }

@@ -77,9 +77,9 @@ pub struct RawParamSpec {
     #[serde(default, deserialize_with = "deserialize_present")]
     pub default: Option<serde_yaml_ng::Value>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub min: Option<Option<f32>>,
+    pub min: Option<Option<f64>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub max: Option<Option<f32>>,
+    pub max: Option<Option<f64>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub multiline: Option<Option<bool>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]

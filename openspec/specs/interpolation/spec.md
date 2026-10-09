@@ -92,7 +92,7 @@ A resolved value SHALL print as: a string as-is, a number or boolean in its JSON
 
 ### Requirement: The `vars` namespace
 
-`{vars.<key>}` SHALL resolve from the variables store (owned by `settings`). The key is everything between the first dot and the reader or closing brace, so it may contain dots. An absent key SHALL NOT fail at load; it SHALL be `422 UnsupportedLayoutItem` with reason `missing_field` naming `vars.<key>` at render.
+`{vars.<key>}` SHALL resolve from the variables store (owned by `settings`). The key is everything between the first dot and the reader or closing brace, so it may contain dots. An absent key SHALL NOT fail at load; every render of a template reading it, in any string and whether or not an active item reads that string, SHALL be `422 TemplateInvalid` with reason `reference_unresolved` naming `vars.<key>` (see "One snapshot per request").
 
 #### Scenario: A dotted key resolves
 
@@ -101,12 +101,12 @@ A resolved value SHALL print as: a string as-is, a number or boolean in its JSON
 
 #### Scenario: An absent key fails at render
 
-- **WHEN** a template references `{vars.not_set}` and the store has no such key
-- **THEN** the template loads, and rendering returns `422 UnsupportedLayoutItem` with reason `missing_field` naming `vars.not_set`
+- **WHEN** a template references `{vars.not_set}` only in an inactive item, and the store has no such key
+- **THEN** the template loads, and rendering returns `422 TemplateInvalid` with reason `reference_unresolved` naming `vars.not_set`
 
 ### Requirement: One snapshot per request
 
-`sys` has exactly one value, `now`. Each render request SHALL read the clock once, in the server-local timezone (`TZ`), and read the variables store and the `datetime_formats` setting once. Every token on every label of that request, including a token in a parameter default, SHALL resolve against that snapshot, so every `{sys.now}` prints the same instant. A request cannot supply or override `{sys.now}`, and it is never a request input. Thumbnails and previews SHALL print a real instant, not the token text.
+`sys` has exactly one value, `now`. Each render request SHALL read the clock once, in the server-local timezone (`TZ`), and read the variables store and the `datetime_formats` setting once. Every token on every label of that request, including a token in a parameter default, SHALL resolve against that snapshot, so every `{sys.now}` prints the same instant. Before any label is judged, everything in the template that does not come from a label SHALL resolve against the snapshot: every `vars` key in any interpolated string, every format name, and every tokened default (`parameters`). Any failure SHALL fail the whole request as `422 TemplateInvalid` with reason `reference_unresolved`, whatever the labels carry; a batch answers it instead of `BatchInvalid`, and a thumbnail fails the same way. A request cannot supply or override `{sys.now}`, and it is never a request input. Thumbnails and previews SHALL print a real instant, not the token text.
 
 #### Scenario: One sheet prints one instant
 
@@ -118,9 +118,14 @@ A resolved value SHALL print as: a string as-is, a number or boolean in its JSON
 - **WHEN** every label of a batch omits a parameter declaring `default: "{sys.now}"` and the run crosses midnight
 - **THEN** every label prints the same date
 
+#### Scenario: An unread variable fails the whole batch
+
+- **WHEN** a three-label batch's template reads `{vars.base}` only in an item no label activates, and the store holds no `base`
+- **THEN** the response is `422 TemplateInvalid` with reason `reference_unresolved`, not `BatchInvalid`, and nothing is rendered
+
 ### Requirement: Format readers apply to instants
 
-A format reader SHALL be attached only to an instant: `sys.now`, or a bare token naming a parameter declared `type: datetime`. Any other value path with a format SHALL fail validation at load, stating that a format applies to an instant only. An instant with no reader SHALL print as `%Y-%m-%d`. A format name SHALL name an entry of the `datetime_formats` setting (owned by `settings`), whose strftime pattern prints the instant; a name the setting lacks SHALL NOT fail at load and SHALL fail the render as `422 UnsupportedLayoutItem` with reason `missing_field` naming the token's `<value-path>:<format-name>`.
+A format reader SHALL be attached only to an instant: `sys.now`, or a bare token naming a parameter declared `type: datetime`. Any other value path with a format SHALL fail validation at load, stating that a format applies to an instant only. An instant with no reader SHALL print as `%Y-%m-%d`. A format name SHALL name an entry of the `datetime_formats` setting (owned by `settings`), whose strftime pattern prints the instant; a name the setting lacks SHALL NOT fail at load, and every render of a template using it SHALL fail as `422 TemplateInvalid` with reason `reference_unresolved` naming the format name (see "One snapshot per request").
 
 #### Scenario: A format renders an instant
 
@@ -139,8 +144,8 @@ A format reader SHALL be attached only to an instant: `sys.now`, or a bare token
 
 #### Scenario: An unknown format name fails at render
 
-- **WHEN** a template contains `{sys.now:no_such_format}`
-- **THEN** it loads, and rendering returns `422 UnsupportedLayoutItem` with reason `missing_field` naming `sys.now:no_such_format`
+- **WHEN** a template contains `{sys.now:no_such_format}`, in an active or an inactive item
+- **THEN** it loads, and rendering returns `422 TemplateInvalid` with reason `reference_unresolved` naming `no_such_format`
 
 ### Requirement: The `join` reader reads a list parameter
 
@@ -163,7 +168,7 @@ A format reader SHALL be attached only to an instant: `sys.now`, or a bare token
 
 ### Requirement: Tokens in a parameter default
 
-A string `default:` SHALL be interpolated with this grammar when the default is used, and only dotted tokens (`vars`, `sys`) are allowed: a bare token, including one carrying `join`, SHALL fail validation at load naming the parameter and the token. A non-string default carries no tokens. When a default is used and how its failures are reported is owned by `parameters`.
+A string `default:` SHALL be interpolated with this grammar once per request (see "One snapshot per request"), and only dotted tokens (`vars`, `sys`) are allowed: a bare token, including one carrying `join`, SHALL fail validation at load naming the parameter and the token. A non-string default carries no tokens. How its value is checked and its failures reported is owned by `parameters`.
 
 #### Scenario: A namespaced default resolves
 

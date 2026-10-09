@@ -18,7 +18,7 @@ export function previewKey(i: PreviewInput): string {
 interface PreviewState { url?: string; error?: string; loading: boolean }
 const CACHE_MAX = 12;
 
-// Debounced, abortable, capped-cache live preview. `enabled` gates rendering (required fields present).
+// Debounced, abortable, capped-cache live preview. `enabled` gates rendering (the pane is on screen).
 // Render output is derived from STATE + the `enabled` PARAM only; the ref-backed cache is read solely
 // inside the effect (the repo's `react-hooks/refs` forbids reading refs during render), and every
 // `setState` happens inside the async timer (so `react-hooks/set-state-in-effect` does not fire).

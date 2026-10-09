@@ -116,33 +116,35 @@ pub(super) fn interpolate(
             crate::interpolation::Source::Sys(crate::interpolation::SysValue::Now) => {
                 match token.reader {
                     Some(crate::interpolation::Reader::Format(fmt)) => {
-                        datetime.format(datetime.now, Some(fmt), inner)?
+                        datetime.format(datetime.now, Some(fmt))?
                     }
                     Some(crate::interpolation::Reader::Join(_)) => {
                         return Err(AppError::field_value_not_scalar(inner));
                     }
-                    None => datetime.format(datetime.now, None, inner)?,
+                    None => datetime.format(datetime.now, None)?,
                 }
             }
             crate::interpolation::Source::Vars(key) => {
                 if token.reader.is_some() {
                     return Err(AppError::missing_field(inner));
                 }
-                variables
-                    .get(key)
-                    .cloned()
-                    .ok_or_else(|| AppError::missing_field(&format!("vars.{key}")))?
+                variables.get(key).cloned().ok_or_else(|| {
+                    AppError::reference_unresolved(
+                        &format!("vars.{key}"),
+                        format!("variable '{key}' is not set"),
+                    )
+                })?
             }
             crate::interpolation::Source::Bare(name) => {
                 if let Some(instant) = instants.and_then(|inst| inst.get(name)) {
                     match token.reader {
                         Some(crate::interpolation::Reader::Format(fmt)) => {
-                            datetime.format(*instant, Some(fmt), inner)?
+                            datetime.format(*instant, Some(fmt))?
                         }
                         Some(crate::interpolation::Reader::Join(_)) => {
                             return Err(AppError::missing_field(name));
                         }
-                        None => datetime.format(*instant, None, inner)?,
+                        None => datetime.format(*instant, None)?,
                     }
                 } else {
                     let val = data
@@ -206,20 +208,13 @@ pub(super) fn resolve_dynamic_value_f32(
                         format!("parameter '{name}' is not a valid number"),
                     )
                 }),
-                JsonValue::String(s) => {
-                    let trimmed = s.trim();
-                    let num_str = trimmed
-                        .strip_suffix("mm")
-                        .or_else(|| trimmed.strip_suffix("in"))
-                        .unwrap_or(trimmed);
-                    num_str.trim().parse::<f32>().map_err(|_| {
-                        AppError::param_value_invalid(
-                            name,
-                            None,
-                            format!("parameter '{name}' is not a valid number"),
-                        )
-                    })
-                }
+                JsonValue::String(s) => s.trim().parse::<f32>().map_err(|_| {
+                    AppError::param_value_invalid(
+                        name,
+                        None,
+                        format!("parameter '{name}' is not a valid number"),
+                    )
+                }),
                 _ => Err(AppError::param_value_invalid(
                     name,
                     None,
@@ -2864,7 +2859,11 @@ mod interpolate_tests {
 
     #[test]
     fn missing_variable_errors() {
-        assert!(interpolate("{vars.nope}", &data(), &variables(), &no_datetime(), None).is_err());
+        let err =
+            interpolate("{vars.nope}", &data(), &variables(), &no_datetime(), None).unwrap_err();
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("reference_unresolved"));
+        assert_eq!(err.details().unwrap()["field"], "vars.nope");
     }
 
     #[test]
@@ -3170,8 +3169,7 @@ mod dynamic_resolution_tests {
     fn resolve_dynamic_value_f32_literal_and_ref() {
         let mut data = HashMap::new();
         data.insert("width".to_string(), json!(50.5));
-        data.insert("width_str".to_string(), json!("60.0mm"));
-        data.insert("width_in".to_string(), json!("2.5in"));
+        data.insert("width_str".to_string(), json!(" 60.0 "));
 
         assert_eq!(
             resolve_dynamic_value_f32(&DynamicValue::Literal(12.0), &data).unwrap(),
@@ -3184,10 +3182,6 @@ mod dynamic_resolution_tests {
         assert_eq!(
             resolve_dynamic_value_f32(&DynamicValue::Ref("width_str".to_string()), &data).unwrap(),
             60.0
-        );
-        assert_eq!(
-            resolve_dynamic_value_f32(&DynamicValue::Ref("width_in".to_string()), &data).unwrap(),
-            2.5
         );
     }
 

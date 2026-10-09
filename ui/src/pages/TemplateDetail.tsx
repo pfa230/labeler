@@ -2,9 +2,8 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
 import { useToast } from "../app/toast-context";
-import { useTemplatePreview } from "../lib/preview";
 import type { Dimension, TemplateFormat } from "../api/types";
-import { PreviewPane } from "../components/PreviewPane";
+import { TemplateThumbnail } from "../components/TemplateThumbnail";
 import { FormatBadge } from "../components/FormatBadge";
 
 function dim(d: Dimension): string {
@@ -169,8 +168,7 @@ function RawYamlSection({ id }: { id: string }) {
 
 export function TemplateDetail() {
   const { id = "" } = useParams();
-  const { data: detail, isLoading, isError, error } = useTemplate(id);
-  const { url: previewUrl, error: previewError, loading: previewLoading } = useTemplatePreview(detail);
+  const { data: detail, dataUpdatedAt, isLoading, isError, error } = useTemplate(id);
   const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
   const remove = useDeleteTemplate();
@@ -185,7 +183,6 @@ export function TemplateDetail() {
     );
   }
 
-  const fields = detail.inputs?.all?.map((i) => i.name) ?? [];
   const variables = detail.variables ?? [];
 
   return (
@@ -253,7 +250,14 @@ export function TemplateDetail() {
         </div>
       </div>
 
-      <PreviewPane name={detail.name} format={detail.format.type} preview={{ url: previewUrl, error: previewError, loading: previewLoading }} />
+      <div className="max-w-2xl">
+        <TemplateThumbnail
+          key={`${detail.id}-${dataUpdatedAt}`}
+          id={detail.id}
+          name={detail.name}
+          version={dataUpdatedAt}
+        />
+      </div>
 
       <section className="flex flex-col gap-2">
         <h2 className="text-lg font-semibold">Details</h2>
@@ -283,81 +287,54 @@ export function TemplateDetail() {
         <section className="flex flex-col gap-2">
           <h2 className="text-lg font-semibold">Parameters</h2>
           <div className="flex flex-col gap-2">
-            {detail.params.map((param) => {
-              const report = detail.param_defaults?.[param.name];
-              return (
-                <div
-                  key={param.name}
-                  className="flex flex-col gap-1 rounded-md border p-3 text-sm"
-                  style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-medium">{param.name}</span>
-                      <span
-                        className="rounded-full px-2 py-0.5 text-xs font-medium"
-                        style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-                      >
-                        {param.type}
-                        {param.multiline ? " (multiline)" : ""}
-                      </span>
-                    </div>
-                    {param.default !== undefined && (
-                      <div className="flex flex-wrap items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
-                        <span>
-                          default: <code className="font-mono">{String(param.default)}</code>
-                        </span>
-                        {report && ("resolved" in report ? (
-                          <span>
-                            (resolved: <code className="font-mono">{String(report.resolved)}</code>)
-                          </span>
-                        ) : (
-                          <span style={{ color: "var(--bad, #dc2626)" }}>
-                            ({report.error.message})
-                          </span>
-                        ))}
-                      </div>
-                    )}
+            {detail.params.map((param) => (
+              <div
+                key={param.name}
+                className="flex flex-col gap-1 rounded-md border p-3 text-sm"
+                style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-medium">{param.name}</span>
+                    <span
+                      className="rounded-full px-2 py-0.5 text-xs font-medium"
+                      style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                    >
+                      {param.type}
+                      {param.multiline ? " (multiline)" : ""}
+                    </span>
                   </div>
-                  {param.description && (
-                    <p className="text-xs" style={{ color: "var(--muted)" }}>
-                      {param.description}
-                    </p>
-                  )}
-                  {(param.min !== undefined || param.max !== undefined) && (
-                    <div className="text-xs" style={{ color: "var(--muted)" }}>
-                      bounds: {param.min ?? "-∞"} to {param.max ?? "+∞"}
-                    </div>
-                  )}
-                  {param.values && param.values.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                      <span className="text-xs" style={{ color: "var(--muted)" }}>
-                        allowed values:
-                      </span>
-                      {param.values.map((v: string) => (
-                        <Chip key={v}>{v}</Chip>
-                      ))}
-                    </div>
+                  {param.default !== undefined && (
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>
+                      default: <code className="font-mono">{String(param.default)}</code>
+                    </span>
                   )}
                 </div>
-              );
-            })}
+                {param.description && (
+                  <p className="text-xs" style={{ color: "var(--muted)" }}>
+                    {param.description}
+                  </p>
+                )}
+                {(param.min !== undefined || param.max !== undefined) && (
+                  <div className="text-xs" style={{ color: "var(--muted)" }}>
+                    bounds: {param.min ?? "-∞"} to {param.max ?? "+∞"}
+                  </div>
+                )}
+                {param.values && param.values.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>
+                      allowed values:
+                    </span>
+                    {param.values.map((v: string) => (
+                      <Chip key={v}>{v}</Chip>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </section>
       )}
-      <section className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold">Referenced fields</h2>
-        {fields.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
-            {fields.map((f) => (
-              <Chip key={f}>{f}</Chip>
-            ))}
-          </div>
-        ) : (
-          <p style={{ color: "var(--muted)" }}>No data fields referenced.</p>
-        )}
-      </section>
-
       {variables.length > 0 && (
         <section className="flex flex-col gap-2">
           <h2 className="text-lg font-semibold">Variables used</h2>

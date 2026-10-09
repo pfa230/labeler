@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { LabelGrid, type LabelGridProps } from "./LabelGrid";
+import { LabelGrid, type GridCellParam, type LabelGridProps } from "./LabelGrid";
 import type { LabelGridRow } from "../lib/labelGrid";
 import { pruneDataForSubmit } from "../lib/labelInputs";
-import type { InputSpec } from "../api/types";
+import type { Param } from "../api/types";
 
 const selectionBaseProps = {
   rows: [
@@ -124,7 +124,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       validation: {},
     };
 
-    const specs: Record<string, InputSpec> = {
+    const specs: Record<string, GridCellParam> = {
       textField: { name: "textField", control: "text" },
       textareaField: { name: "textareaField", control: "textarea" },
       selectField: { name: "selectField", control: "select", values: ["opt1", "opt2"] },
@@ -138,7 +138,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
     };
 
     const fields = Object.keys(specs);
-    const cellInput = (_r: LabelGridRow, f: string): InputSpec | undefined => specs[f];
+    const cellInput = (_r: LabelGridRow, f: string): GridCellParam | undefined => specs[f];
 
     render(
       <LabelGrid
@@ -219,7 +219,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       data: { tags: ["RED", "BLUE"], title: "Widget" },
       validation: {},
     };
-    const cellInput = (_r: LabelGridRow, f: string): InputSpec | undefined => {
+    const cellInput = (_r: LabelGridRow, f: string): GridCellParam | undefined => {
       if (f === "tags") return { name: "tags", control: "list" };
       return { name: "title", control: "text" };
     };
@@ -267,9 +267,9 @@ describe("4.2 Invalid cells repairability", () => {
       data: { name: "", size: "" },
       validation: { field: { name: "required", size: "required" } },
     };
-    const specs: Record<string, InputSpec> = {
-      name: { name: "name", control: "text", required: true },
-      size: { name: "size", control: "select", values: ["S", "M", "L"], required: true },
+    const specs: Record<string, GridCellParam> = {
+      name: { name: "name", control: "text" },
+      size: { name: "size", control: "select", values: ["S", "M", "L"] },
     };
 
     render(
@@ -335,7 +335,7 @@ describe("4.2 Invalid cells repairability", () => {
       <LabelGrid
         rows={currentRows}
         fields={["name"]}
-        cellInput={(_r, f) => ({ name: f, control: "text", required: true })}
+        cellInput={(_r, f) => ({ name: f, control: "text" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -355,7 +355,7 @@ describe("4.2 Invalid cells repairability", () => {
       <LabelGrid
         rows={[{ id: "r1", origin: "csv", data: { name: "" }, validation: { field: { name: "required" } } }]}
         fields={["name"]}
-        cellInput={(_r, f) => ({ name: f, control: "text", required: true })}
+        cellInput={(_r, f) => ({ name: f, control: "text" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -427,7 +427,7 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
       data: { note: "text", choice: "a" },
       validation: {},
     };
-    const cellInput = (_r: LabelGridRow, f: string): InputSpec => ({
+    const cellInput = (_r: LabelGridRow, f: string): GridCellParam => ({
       name: f,
       control: f === "note" ? "textarea" : "select",
       values: f === "choice" ? ["a", "b"] : undefined,
@@ -470,7 +470,7 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
       data: { note: "line1\nline2", count: "5", choice: "x" },
       validation: {},
     };
-    const cellInput = (_r: LabelGridRow, f: string): InputSpec => {
+    const cellInput = (_r: LabelGridRow, f: string): GridCellParam => {
       if (f === "note") return { name: f, control: "textarea" };
       if (f === "count") return { name: f, control: "integer" };
       return { name: f, control: "select", values: ["x", "y"] };
@@ -667,7 +667,35 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
     expect(screen.getByDisplayValue("10")).toBeInTheDocument();
   });
 
-  it("checkbox holding malformed value shows unset control plus text adornment with explicit change boundary", async () => {
+  it("checkbox trims a held string as the server does, and a blank one shows the default", () => {
+    render(
+      <LabelGrid
+        rows={[
+          {
+            id: "r1",
+            origin: "csv",
+            data: { on: " true\u0085", off: " 0 ", blank: "  ", bom: "\uFEFFtrue" },
+            validation: {},
+          },
+        ]}
+        fields={["on", "off", "blank", "bom"]}
+        cellInput={(_r, f) => ({ name: f, control: "checkbox", default: f === "blank" ? true : undefined })}
+        onRowsChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    expect((screen.getByLabelText("edit on") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("edit off") as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText("edit blank") as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByText("0")).toBeNull();
+    // The server keeps U+FEFF, refusing the value, so the cell shows it as one it cannot represent.
+    expect((screen.getByLabelText("edit bom") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByLabelText("edit bom")).toHaveAttribute("aria-describedby", "adorn-r1-bom");
+    expect(screen.getByLabelText("edit on")).not.toHaveAttribute("aria-describedby");
+  });
+
+  it("checkbox holding malformed value shows an unchecked control plus text adornment with explicit change boundary", async () => {
     let currentRows: LabelGridRow[] = [
       { id: "r1", origin: "csv", data: { flag: "maybe" }, validation: {} },
     ];
@@ -688,7 +716,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
     const checkbox = screen.getByLabelText("edit flag") as HTMLInputElement;
     expect(checkbox.checked).toBe(false);
-    expect(checkbox.indeterminate).toBe(true);
+    expect(checkbox.indeterminate).toBe(false);
     expect(screen.getByText("maybe")).toBeInTheDocument();
     expect(checkbox).toHaveAttribute("aria-describedby", "adorn-r1-flag");
 
@@ -730,7 +758,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       validation: {},
     };
 
-    const cellInput = (_r: LabelGridRow, f: string): InputSpec | undefined => {
+    const cellInput = (_r: LabelGridRow, f: string): GridCellParam | undefined => {
       if (f === "operable") return { name: f, control: "text" };
       if (f === "missingEntry") return undefined;
       if (f === "listCol") return { name: f, control: "list" };
@@ -826,7 +854,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       { id: "r1", origin: "csv", data: { notes: "active note" }, validation: {} },
       { id: "r2", origin: "csv", data: { notes: "inactive note" }, validation: {} },
     ];
-    const cellInput = (r: LabelGridRow, f: string): InputSpec | undefined => {
+    const cellInput = (r: LabelGridRow, f: string): GridCellParam | undefined => {
       if (r.id === "r1" && f === "notes") return { name: f, control: "text" };
       return undefined; // inactive on r2
     };
@@ -851,8 +879,9 @@ describe("4.5 Regression checks on existing grid behavior", () => {
   });
 
   it("select retains out-of-range value in options and commits held value without change", async () => {
-    const spec: InputSpec = {
+    const spec: Param = {
       name: "size",
+      type: "enum",
       control: "select",
       values: ["small", "medium", "large"],
     };
@@ -891,8 +920,9 @@ describe("4.5 Regression checks on existing grid behavior", () => {
   });
 
   it("unset select shows (none) and submits no key via pruneDataForSubmit", () => {
-    const spec: InputSpec = {
+    const spec: Param = {
       name: "size",
+      type: "enum",
       control: "select",
       values: ["small", "medium", "large"],
     };

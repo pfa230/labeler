@@ -29,7 +29,7 @@ macro_rules! reasons {
 reasons! {
     // TemplateInvalid
     TemplateValidationFailed => "template_validation_failed",
-    ParamDefaultUnresolvable => "param_default_unresolvable",
+    ReferenceUnresolved => "reference_unresolved",
 
     // UnsupportedLayoutItem
     CoordOutOfFrame => "coord_out_of_frame",

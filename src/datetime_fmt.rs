@@ -126,13 +126,15 @@ impl DateTimeResolver<'_> {
         &self,
         instant: DateTime<Local>,
         format_name: Option<&str>,
-        full_field_name: &str,
     ) -> Result<String, AppError> {
         match format_name {
             None => Ok(format_now(BARE_DATETIME_FORMAT, instant)),
             Some(fmt_name) => match self.formats.get(fmt_name) {
                 Some(pattern) => Ok(format_now(pattern, instant)),
-                None => Err(AppError::missing_field(full_field_name)),
+                None => Err(AppError::reference_unresolved(
+                    fmt_name,
+                    format!("datetime format '{fmt_name}' is not defined in datetime_formats"),
+                )),
             },
         }
     }
@@ -180,7 +182,7 @@ mod tests {
             formats: &formats(),
             now: fixed_now(),
         };
-        assert_eq!(r.format(r.now, None, "sys.now").unwrap(), "2026-06-25");
+        assert_eq!(r.format(r.now, None).unwrap(), "2026-06-25");
     }
 
     #[test]
@@ -189,11 +191,7 @@ mod tests {
             formats: &formats(),
             now: fixed_now(),
         };
-        assert_eq!(
-            r.format(r.now, Some("short_date"), "sys.now:short_date")
-                .unwrap(),
-            "06/25/2026"
-        );
+        assert_eq!(r.format(r.now, Some("short_date")).unwrap(), "06/25/2026");
     }
 
     #[test]
@@ -202,8 +200,10 @@ mod tests {
             formats: &formats(),
             now: fixed_now(),
         };
-        let err = r.format(r.now, Some("nope"), "sys.now:nope").unwrap_err();
-        assert_eq!(err.status(), 422);
+        let err = r.format(r.now, Some("nope")).unwrap_err();
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("reference_unresolved"));
+        assert_eq!(err.details().unwrap()["field"], "nope");
     }
 
     #[test]
@@ -217,20 +217,14 @@ mod tests {
             .single()
             .unwrap();
 
-        assert_eq!(r.format(instant, None, "printed_on").unwrap(), "2026-08-19");
+        assert_eq!(r.format(instant, None).unwrap(), "2026-08-19");
         assert_eq!(
-            r.format(instant, Some("long_date"), "printed_on:long_date")
-                .unwrap(),
+            r.format(instant, Some("long_date")).unwrap(),
             "August 19, 2026"
         );
-        assert_eq!(
-            r.format(instant, Some("time"), "printed_on:time").unwrap(),
-            "14:30"
-        );
-        let err = r
-            .format(instant, Some("no_such_fmt"), "printed_on:no_such_fmt")
-            .unwrap_err();
-        assert_eq!(err.status(), 422);
+        assert_eq!(r.format(instant, Some("time")).unwrap(), "14:30");
+        let err = r.format(instant, Some("no_such_fmt")).unwrap_err();
+        assert_eq!(err.reason(), Some("reference_unresolved"));
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

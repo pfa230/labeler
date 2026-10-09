@@ -13,16 +13,10 @@ const detail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: { min: 10, max: 120 }, height: 24 },
-  inputs: {
-    all: [
-      { name: "code", control: "text" },
-      { name: "message", control: "text" },
-    ],
-    default: [
-      { name: "code", control: "text" },
-      { name: "message", control: "text" },
-    ],
-  },
+  params: [
+    { name: "code", type: "string", control: "text" },
+    { name: "message", type: "string", control: "text" },
+  ],
 };
 
 const source = "id: brother_24mm_qr\nname: Brother 24mm Continuous Label\n";
@@ -88,12 +82,6 @@ function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200, slow
           headers: { "content-type": "application/json" },
         });
       }
-      if (url.endsWith("/api/render/label")) {
-        return new Response(new Blob(["x"]), {
-          status: 200,
-          headers: { "content-type": "image/png" },
-        });
-      }
       throw new Error(`unexpected fetch: ${url}`);
     }),
   );
@@ -150,10 +138,7 @@ const sheetDetail = {
       [4.25, 4],
     ],
   },
-  inputs: {
-    all: [{ name: "message", control: "text" }],
-    default: [{ name: "message", control: "text" }],
-  },
+  params: [{ name: "message", type: "string", control: "text" }],
 };
 
 function stubSheetFetch() {
@@ -171,13 +156,6 @@ function stubSheetFetch() {
         return new Response(JSON.stringify(sheetDetail), {
           status: 200,
           headers: { "content-type": "application/json" },
-        });
-      }
-      // A sheet preview goes through /batch and comes back as a PDF.
-      if (url.endsWith("/api/batch")) {
-        return new Response(new Blob(["x"]), {
-          status: 200,
-          headers: { "content-type": "application/pdf" },
         });
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -242,7 +220,7 @@ describe("Template detail", () => {
     stubFetch();
   });
 
-  it("renders name, referenced fields, format badge, and a use-to-print link", async () => {
+  it("renders name, parameters, format badge, and a use-to-print link", async () => {
     renderPage();
     expect(await screen.findByText("Brother 24mm Continuous Label")).toBeInTheDocument();
     expect(screen.getByText("message")).toBeInTheDocument();
@@ -267,6 +245,7 @@ describe("Template detail", () => {
         {
           name: "target_width",
           type: "length",
+          control: "number",
           default: 80,
           min: 25,
           max: 200,
@@ -275,6 +254,7 @@ describe("Template detail", () => {
         {
           name: "orientation",
           type: "enum",
+          control: "select",
           values: ["horizontal", "vertical"],
           default: "horizontal",
         },
@@ -292,9 +272,6 @@ describe("Template detail", () => {
         }
         if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
           return new Response(source, { status: 200, headers: { "content-type": "text/yaml" } });
-        }
-        if (url.endsWith("/api/render/label")) {
-          return new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "image/png" } });
         }
         throw new Error(`unexpected fetch: ${url}`);
       }),
@@ -357,6 +334,22 @@ describe("Template detail", () => {
     const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
     const put = calls.find(([, init]) => init?.method === "PUT");
     expect(String(put?.[1]?.body)).toContain("name: Edited");
+  });
+
+  it("refetches the thumbnail after a save", async () => {
+    renderPage();
+    const before = (await screen.findByRole("img", { name: /preview/ })).getAttribute("src");
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Edited\n" },
+    });
+    // dataUpdatedAt has millisecond resolution; make sure the refetch lands in a later millisecond.
+    await new Promise((r) => setTimeout(r, 5));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: /preview/ }).getAttribute("src")).not.toBe(before),
+    );
   });
 
   it("keeps the draft and shows the server message when the save fails", async () => {
@@ -473,61 +466,79 @@ describe("Template detail", () => {
     expect(screen.queryByText("Labels list")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
+});
 
-  it("displays declared default alongside resolved value from param_defaults", async () => {
-    const detailWithDefaults = {
-      ...detail,
-      params: [
-        { name: "site", type: "string", default: "{vars.site}" },
-        { name: "broken", type: "string", default: "{vars.missing}" },
-        { name: "nodef", type: "string" },
-      ],
-      param_defaults: {
-        site: { resolved: "prod_site" },
-        broken: {
-          error: {
-            reason: "param_default_unresolvable",
-            message: "variable 'missing' not found",
-            token: "vars.missing",
-          },
-        },
-      },
-    };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : input.toString();
-        if (url.endsWith("/api/templates/brother_24mm_qr")) {
-          return new Response(JSON.stringify(detailWithDefaults), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
-          return new Response("source", { status: 200, headers: { "content-type": "text/yaml" } });
-        }
-        return new Response(new Blob(["x"]), {
-          status: 200,
-          headers: { "content-type": "image/png" },
-        });
-      }),
-    );
+// #413: the template page shows the server's thumbnail and each parameter's published default.
+describe("issue-413: template page", () => {
+  const published = {
+    id: "brother_24mm_qr",
+    name: "Brother 24mm Continuous Label",
+    description: "",
+    categories: [],
+    unit: "mm",
+    dpi: 300,
+    format: { type: "single", width: 80, height: 24 },
+    params: [
+      { name: "url", type: "string", control: "text", default: "https://ex.co/" },
+      { name: "bold", type: "boolean", control: "checkbox", default: false },
+    ],
+    variables: ["qr_base_url"],
+  };
+
+  function stubPublished(body: unknown) {
+    const fn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/source")) return new Response("id: x\n", { status: 200, headers: { "content-type": "text/yaml" } });
+      if (/\/api\/templates\/[^/]+$/.test(url)) {
+        return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "image/png" } });
+    });
+    vi.stubGlobal("fetch", fn);
+    return fn;
+  }
+
+  const renderCalls = (fn: ReturnType<typeof stubPublished>) =>
+    fn.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/render") || u.includes("/batch"));
+
+  it("A21: renders the thumbnail <img> and sends no render request", async () => {
+    const fn = stubPublished(published);
     renderPage();
+    const img = await screen.findByRole("img", { name: /Brother 24mm Continuous Label/ });
+    expect(img.getAttribute("src")).toMatch(/^\/api\/templates\/brother_24mm_qr\/thumbnail\?v=\d+$/);
+    // Let any effect that would request a render run before asserting none did.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(renderCalls(fn)).toEqual([]);
+  });
 
-    // Declared default for site and its resolved value
-    expect(await screen.findByText("{vars.site}")).toBeInTheDocument();
-    expect(screen.getByText("prod_site")).toBeInTheDocument();
+  it("A21: a sheet's page shows the same thumbnail and sends no batch request", async () => {
+    const fn = stubPublished({
+      ...published,
+      format: { type: "sheet", paper_width: 8.5, paper_height: 11, label_width: 4, label_height: 2, positions: [[0, 0]] },
+    });
+    renderPage();
+    const img = await screen.findByRole("img", { name: /Brother 24mm Continuous Label/ });
+    expect(img.getAttribute("src")).toMatch(/^\/api\/templates\/brother_24mm_qr\/thumbnail\?v=\d+$/);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(renderCalls(fn)).toEqual([]);
+  });
 
-    // Declared default for broken and its error message
-    expect(screen.getByText("{vars.missing}")).toBeInTheDocument();
-    expect(screen.getByText(/variable 'missing' not found/)).toBeInTheDocument();
+  it("A21: a thumbnail that fails to load shows the placeholder", async () => {
+    stubPublished(published);
+    renderPage();
+    const img = await screen.findByRole("img", { name: /Brother 24mm Continuous Label/ });
+    fireEvent.error(img);
+    await waitFor(() => expect(screen.queryByRole("img", { name: /Brother 24mm Continuous Label/ })).toBeNull());
+    expect(screen.getByText("preview")).toBeInTheDocument();
+  });
 
-    // nodef has no default shown: scope to the card (the key={name} rounded-md div)
-    const nodefCard = screen.getByText("nodef").closest("div.rounded-md");
-    expect(nodefCard).not.toBeNull();
-    expect(nodefCard!.textContent).not.toMatch(/default:/i);
-    // positive control: cards that did declare a default do show it
-    expect(screen.getByText("site").closest("div.rounded-md")!.textContent).toMatch(/default:/i);
-    expect(screen.getByText("broken").closest("div.rounded-md")!.textContent).toMatch(/default:/i);
+  it("shows each published default by value, with no Referenced fields section", async () => {
+    stubPublished(published);
+    renderPage();
+    const urlCard = (await screen.findByText("url")).closest("div.rounded-md")!;
+    expect(urlCard.textContent).toContain("https://ex.co/");
+    expect(screen.getByText("bold").closest("div.rounded-md")!.textContent).toContain("false");
+    expect(screen.queryByText(/referenced fields/i)).toBeNull();
+    expect(screen.queryByText(/resolved:/i)).toBeNull();
   });
 });

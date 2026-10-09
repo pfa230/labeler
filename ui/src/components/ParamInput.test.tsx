@@ -4,12 +4,12 @@ import { flushSync } from "react-dom";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ParamInput } from "./ParamInput";
-import type { InputSpec, ParamSpec, ParamValue } from "../api/types";
+import type { Param, ParamValue } from "../api/types";
 
 describe("ParamInput", () => {
   it("renders a text input for single-line string parameter", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "string", multiline: false, description: "Title" };
+    const spec: Param = { name: "title", type: "string", control: "text", description: "Title" };
     render(<ParamInput name="title" spec={spec} value="My Label" onChange={onChange} />);
 
     const input = screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
@@ -22,7 +22,7 @@ describe("ParamInput", () => {
 
   it("renders a textarea for multiline string parameter", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "string", multiline: true, description: "Notes" };
+    const spec: Param = { name: "notes", type: "string", control: "textarea", multiline: true, description: "Notes" };
     render(<ParamInput name="notes" spec={spec} value={"Line 1\nLine 2"} onChange={onChange} />);
 
     const textarea = screen.getByRole("textbox", { name: "Notes" }) as HTMLTextAreaElement;
@@ -35,8 +35,8 @@ describe("ParamInput", () => {
 
   it("renders a file input for an image parameter", async () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "string", description: "Logo" };
-    render(<ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} />);
+    const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
+    render(<ParamInput name="logo" spec={spec} value="" onChange={onChange} />);
 
     const input = screen.getByLabelText("Logo") as HTMLInputElement;
     expect(input.type).toBe("file");
@@ -49,9 +49,9 @@ describe("ParamInput", () => {
 
   it("drops a file read that finishes after the entry was deferred again", async () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "string", description: "Logo" };
+    const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
     const { rerender } = render(
-      <ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} />,
+      <ParamInput name="logo" spec={spec} value="" onChange={onChange} />,
     );
 
     const input = screen.getByLabelText("Logo") as HTMLInputElement;
@@ -60,7 +60,7 @@ describe("ParamInput", () => {
 
     // Re-checking "Use default" while the read is in flight: the chooser is cleared and the control
     // disabled before the reader resolves.
-    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} disabled={true} />);
+    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} disabled={true} />);
 
     await new Promise((r) => setTimeout(r, 50));
     expect(onChange).not.toHaveBeenCalled();
@@ -68,9 +68,9 @@ describe("ParamInput", () => {
 
   it("clears the file input selection when value is reset or disabled", async () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "string", description: "Logo" };
+    const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
     const { rerender } = render(
-      <ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} />,
+      <ParamInput name="logo" spec={spec} value="" onChange={onChange} />,
     );
 
     const input = screen.getByLabelText("Logo") as HTMLInputElement;
@@ -78,58 +78,18 @@ describe("ParamInput", () => {
     Object.defineProperty(input, "files", { value: [file], configurable: true, writable: true });
     Object.defineProperty(input, "value", { value: "C:\\fakepath\\logo.png", configurable: true, writable: true });
 
-    rerender(<ParamInput name="logo" spec={spec} value="data:image/png;base64,..." onChange={onChange} isImage={true} />);
+    rerender(<ParamInput name="logo" spec={spec} value="data:image/png;base64,..." onChange={onChange} />);
     expect(screen.getByText("image selected")).toBeInTheDocument();
 
     // Now reset value and disable (simulating re-checking the Use default checkbox)
-    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} disabled={true} />);
+    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} disabled={true} />);
     expect(screen.queryByText("image selected")).not.toBeInTheDocument();
     expect(input.value).toBe("");
   });
 
-  it("renders a slider for length parameter with min and max bounds", () => {
-    const onChange = vi.fn();
-    const spec: ParamSpec = {
-      type: "length",
-      default: 80,
-      min: 25,
-      max: 200,
-      description: "Target Width",
-    };
-    render(<ParamInput name="target_width" spec={spec} value={100} onChange={onChange} unit="mm" />);
-
-    const slider = screen.getByRole("slider", { name: "Target Width" }) as HTMLInputElement;
-    expect(slider).toBeInTheDocument();
-    expect(slider.min).toBe("25");
-    expect(slider.max).toBe("200");
-    expect(slider.value).toBe("100");
-    expect(screen.getByText("100 mm")).toBeInTheDocument();
-
-    fireEvent.change(slider, { target: { value: "150" } });
-    expect(onChange).toHaveBeenCalledWith(150);
-  });
-
-  it("renders an integer slider with step 1 and converts to integer", () => {
-    const onChange = vi.fn();
-    const spec: ParamSpec = {
-      type: "integer",
-      default: 400,
-      min: 100,
-      max: 900,
-      description: "Font Weight",
-    };
-    render(<ParamInput name="weight" spec={spec} value={400} onChange={onChange} />);
-
-    const slider = screen.getByRole("slider", { name: "Font Weight" }) as HTMLInputElement;
-    expect(slider.step).toBe("1");
-
-    fireEvent.change(slider, { target: { value: "700" } });
-    expect(onChange).toHaveBeenCalledWith(700);
-  });
-
   it("renders a number input when min or max is not specified", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "number", default: 12.5, description: "Font Size" };
+    const spec: Param = { name: "font_size", type: "number", control: "number", default: 12.5, description: "Font Size" };
     render(<ParamInput name="font_size" spec={spec} value={12.5} onChange={onChange} />);
 
     const numInput = screen.getByRole("spinbutton", { name: "Font Size" }) as HTMLInputElement;
@@ -144,30 +104,33 @@ describe("ParamInput", () => {
     expect(onChange).toHaveBeenCalledWith("");
   });
 
-  it("renders a checkbox toggle for boolean parameter", () => {
+  it("renders a two-state checkbox for a checkbox control", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "boolean", default: false, description: "Show Border" };
+    const spec: Param = { name: "show_border", type: "boolean", control: "checkbox", default: false, description: "Show Border" };
     const { rerender } = render(
       <ParamInput name="show_border" spec={spec} value={false} onChange={onChange} />,
     );
 
     const checkbox = screen.getByRole("checkbox", { name: "Show Border" }) as HTMLInputElement;
-    expect(checkbox).toBeInTheDocument();
     expect(checkbox.checked).toBe(false);
-    expect(screen.getByText("Disabled")).toBeInTheDocument();
+    expect(checkbox.indeterminate).toBe(false);
+    expect(screen.queryByText(/unset|enabled|disabled/i)).toBeNull();
 
     fireEvent.click(checkbox);
     expect(onChange).toHaveBeenCalledWith(true);
 
     rerender(<ParamInput name="show_border" spec={spec} value={true} onChange={onChange} />);
     expect(checkbox.checked).toBe(true);
-    expect(screen.getByText("Enabled")).toBeInTheDocument();
+    fireEvent.click(checkbox);
+    expect(onChange).toHaveBeenLastCalledWith(false);
   });
 
   it("renders a select dropdown for enum parameter", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = {
+    const spec: Param = {
+      name: "orientation",
       type: "enum",
+      control: "select",
       values: ["horizontal", "vertical"],
       default: "horizontal",
       description: "Orientation",
@@ -184,18 +147,8 @@ describe("ParamInput", () => {
     expect(onChange).toHaveBeenCalledWith("vertical");
   });
 
-  it("sets aria-invalid when invalid prop is true", () => {
-    const spec: ParamSpec = { type: "string", description: "Required Field" };
-    render(
-      <ParamInput name="req" spec={spec} value="" onChange={vi.fn()} invalid={true} />,
-    );
-
-    const input = screen.getByRole("textbox", { name: "Required Field" });
-    expect(input).toHaveAttribute("aria-invalid", "true");
-  });
-
   it("disables the input when disabled prop is true", () => {
-    const spec: ParamSpec = { type: "string", description: "Disabled Field" };
+    const spec: Param = { name: "dis", type: "string", control: "text", description: "Disabled Field" };
     render(
       <ParamInput name="dis" spec={spec} value="" onChange={vi.fn()} disabled={true} />,
     );
@@ -206,7 +159,7 @@ describe("ParamInput", () => {
 
   it("renders a date input for datetime parameter without time", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "datetime", description: "Printed Date" };
+    const spec: Param = { name: "printed_on", type: "datetime", control: "date", description: "Printed Date" };
     render(<ParamInput name="printed_on" spec={spec} value="2026-08-19" onChange={onChange} />);
 
     const input = screen.getByLabelText("Printed Date") as HTMLInputElement;
@@ -220,7 +173,7 @@ describe("ParamInput", () => {
 
   it("renders a datetime-local input for datetime parameter with time", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "datetime", time: true, description: "Printed Timestamp" };
+    const spec: Param = { name: "printed_on", type: "datetime", control: "datetime", time: true, description: "Printed Timestamp" };
     render(<ParamInput name="printed_on" spec={spec} value="2026-08-19T14:30" onChange={onChange} />);
 
     const input = screen.getByLabelText("Printed Timestamp") as HTMLInputElement;
@@ -232,20 +185,9 @@ describe("ParamInput", () => {
     expect(onChange).toHaveBeenCalledWith("2026-08-19T16:45");
   });
 
-  it("renders an unset checkbox when value and default are undefined", () => {
-    const onChange = vi.fn();
-    const spec: ParamSpec = { type: "boolean", description: "Flag" };
-    render(<ParamInput name="flag" spec={spec} value={undefined} onChange={onChange} />);
-
-    const checkbox = screen.getByRole("checkbox", { name: "Flag" }) as HTMLInputElement;
-    expect(checkbox).toBeInTheDocument();
-    expect(checkbox.checked).toBe(false);
-    expect(screen.getByText("Unset")).toBeInTheDocument();
-  });
-
   it("renders a select with placeholder when value and default are undefined", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "enum", values: ["a", "b"], description: "Choice" };
+    const spec: Param = { name: "choice", type: "enum", control: "select", values: ["a", "b"], description: "Choice" };
     render(<ParamInput name="choice" spec={spec} value={undefined} onChange={onChange} />);
 
     const select = screen.getByRole("combobox", { name: "Choice" }) as HTMLSelectElement;
@@ -254,29 +196,9 @@ describe("ParamInput", () => {
     expect(screen.getByText("Select...")).toBeInTheDocument();
   });
 
-  it("renders a number input rather than a slider when bounds are set but default is missing", () => {
+  it("does not substitute a default for an unset select", () => {
     const onChange = vi.fn();
-    const spec: ParamSpec = { type: "length", min: 10, max: 100, description: "Width" };
-    render(<ParamInput name="width" spec={spec} value={undefined} onChange={onChange} />);
-
-    expect(screen.queryByRole("slider")).toBeNull();
-    const spin = screen.getByRole("spinbutton", { name: "Width" }) as HTMLInputElement;
-    expect(spin).toBeInTheDocument();
-  });
-
-  it("does not substitute a default for an unset checkbox when InputSpec carries one", () => {
-    const onChange = vi.fn();
-    const spec = { name: "flag", control: "checkbox", required: false, default: true } as unknown as ParamSpec;
-    render(<ParamInput name="flag" spec={spec} value={undefined} onChange={onChange} />);
-
-    const checkbox = screen.getByRole("checkbox", { name: "flag" }) as HTMLInputElement;
-    expect(checkbox.checked).toBe(false);
-    expect(screen.getByText("Unset")).toBeInTheDocument();
-  });
-
-  it("does not substitute a default for an unset select when InputSpec carries one", () => {
-    const onChange = vi.fn();
-    const spec = { name: "choice", control: "select", values: ["a", "b"], required: false, default: "a" } as unknown as ParamSpec;
+    const spec: Param = { name: "choice", type: "enum", control: "select", values: ["a", "b"], default: "a" };
     render(<ParamInput name="choice" spec={spec} value={undefined} onChange={onChange} />);
 
     const select = screen.getByRole("combobox", { name: "choice" }) as HTMLSelectElement;
@@ -284,19 +206,11 @@ describe("ParamInput", () => {
     expect(screen.getByText("Select...")).toBeInTheDocument();
   });
 
-  it("renders editor for control 'list' and ParamSpec type 'list', and undefined value renders zero rows without crashing", () => {
+  it("renders the list editor, and an undefined value renders zero rows without crashing", () => {
     const onChange = vi.fn();
-    const inputSpec: InputSpec = { name: "tags", control: "list", description: "Asset Tags", required: true };
-    const { rerender } = render(
-      <ParamInput name="tags" spec={inputSpec} value={undefined} onChange={onChange} />,
-    );
+    const spec: Param = { name: "tags", type: "list", control: "list", description: "Asset Tags" };
+    render(<ParamInput name="tags" spec={spec} value={undefined} onChange={onChange} />);
     expect(screen.getByRole("group", { name: "Asset Tags" })).toBeInTheDocument();
-    expect(screen.queryByRole("textbox")).toBeNull();
-    expect(screen.getByRole("button", { name: "add tags" })).toBeInTheDocument();
-
-    const paramSpec: ParamSpec = { type: "list", description: "Tags" };
-    rerender(<ParamInput name="tags" spec={paramSpec} value={undefined} onChange={onChange} />);
-    expect(screen.getByRole("group", { name: "Tags" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByRole("button", { name: "add tags" })).toBeInTheDocument();
   });
@@ -307,7 +221,7 @@ describe("ParamInput", () => {
       return (
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
           value={val}
           onChange={(v) => {
             setVal(v);
@@ -353,7 +267,7 @@ describe("ParamInput", () => {
       return (
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
           value={val}
           onChange={(v) => {
             setVal(v);
@@ -388,7 +302,7 @@ describe("ParamInput", () => {
     render(
       <ParamInput
         name="tags"
-        spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+        spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
         value={["A", "B", "C"]}
         onChange={onChange}
       />,
@@ -449,7 +363,7 @@ describe("ParamInput", () => {
     render(
       <ParamInput
         name="tags"
-        spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+        spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
         value={["A"]}
         onChange={onChange}
       />,
@@ -479,7 +393,7 @@ describe("ParamInput", () => {
       return (
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
           value={val}
           onChange={(v) => {
             setVal(v);
@@ -514,7 +428,7 @@ describe("ParamInput", () => {
       return (
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
           value={val}
           onChange={(v) => {
             setVal(v);
@@ -553,13 +467,13 @@ describe("ParamInput", () => {
       <div>
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Values", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Values" }}
           value={["T1", "T2"]}
           onChange={() => {}}
         />
         <ParamInput
           name="codes"
-          spec={{ control: "list", description: "Values", required: true, name: "codes" }}
+          spec={{ name: "codes", type: "list", control: "list", description: "Values" }}
           value={["C1", "C2"]}
           onChange={() => {}}
         />
@@ -593,7 +507,7 @@ describe("ParamInput", () => {
     render(
       <ParamInput
         name="tags"
-        spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+        spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
         value={["ALPHA", "BETA"]}
         disabled={true}
         onChange={() => {}}
@@ -626,7 +540,7 @@ describe("ParamInput", () => {
       return (
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
           value={val}
           onChange={(v) => setVal(v)}
         />
@@ -665,7 +579,7 @@ describe("ParamInput", () => {
       return (
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
           value={val}
           onChange={(v) => setVal(v)}
         />
@@ -704,7 +618,7 @@ describe("ParamInput", () => {
       return (
         <ParamInput
           name="tags"
-          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
           value={val}
           onChange={(v) => setVal(v)}
         />

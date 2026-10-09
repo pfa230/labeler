@@ -4,6 +4,7 @@ import { useFavorites, useRecentTemplates, useSetFavorite, useTemplates } from "
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { FormatBadge } from "../components/FormatBadge";
+import { TemplateThumbnail } from "../components/TemplateThumbnail";
 import type { TemplateSummary } from "../api/types";
 
 function compareCodePoints(a: string, b: string): number {
@@ -38,7 +39,6 @@ function TemplateCard({
   favorite: boolean;
   onToggleFavorite: () => void;
 }) {
-  const [failed, setFailed] = useState(false);
   return (
     <div
       className="flex h-full flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md"
@@ -52,24 +52,7 @@ function TemplateCard({
         aria-label={`Print ${template.name}`}
         className="flex flex-col gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2"
       >
-        {failed ? (
-          <div
-            className="flex aspect-[3/1] items-center justify-center rounded-md border text-xs"
-            style={{ background: "var(--paper)", borderColor: "var(--border)", color: "var(--muted)" }}
-            aria-hidden="true"
-          >
-            preview
-          </div>
-        ) : (
-          <img
-            src={`/api/templates/${template.id}/thumbnail`}
-            alt={`${template.name} preview`}
-            loading="lazy"
-            onError={() => setFailed(true)}
-            className="aspect-[3/1] w-full rounded-md border object-contain"
-            style={{ background: "var(--paper)", borderColor: "var(--border)" }}
-          />
-        )}
+        <TemplateThumbnail id={template.id} name={template.name} />
         <h2 className="font-semibold" style={{ color: "var(--ink)" }}>
           {template.name}
         </h2>

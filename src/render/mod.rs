@@ -5,7 +5,7 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 use crate::errors::AppError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Fit, LabelInput, Layout, LayoutItem, ParamSpec,
-    Placement, Point, Position, Rotation, Shape, Stroke, TemplateFormat,
+    ParamType, ParamValue, Placement, Point, Position, Rotation, Shape, Stroke, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::{TemplateContent, TemplateDefinition};
@@ -26,138 +26,164 @@ use std::fmt::Write;
 use typst_as_lib::TypstEngine;
 use typst_layout::PagedDocument;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResolveMode {
-    Strict,
-    Lenient,
-}
-
 #[derive(Debug, Clone)]
 pub struct ResolvedParams {
     pub data: HashMap<String, JsonValue>,
     pub instants: BTreeMap<String, DateTime<Local>>,
 }
 
-enum CoercedParam {
-    Value(JsonValue),
-    Datetime(DateTime<Local>, String),
+/// A value the supplied-value rule accepts: what `{p}` prints and a `when:` compares, plus a
+/// `datetime`'s instant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coerced {
+    pub value: ParamValue,
+    pub instant: Option<DateTime<Local>>,
 }
 
-fn coerce_param_value(
+/// Why the supplied-value rule refuses a value. The message describes the value, not the
+/// parameter, so each caller names where it was read; `element` is a `list` element's position.
+#[derive(Debug)]
+pub(crate) struct Refusal {
+    pub message: String,
+    pub element: Option<usize>,
+}
+
+/// Each tokened default of one template, resolved against one request's snapshot.
+pub type ResolvedDefaults = BTreeMap<String, Coerced>;
+
+/// 2^63: every whole `f64` in `[-2^63, 2^63)` is an `i64`.
+const I64_BOUND: f64 = 9_223_372_036_854_775_808.0;
+
+/// The supplied-value rule (`parameters`, "Supplied values are coerced by type"). `null`, and a
+/// blank string for every type but `string`, is an omission (`Ok(None)`). Anything else is the
+/// type's accepted form within the declared `min` and `max`, or refused.
+pub(crate) fn coerce_param_value(
     val: &JsonValue,
-    param_type: &crate::models::ParamType,
-) -> Result<CoercedParam, String> {
-    match param_type {
-        crate::models::ParamType::Datetime { .. } => {
-            let dt_str = match val {
-                JsonValue::String(s) => s.clone(),
-                other => value_to_string(other),
-            };
-            let trimmed = dt_str.trim();
-            match crate::datetime_fmt::parse_datetime_override(trimmed) {
-                Ok(dt) => {
-                    let formatted = crate::datetime_fmt::format_now(
-                        crate::datetime_fmt::BARE_DATETIME_FORMAT,
-                        dt,
-                    );
-                    Ok(CoercedParam::Datetime(dt, formatted))
-                }
-                Err(_) => Err(trimmed.to_string()),
-            }
-        }
-        crate::models::ParamType::Enum { values } => {
-            let s = match val {
-                JsonValue::String(s) => s.clone(),
-                other => value_to_string(other),
-            };
-            if values.contains(&s) {
-                Ok(CoercedParam::Value(JsonValue::String(s)))
-            } else {
-                Err(s)
-            }
-        }
-        crate::models::ParamType::Boolean => {
-            let b_res = match val {
-                JsonValue::Bool(b) => Ok(*b),
-                JsonValue::String(s) => {
-                    let trimmed = s.trim();
-                    if trimmed == "true" || trimmed == "1" {
-                        Ok(true)
-                    } else if trimmed == "false" || trimmed == "0" {
-                        Ok(false)
-                    } else {
-                        Err(())
-                    }
-                }
-                JsonValue::Number(n) => {
-                    if n.as_i64() == Some(1) {
-                        Ok(true)
-                    } else if n.as_i64() == Some(0) {
-                        Ok(false)
-                    } else {
-                        Err(())
-                    }
-                }
-                _ => Err(()),
-            };
-            match b_res {
-                Ok(b) => Ok(CoercedParam::Value(JsonValue::Bool(b))),
-                Err(()) => Err(value_to_string(val)),
-            }
-        }
-        crate::models::ParamType::Integer => {
-            let i_res = match val {
-                JsonValue::Number(n) => n
-                    .as_i64()
-                    .or_else(|| n.as_f64().map(|f| f.round() as i64))
-                    .ok_or(()),
-                JsonValue::String(s) => s.trim().parse::<i64>().map_err(|_| ()),
-                _ => Err(()),
-            };
-            match i_res {
-                Ok(i) => Ok(CoercedParam::Value(serde_json::json!(i))),
-                Err(()) => Err(value_to_string(val)),
-            }
-        }
-        crate::models::ParamType::Length | crate::models::ParamType::Number => {
-            let f_res = match val {
-                JsonValue::Number(n) => n.as_f64().map(|f| f as f32).ok_or(()),
-                JsonValue::String(s) => {
-                    let trimmed = s.trim();
-                    let num_str = trimmed
-                        .strip_suffix("mm")
-                        .or_else(|| trimmed.strip_suffix("in"))
-                        .unwrap_or(trimmed);
-                    num_str.trim().parse::<f32>().map_err(|_| ())
-                }
-                _ => Err(()),
-            };
-            match f_res {
-                Ok(f) => Ok(CoercedParam::Value(serde_json::json!(f))),
-                Err(()) => Err(value_to_string(val)),
-            }
-        }
-        crate::models::ParamType::String { .. } => match val {
-            JsonValue::String(s) => Ok(CoercedParam::Value(JsonValue::String(s.clone()))),
-            JsonValue::Array(_) => Err("an array is not a valid string".to_string()),
-            other => Ok(CoercedParam::Value(JsonValue::String(value_to_string(
-                other,
-            )))),
-        },
-        crate::models::ParamType::List => match val {
-            JsonValue::Array(arr) => {
-                let mut strings = Vec::with_capacity(arr.len());
-                for (idx, elem) in arr.iter().enumerate() {
-                    match elem {
-                        JsonValue::String(s) => strings.push(JsonValue::String(s.clone())),
-                        _ => return Err(format!("position {idx}")),
-                    }
-                }
-                Ok(CoercedParam::Value(JsonValue::Array(strings)))
-            }
-            _ => Err("not an array".to_string()),
-        },
+    spec: &ParamSpec,
+) -> Result<Option<Coerced>, Refusal> {
+    let is_string = matches!(spec.param_type, ParamType::String { .. });
+    match val {
+        JsonValue::Null => return Ok(None),
+        JsonValue::String(s) if !is_string && s.trim().is_empty() => return Ok(None),
+        _ => {}
     }
+    let refuse = |message: String| Refusal {
+        message,
+        element: None,
+    };
+    let not_a = |what: &str| refuse(format!("{val} is not {what}"));
+    let out_of_bounds = || {
+        let bound = |b: Option<f64>| b.map_or_else(|| "none".to_string(), |b| b.to_string());
+        refuse(format!(
+            "{val} is outside min {} and max {}",
+            bound(spec.min),
+            bound(spec.max)
+        ))
+    };
+    let value = match &spec.param_type {
+        ParamType::String { .. } => match val {
+            JsonValue::String(s) => ParamValue::String(s.clone()),
+            _ => return Err(not_a("a string")),
+        },
+        ParamType::Number | ParamType::Length => {
+            let number = match val {
+                JsonValue::Number(n) => n.as_f64(),
+                JsonValue::String(s) => s.trim().parse::<f64>().ok(),
+                _ => None,
+            }
+            .filter(|f| f.is_finite())
+            .ok_or_else(|| not_a("a number"))?;
+            if spec.min.is_some_and(|min| number < min) || spec.max.is_some_and(|max| number > max)
+            {
+                return Err(out_of_bounds());
+            }
+            ParamValue::Float(number)
+        }
+        ParamType::Integer => {
+            let integer = match val {
+                JsonValue::Number(n) => n.as_i64().or_else(|| {
+                    n.as_f64()
+                        .filter(|f| f.fract() == 0.0 && (-I64_BOUND..I64_BOUND).contains(f))
+                        .map(|f| f as i64)
+                }),
+                JsonValue::String(s) => s.trim().parse::<i64>().ok(),
+                _ => None,
+            }
+            .ok_or_else(|| not_a("an integer"))?;
+            // Compared in i128 against the whole numbers the bounds admit: casting the integer to
+            // f64 instead would admit 2^53 + 1 at `max: 2^53`.
+            let wide = i128::from(integer);
+            if spec.min.is_some_and(|min| wide < min.ceil() as i128)
+                || spec.max.is_some_and(|max| wide > max.floor() as i128)
+            {
+                return Err(out_of_bounds());
+            }
+            ParamValue::Integer(integer)
+        }
+        ParamType::Boolean => {
+            let boolean = match val {
+                JsonValue::Bool(b) => Some(*b),
+                JsonValue::String(s) => match s.trim() {
+                    "true" | "1" => Some(true),
+                    "false" | "0" => Some(false),
+                    _ => None,
+                },
+                JsonValue::Number(n) => match n.as_f64() {
+                    Some(1.0) => Some(true),
+                    Some(0.0) => Some(false),
+                    _ => None,
+                },
+                _ => None,
+            }
+            .ok_or_else(|| not_a("a boolean"))?;
+            ParamValue::Boolean(boolean)
+        }
+        ParamType::Enum { values } => match val {
+            JsonValue::String(s) if values.contains(s) => ParamValue::String(s.clone()),
+            _ => {
+                return Err(refuse(format!(
+                    "{val} is not one of the values: {}",
+                    values.join(", ")
+                )))
+            }
+        },
+        ParamType::Datetime { .. } => {
+            let JsonValue::String(s) = val else {
+                return Err(not_a("a datetime string"));
+            };
+            let instant = crate::datetime_fmt::parse_datetime_override(s.trim())
+                .map_err(|err| refuse(format!("{val} is not a datetime: {err}")))?;
+            return Ok(Some(Coerced {
+                value: ParamValue::String(crate::datetime_fmt::format_now(
+                    crate::datetime_fmt::BARE_DATETIME_FORMAT,
+                    instant,
+                )),
+                instant: Some(instant),
+            }));
+        }
+        ParamType::List => {
+            let JsonValue::Array(items) = val else {
+                return Err(not_a("a list of strings"));
+            };
+            let mut strings = Vec::with_capacity(items.len());
+            for (idx, item) in items.iter().enumerate() {
+                match item {
+                    JsonValue::String(s) => strings.push(s.clone()),
+                    _ => {
+                        return Err(Refusal {
+                            message: format!("element at position {idx} is not a string: {item}"),
+                            element: Some(idx),
+                        })
+                    }
+                }
+            }
+            ParamValue::List(strings)
+        }
+    };
+    Ok(Some(Coerced {
+        value,
+        instant: None,
+    }))
 }
 
 /// Returns the parameter names that match no key of `template.params`,
@@ -207,209 +233,41 @@ pub fn validate_label_data_keys(
     }
 }
 
-/// Resolve parameters by merging request data and template parameter defaults.
+/// Each declared parameter's value: the label's value coerced by its type, else its default.
+/// Every supplied value is coerced before any `when:` is evaluated. `defaults` holds the tokened
+/// defaults `resolve_environment` resolved for this request.
 pub fn resolve_parameters(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    variables: Option<&BTreeMap<String, String>>,
-    datetime: Option<&crate::datetime_fmt::DateTimeResolver>,
-) -> Result<ResolvedParams, AppError> {
-    resolve_parameters_mode(template, data, variables, datetime, ResolveMode::Strict)
-}
-
-pub fn resolve_parameters_mode(
-    template: &TemplateContent,
-    data: &HashMap<String, JsonValue>,
-    variables: Option<&BTreeMap<String, String>>,
-    datetime: Option<&crate::datetime_fmt::DateTimeResolver>,
-    mode: ResolveMode,
+    defaults: &ResolvedDefaults,
 ) -> Result<ResolvedParams, AppError> {
     let mut resolved = data.clone();
     let mut instants = BTreeMap::new();
 
     for (name, spec) in &template.params {
-        match &spec.param_type {
-            crate::models::ParamType::Datetime { .. } => {
-                let raw_val = resolved.get(name);
-                match raw_val {
-                    None | Some(JsonValue::Null) => {
-                        resolve_and_coerce_default(
-                            name,
-                            spec,
-                            variables,
-                            datetime,
-                            &mut instants,
-                            &mut resolved,
-                            mode,
-                        )?;
-                    }
-                    Some(JsonValue::String(s)) if s.trim().is_empty() => {
-                        resolve_and_coerce_default(
-                            name,
-                            spec,
-                            variables,
-                            datetime,
-                            &mut instants,
-                            &mut resolved,
-                            mode,
-                        )?;
-                    }
-                    Some(val) => match coerce_param_value(val, &spec.param_type) {
-                        Ok(CoercedParam::Datetime(dt, formatted)) => {
-                            instants.insert(name.clone(), dt);
-                            resolved.insert(name.clone(), JsonValue::String(formatted));
-                        }
-                        Ok(CoercedParam::Value(_)) => unreachable!(),
-                        Err(bad_str) => {
-                            if mode == ResolveMode::Lenient {
-                                resolve_and_coerce_default(
-                                    name,
-                                    spec,
-                                    variables,
-                                    datetime,
-                                    &mut instants,
-                                    &mut resolved,
-                                    mode,
-                                )?;
-                            } else {
-                                return Err(AppError::param_value_invalid(
-                                    name,
-                                    None,
-                                    format!(
-                                        "Invalid value for datetime parameter '{name}': {bad_str}"
-                                    ),
-                                ));
-                            }
-                        }
-                    },
+        let supplied = match data.get(name) {
+            Some(val) => coerce_param_value(val, spec).map_err(|refusal| {
+                AppError::param_value_invalid(
+                    name,
+                    refusal.element,
+                    format!("invalid value for parameter '{name}': {}", refusal.message),
+                )
+            })?,
+            None => None,
+        };
+        let value = match supplied {
+            Some(value) => Some(value),
+            None => declared_default(name, spec, defaults)?,
+        };
+        match value {
+            Some(Coerced { value, instant }) => {
+                resolved.insert(name.clone(), JsonValue::from(&value));
+                if let Some(instant) = instant {
+                    instants.insert(name.clone(), instant);
                 }
             }
-            crate::models::ParamType::List => {
-                let raw_val = resolved.get(name);
-                match raw_val {
-                    None | Some(JsonValue::Null) => {
-                        resolve_and_coerce_default(
-                            name,
-                            spec,
-                            variables,
-                            datetime,
-                            &mut instants,
-                            &mut resolved,
-                            mode,
-                        )?;
-                    }
-                    Some(val) => match coerce_param_value(val, &spec.param_type) {
-                        Ok(CoercedParam::Value(coerced)) => {
-                            resolved.insert(name.clone(), coerced);
-                        }
-                        Ok(CoercedParam::Datetime(..)) => unreachable!(),
-                        Err(bad_str) => {
-                            if mode == ResolveMode::Lenient {
-                                resolve_and_coerce_default(
-                                    name,
-                                    spec,
-                                    variables,
-                                    datetime,
-                                    &mut instants,
-                                    &mut resolved,
-                                    mode,
-                                )?;
-                            } else if let Some(pos) = bad_str
-                                .strip_prefix("position ")
-                                .and_then(|pos| pos.parse::<usize>().ok())
-                            {
-                                return Err(AppError::param_value_invalid(
-                                    name,
-                                    Some(pos),
-                                    format!("element at position {pos} of parameter '{name}' must be a string"),
-                                ));
-                            } else {
-                                return Err(AppError::param_value_invalid(
-                                    name,
-                                    None,
-                                    format!("parameter '{name}' is not a valid list"),
-                                ));
-                            }
-                        }
-                    },
-                }
-            }
-            _ => {
-                if let Some(val) = resolved.get(name) {
-                    match coerce_param_value(val, &spec.param_type) {
-                        Ok(CoercedParam::Value(coerced)) => {
-                            resolved.insert(name.clone(), coerced);
-                        }
-                        Ok(CoercedParam::Datetime(..)) => unreachable!(),
-                        Err(bad_str) => {
-                            if mode == ResolveMode::Lenient {
-                                resolve_and_coerce_default(
-                                    name,
-                                    spec,
-                                    variables,
-                                    datetime,
-                                    &mut instants,
-                                    &mut resolved,
-                                    mode,
-                                )?;
-                            } else {
-                                match &spec.param_type {
-                                    crate::models::ParamType::Enum { values } => {
-                                        return Err(AppError::param_value_invalid(
-                                            name,
-                                            None,
-                                            format!(
-                                                "'{bad_str}' is not one of the values of parameter '{name}': {}",
-                                                values.join(", ")
-                                            ),
-                                        ));
-                                    }
-                                    crate::models::ParamType::Boolean => {
-                                        return Err(AppError::param_value_invalid(
-                                            name,
-                                            None,
-                                            format!("parameter '{name}' is not a valid boolean"),
-                                        ));
-                                    }
-                                    crate::models::ParamType::Integer => {
-                                        return Err(AppError::param_value_invalid(
-                                            name,
-                                            None,
-                                            format!("parameter '{name}' is not a valid integer"),
-                                        ));
-                                    }
-                                    crate::models::ParamType::Length
-                                    | crate::models::ParamType::Number => {
-                                        return Err(AppError::param_value_invalid(
-                                            name,
-                                            None,
-                                            format!("parameter '{name}' is not a valid number"),
-                                        ));
-                                    }
-                                    crate::models::ParamType::String { .. } => {
-                                        return Err(AppError::param_value_invalid(
-                                            name,
-                                            None,
-                                            format!("parameter '{name}' is not a valid string"),
-                                        ));
-                                    }
-                                    crate::models::ParamType::Datetime { .. }
-                                    | crate::models::ParamType::List => unreachable!(),
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    resolve_and_coerce_default(
-                        name,
-                        spec,
-                        variables,
-                        datetime,
-                        &mut instants,
-                        &mut resolved,
-                        mode,
-                    )?;
-                }
+            None => {
+                resolved.remove(name);
             }
         }
     }
@@ -420,236 +278,94 @@ pub fn resolve_parameters_mode(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParamDefaultFailure {
-    pub param: String,
-    pub message: String,
-    pub token: Option<String>,
-    pub value: Option<String>,
-}
-
-impl ParamDefaultFailure {
-    pub fn new(param: impl Into<String>, token: Option<String>, value: Option<String>) -> Self {
-        let param = param.into();
-        let message = match (&token, &value) {
-            (Some(tok), Some(val)) => {
-                format!("Failed to resolve default for parameter '{param}': token '{tok}' resolved to invalid value '{val}'")
-            }
-            (Some(tok), None) => {
-                format!("Failed to resolve default for parameter '{param}': token '{tok}' could not be resolved")
-            }
-            (None, Some(val)) => {
-                format!(
-                    "Failed to resolve default for parameter '{param}': value '{val}' is invalid"
-                )
-            }
-            (None, None) => {
-                format!("Failed to resolve default for parameter '{param}'")
-            }
-        };
-        Self {
-            param,
-            message,
-            token,
-            value,
-        }
-    }
-
-    pub fn to_error_report(&self) -> crate::models::ParamDefaultError {
-        crate::models::ParamDefaultError {
-            reason: crate::reason::Reason::ParamDefaultUnresolvable
-                .as_slug()
-                .to_string(),
-            message: self.message.clone(),
-            token: self.token.clone(),
-            value: self.value.clone(),
-        }
-    }
-}
-
-pub fn json_to_param_value(val: &serde_json::Value) -> crate::models::ParamValue {
-    match val {
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                crate::models::ParamValue::Integer(i)
-            } else if let Some(f) = n.as_f64() {
-                crate::models::ParamValue::Float(f as f32)
-            } else {
-                crate::models::ParamValue::Float(0.0)
-            }
-        }
-        serde_json::Value::Bool(b) => crate::models::ParamValue::Boolean(*b),
-        serde_json::Value::Array(arr) => {
-            let mut list = Vec::with_capacity(arr.len());
-            for v in arr {
-                match v {
-                    serde_json::Value::String(s) => list.push(s.clone()),
-                    other => panic!(
-                        "json_to_param_value: non-string list element after coercion: {other:?}"
-                    ),
-                }
-            }
-            crate::models::ParamValue::List(list)
-        }
-        serde_json::Value::String(s) => crate::models::ParamValue::String(s.clone()),
-        other => crate::models::ParamValue::String(other.to_string()),
-    }
-}
-
-fn resolve_parameter_default_candidate(
+/// The value an omitted parameter takes: a literal default as judged at load, a tokened default as
+/// resolved for this request, and `false` for a `boolean` that declares none.
+fn declared_default(
     name: &str,
     spec: &ParamSpec,
-    variables: Option<&BTreeMap<String, String>>,
-    datetime: Option<&crate::datetime_fmt::DateTimeResolver>,
-    mode: ResolveMode,
-) -> Result<Option<CoercedParam>, Result<ParamDefaultFailure, String>> {
-    let default_val = match &spec.default {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-
-    let candidate = match default_val {
-        crate::models::ParamValue::String(s) => {
-            if s.contains('{') || s.contains('}') {
-                if let (Some(vars), Some(dt)) = (variables, datetime) {
-                    match helpers::interpolate(s, &HashMap::new(), vars, dt, None) {
-                        Ok(interpolated) => JsonValue::String(interpolated),
-                        Err(err) => {
-                            if mode == ResolveMode::Lenient {
-                                return Ok(None);
-                            } else {
-                                let token = match err.details() {
-                                    Some(serde_json::Value::Object(map)) => {
-                                        map.get("field").and_then(|v| v.as_str()).map(String::from)
-                                    }
-                                    _ => None,
-                                };
-                                return Err(Ok(ParamDefaultFailure::new(name, token, None)));
-                            }
-                        }
-                    }
-                } else if mode == ResolveMode::Lenient {
-                    return Ok(None);
-                } else {
-                    return Err(Err(format!(
-                        "strict resolution called without required variables or datetime context for tokened default of parameter '{name}'"
-                    )));
-                }
-            } else {
-                JsonValue::String(s.clone())
-            }
-        }
-        crate::models::ParamValue::Float(f) => serde_json::json!(f),
-        crate::models::ParamValue::Integer(i) => serde_json::json!(i),
-        crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
-        crate::models::ParamValue::List(l) => serde_json::json!(l),
-    };
-
-    match coerce_param_value(&candidate, &spec.param_type) {
-        Ok(coerced) => Ok(Some(coerced)),
-        Err(bad_str) => {
-            if mode == ResolveMode::Lenient {
-                Ok(None)
-            } else {
-                Err(Ok(ParamDefaultFailure::new(name, None, Some(bad_str))))
-            }
-        }
+    defaults: &ResolvedDefaults,
+) -> Result<Option<Coerced>, AppError> {
+    if spec.tokened_default().is_some() {
+        return defaults.get(name).cloned().map(Some).ok_or_else(|| {
+            AppError::internal(format!(
+                "the tokened default of parameter '{name}' was not resolved for this request"
+            ))
+        });
     }
+    Ok(match &spec.default {
+        Some(value) => Some(Coerced {
+            value: value.clone(),
+            instant: spec.default_instant,
+        }),
+        None if spec.param_type == ParamType::Boolean => Some(Coerced {
+            value: ParamValue::Boolean(false),
+            instant: None,
+        }),
+        None => None,
+    })
 }
 
-pub fn resolve_parameter_default(
-    name: &str,
-    declared_default: &crate::models::ParamValue,
-    param_type: &crate::models::ParamType,
-    variables: &BTreeMap<String, String>,
-    datetime: &crate::datetime_fmt::DateTimeResolver,
-) -> Result<serde_json::Value, ParamDefaultFailure> {
-    // Build a temporary ParamSpec to reuse the candidate logic without reimplementing
-    // interpolation/coercion. The only caller is resolve_declared_defaults, which has
-    // already unwrapped the declared default, so this function cannot be called for a
-    // parameter that declares none; the type makes that a compile-time property of the
-    // call site rather than a runtime panic on `spec.default.is_none()`.
-    let spec = ParamSpec {
-        param_type: param_type.clone(),
-        default: Some(declared_default.clone()),
-        min: None,
-        max: None,
-        description: None,
-    };
-    match resolve_parameter_default_candidate(
-        name,
-        &spec,
-        Some(variables),
-        Some(datetime),
-        ResolveMode::Strict,
-    ) {
-        Ok(Some(CoercedParam::Datetime(_dt, formatted))) => Ok(JsonValue::String(formatted)),
-        Ok(Some(CoercedParam::Value(coerced))) => Ok(coerced),
-        Ok(None) => unreachable!(
-            "resolve_parameter_default: candidate returned None for declared default of '{name}' in Strict mode"
-        ),
-        Err(Ok(failure)) => Err(failure),
-        Err(Err(internal_msg)) => Err(ParamDefaultFailure::new(name, None, Some(internal_msg))),
-    }
-}
-
-pub fn resolve_declared_defaults(
+/// Resolve everything in `template` that does not come from a label against one request's
+/// snapshot (`interpolation`, "One snapshot per request"): every `vars` key and datetime format
+/// name in an interpolated string, and every tokened default, whose value must pass its type's
+/// supplied-value rule. Any failure fails the whole request as `reference_unresolved`.
+pub fn resolve_environment<'a>(
     template: &TemplateContent,
-    variables: &BTreeMap<String, String>,
-    datetime: &crate::datetime_fmt::DateTimeResolver,
-) -> crate::models::ResolvedDefaults {
-    let mut map = BTreeMap::new();
-    for (name, spec) in &template.params {
-        if let Some(declared) = spec.default.as_ref() {
-            match resolve_parameter_default(name, declared, &spec.param_type, variables, datetime) {
-                Ok(val) => {
-                    map.insert(
-                        name.clone(),
-                        crate::models::ParamDefaultReport::Resolved {
-                            resolved: json_to_param_value(&val),
-                        },
-                    );
+    settings: &'a BTreeMap<String, String>,
+    datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
+) -> Result<RenderEnv<'a>, AppError> {
+    for (path, text) in template.interpolated_strings() {
+        for scanned in crate::interpolation::scan_tokens(text) {
+            // Token syntax is judged at load.
+            let Ok(token) = crate::interpolation::parse(scanned.raw) else {
+                continue;
+            };
+            if let crate::interpolation::Source::Vars(key) = token.source {
+                if !settings.contains_key(key) {
+                    return Err(AppError::reference_unresolved(
+                        &format!("vars.{key}"),
+                        format!("{path} reads variable '{key}', which is not set"),
+                    ));
                 }
-                Err(failure) => {
-                    map.insert(
-                        name.clone(),
-                        crate::models::ParamDefaultReport::Error {
-                            error: failure.to_error_report(),
-                        },
-                    );
+            }
+            if let Some(crate::interpolation::Reader::Format(format)) = token.reader {
+                if !datetime.formats.contains_key(format) {
+                    return Err(AppError::reference_unresolved(
+                        format,
+                        format!(
+                            "{path} uses datetime format '{format}', which the datetime_formats setting does not define"
+                        ),
+                    ));
                 }
             }
         }
     }
-    map
-}
 
-fn resolve_and_coerce_default(
-    name: &str,
-    spec: &ParamSpec,
-    variables: Option<&BTreeMap<String, String>>,
-    datetime: Option<&crate::datetime_fmt::DateTimeResolver>,
-    instants: &mut BTreeMap<String, DateTime<Local>>,
-    resolved: &mut HashMap<String, JsonValue>,
-    mode: ResolveMode,
-) -> Result<(), AppError> {
-    match resolve_parameter_default_candidate(name, spec, variables, datetime, mode) {
-        Ok(Some(CoercedParam::Datetime(dt, formatted))) => {
-            instants.insert(name.to_string(), dt);
-            resolved.insert(name.to_string(), JsonValue::String(formatted));
-            Ok(())
-        }
-        Ok(Some(CoercedParam::Value(coerced))) => {
-            resolved.insert(name.to_string(), coerced);
-            Ok(())
-        }
-        Ok(None) => {
-            resolved.remove(name);
-            Ok(())
-        }
-        Err(Ok(failure)) => Err(AppError::param_default_unresolvable(&failure)),
-        Err(Err(internal_msg)) => Err(AppError::internal(internal_msg)),
+    let mut defaults = ResolvedDefaults::new();
+    for (name, spec) in &template.params {
+        let Some(text) = spec.tokened_default() else {
+            continue;
+        };
+        let value = interpolate(text, &HashMap::new(), settings, datetime, None)?;
+        let why = match coerce_param_value(&JsonValue::String(value.clone()), spec) {
+            Ok(Some(coerced)) => {
+                defaults.insert(name.clone(), coerced);
+                continue;
+            }
+            Ok(None) => "the value is blank".to_string(),
+            Err(refusal) => refusal.message,
+        };
+        return Err(AppError::reference_unresolved(
+            name,
+            format!("params.{name}.default resolves to '{value}', which parameter '{name}' refuses: {why}"),
+        ));
     }
+
+    Ok(RenderEnv {
+        settings,
+        datetime,
+        defaults,
+    })
 }
 
 /// Largest resolved label dimension (errors spec, `dimension_exceeds_limit`).
@@ -745,7 +461,7 @@ fn compile_label_source(
     env: &RenderEnv,
 ) -> Result<CompiledSource, AppError> {
     let unit = &template.unit;
-    let resolved = resolve_parameters(template, data, Some(env.settings), Some(env.datetime))?;
+    let resolved = resolve_parameters(template, data, &env.defaults)?;
     let resolved_data = &resolved.data;
     let items = select_layout_items(template)?;
     let images = RefCell::new(ImageCollector::default());
@@ -870,14 +586,15 @@ fn compile_label_doc(
     compile_paged(compiled.source, compiled.files)
 }
 
-/// Render a single representative label to PNG. For sheets, renders one slot.
+/// Render a single representative label to PNG. For sheets, renders one slot. A thumbnail is a
+/// whole request, so it resolves the template's environment itself.
 pub fn render_thumbnail_png(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     settings: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
-    let env = RenderEnv { settings, datetime };
+    let env = resolve_environment(template, settings, datetime)?;
     let doc = compile_label_doc(template, data, &env)?;
     let page = doc
         .pages()
@@ -902,30 +619,24 @@ pub struct ImageRenderOptions {
     pub resolution_dpi: Option<u32>,
 }
 
+/// Render one label as a whole request: resolve the template's environment, then render a PNG.
 pub fn render_single_label(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     settings: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
-    render_single_label_image(
-        template,
-        data,
-        settings,
-        datetime,
-        ImageRenderOptions::default(),
-    )
+    let env = resolve_environment(template, settings, datetime)?;
+    render_single_label_image(template, data, &env, ImageRenderOptions::default())
 }
 
 pub fn render_single_label_image(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    settings: &BTreeMap<String, String>,
-    datetime: &crate::datetime_fmt::DateTimeResolver,
+    env: &RenderEnv,
     opts: ImageRenderOptions,
 ) -> Result<Vec<u8>, AppError> {
-    let env = RenderEnv { settings, datetime };
-    let doc = compile_single_doc(template, data, &env)?;
+    let doc = compile_single_doc(template, data, env)?;
     let page = doc
         .pages()
         .first()
@@ -944,11 +655,9 @@ pub fn render_single_label_image(
 pub fn render_single_label_pdf(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    settings: &BTreeMap<String, String>,
-    datetime: &crate::datetime_fmt::DateTimeResolver,
+    env: &RenderEnv,
 ) -> Result<Vec<u8>, AppError> {
-    let env = RenderEnv { settings, datetime };
-    let doc = compile_single_doc(template, data, &env)?;
+    let doc = compile_single_doc(template, data, env)?;
     typst_pdf::pdf(&doc, &Default::default())
         .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))
 }
@@ -957,10 +666,8 @@ pub fn render_sheet_pages(
     template: &TemplateDefinition,
     labels: &[LabelInput],
     start_slot: u32,
-    settings: &BTreeMap<String, String>,
-    datetime: &crate::datetime_fmt::DateTimeResolver,
+    env: &RenderEnv,
 ) -> Result<Vec<u8>, AppError> {
-    let env = RenderEnv { settings, datetime };
     let TemplateFormat::Sheet {
         paper_width,
         paper_height,
@@ -1016,17 +723,16 @@ pub fn render_sheet_pages(
             rendered.push(String::new());
             continue;
         }
-        let resolved =
-            match resolve_parameters(template, &lbl.data, Some(env.settings), Some(env.datetime)) {
-                Ok(data) => data,
-                Err(err) => {
-                    failures.push(crate::errors::BatchFailure::new(idx, err));
-                    rendered.push(String::new());
-                    continue;
-                }
-            };
+        let resolved = match resolve_parameters(template, &lbl.data, &env.defaults) {
+            Ok(data) => data,
+            Err(err) => {
+                failures.push(crate::errors::BatchFailure::new(idx, err));
+                rendered.push(String::new());
+                continue;
+            }
+        };
         let geometry_values = render_geometry_values(&resolved.data, template);
-        let context = RenderContext::new(unit, template.dpi, &resolved.data, &env, &images)
+        let context = RenderContext::new(unit, template.dpi, &resolved.data, env, &images)
             .with_instants(&resolved.instants);
         let (measured, _) = match context.measure_items(
             items,
@@ -1197,9 +903,9 @@ fn render_geometry_values(
             }
         } else {
             let v = match &spec.default {
-                Some(crate::models::ParamValue::Float(f)) => *f,
-                Some(crate::models::ParamValue::Integer(i)) => *i as f32,
-                _ => spec.min.unwrap_or(0.0),
+                Some(ParamValue::Float(f)) => *f as f32,
+                Some(ParamValue::Integer(i)) => *i as f32,
+                _ => spec.min.unwrap_or(0.0) as f32,
             };
             map.insert(name.clone(), v);
         }
@@ -1207,11 +913,13 @@ fn render_geometry_values(
     map
 }
 
-/// Render-time environment: the variables map and the datetime resolver, passed together through
-/// every render call so related configuration travels as a unit.
-pub(crate) struct RenderEnv<'a> {
+/// Render-time environment: the request's snapshot (the variables map and the datetime resolver)
+/// and the template's tokened defaults resolved against it, built by `resolve_environment` and
+/// passed together through every render call.
+pub struct RenderEnv<'a> {
     pub settings: &'a BTreeMap<String, String>,
     pub datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
+    pub defaults: ResolvedDefaults,
 }
 
 pub(crate) struct RenderContext<'a> {
@@ -2487,6 +2195,7 @@ mod tests {
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -2944,6 +2653,7 @@ layout:
             let env = super::RenderEnv {
                 settings: &settings,
                 datetime: &datetime,
+                defaults: Default::default(),
             };
             let images = RefCell::new(super::ImageCollector::default());
             let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -3016,6 +2726,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let images = RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -3103,6 +2814,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let images = RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -3191,6 +2903,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let images = RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -3786,31 +3499,11 @@ layout:
         );
     }
 
-    fn test_defaults(template: &TemplateContent) -> crate::models::ResolvedDefaults {
-        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &dt_formats,
-            now: chrono::Local::now(),
-        };
-        super::resolve_declared_defaults(template, &BTreeMap::new(), &dt)
-    }
-
-    fn test_inputs_all(template: &TemplateContent) -> Vec<crate::models::InputSpec> {
-        let defaults = test_defaults(template);
-        template.inputs_all(&defaults)
-    }
-
     fn test_placeholder_data(
         template: &TemplateContent,
         now: chrono::DateTime<chrono::Local>,
     ) -> HashMap<String, serde_json::Value> {
-        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &dt_formats,
-            now,
-        };
-        let defaults = super::resolve_declared_defaults(template, &BTreeMap::new(), &dt);
-        template.placeholder_data(&defaults, now)
+        template.placeholder_data(now)
     }
 
     /// #152. `brother_24mm_weights.yaml` sets `max_w: 117` at `at.x: 1.5` on a `width.max: 120`
@@ -4792,6 +4485,7 @@ layout:
             let env = super::RenderEnv {
                 settings: &settings,
                 datetime: &datetime,
+                defaults: Default::default(),
             };
             let images = RefCell::new(super::ImageCollector::default());
             let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -4908,22 +4602,6 @@ layout:
         }
     }
 
-    /// #137: the catalog index lists the request fields a template needs. `{vars.*}` and
-    /// `{datetime.*}` resolve from the variables store and the datetime resolver, not the caller, so
-    /// they must not appear — `homebox-qr` would otherwise advertise `vars.qr_base_url` as something
-    /// the user has to supply.
-    #[test]
-    fn template_fields_lists_request_keys_only() {
-        let registry = crate::templates::load_all_for_tests().0;
-        let t = registry.get("homebox-qr").expect("homebox-qr");
-        let fields: Vec<String> = test_inputs_all(t)
-            .into_iter()
-            .filter(|i| i.required)
-            .map(|i| i.name)
-            .collect();
-        assert_eq!(fields, vec!["id".to_string(), "message".to_string()]);
-    }
-
     fn no_settings() -> BTreeMap<String, String> {
         BTreeMap::new()
     }
@@ -4962,6 +4640,7 @@ layout:
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 )]),
                 layout: Layout::Items(vec![LayoutItem::Text {
@@ -4996,8 +4675,8 @@ layout:
             &two_slot_sheet(),
             &labels,
             0,
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&two_slot_sheet(), &no_settings(), &no_datetime())
+                .unwrap(),
         )
         .expect("render");
         assert!(pdf.starts_with(b"%PDF"));
@@ -5011,8 +4690,8 @@ layout:
             &two_slot_sheet(),
             &labels,
             1,
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&two_slot_sheet(), &no_settings(), &no_datetime())
+                .unwrap(),
         )
         .expect("render");
         assert!(pdf.starts_with(b"%PDF"));
@@ -5031,8 +4710,8 @@ layout:
             &two_slot_sheet(),
             &labels,
             0,
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&two_slot_sheet(), &no_settings(), &no_datetime())
+                .unwrap(),
         )
         .unwrap_err();
         assert_eq!(err.code(), "BatchInvalid");
@@ -5061,6 +4740,7 @@ layout:
                     default: None,
                     min: None,
                     max: None,
+                    default_instant: None,
                 },
             )]),
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -5111,6 +4791,7 @@ layout:
                     default: None,
                     min: None,
                     max: None,
+                    default_instant: None,
                 },
             )]),
             layout: Layout::Items(vec![
@@ -5204,6 +4885,7 @@ layout:
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 )]),
                 layout: Layout::Items(vec![LayoutItem::Text {
@@ -5228,8 +4910,13 @@ layout:
             data: HashMap::from([("message".to_string(), json!("Hello"))]),
         }];
 
-        let pdf = render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime())
-            .expect("render sheet");
+        let pdf = render_sheet_pages(
+            &template,
+            &labels,
+            0,
+            &crate::render::resolve_environment(&template, &no_settings(), &no_datetime()).unwrap(),
+        )
+        .expect("render sheet");
 
         assert!(!pdf.is_empty(), "rendered PDF is empty");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
@@ -5318,6 +5005,7 @@ layout:
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 )]),
                 layout: Layout::Items(vec![LayoutItem::Image {
@@ -5338,8 +5026,13 @@ layout:
                 json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
             )]),
         }];
-        let pdf = render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime())
-            .expect("render sheet image");
+        let pdf = render_sheet_pages(
+            &template,
+            &labels,
+            0,
+            &crate::render::resolve_environment(&template, &no_settings(), &no_datetime()).unwrap(),
+        )
+        .expect("render sheet image");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
@@ -5475,8 +5168,12 @@ layout:
             }]),
         };
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let pdf = render_single_label_pdf(&template, &data, &no_settings(), &no_datetime())
-            .expect("render pdf");
+        let pdf = render_single_label_pdf(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &no_settings(), &no_datetime()).unwrap(),
+        )
+        .expect("render pdf");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
@@ -5490,7 +5187,7 @@ layout:
         let registry = crate::templates::load_all_for_tests().0;
         // Bind the Vec: `summaries()` returns by value, so borrowing `&str` straight out of the
         // call expression drops the temporary while the set still holds references (E0716).
-        let summaries = registry.summaries();
+        let summaries = registry.summaries(&BTreeMap::new(), &no_datetime());
         let found: BTreeSet<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
         let expected: BTreeSet<&str> = BTreeSet::from([
             "avery5163",
@@ -5534,7 +5231,7 @@ layout:
             formats: &formats,
             now: chrono::Local::now(),
         };
-        for summary in registry.summaries() {
+        for summary in registry.summaries(&settings, &dt) {
             let template = registry.get(&summary.id).expect("template");
             let data = test_placeholder_data(template, dt.now);
             let png = render_thumbnail_png(template, &data, &settings, &dt)
@@ -5781,7 +5478,7 @@ layout:
     }
 
     #[test]
-    fn placeholder_data_includes_interpolated_keys_only() {
+    fn placeholder_data_holds_declared_parameters_only() {
         use crate::models::{Alignment, Fit, FontSize, Position, Size, SizeValue};
         let template = TemplateContent {
             name: "t".into(),
@@ -5803,6 +5500,7 @@ layout:
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 ),
                 (
@@ -5813,6 +5511,7 @@ layout:
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 ),
                 (
@@ -5823,6 +5522,7 @@ layout:
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 ),
             ]),
@@ -5843,8 +5543,8 @@ layout:
                     when: None,
                 },
                 LayoutItem::Image {
-                    name: Some("logo".into()),
-                    src: None,
+                    name: None,
+                    src: Some("{logo}".into()),
                     placement: Placement::sized(
                         Position([0.0, 10.0]),
                         Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
@@ -5896,6 +5596,7 @@ layout:
                     min: None,
                     max: None,
                     description: None,
+                    default_instant: None,
                 },
             )]),
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -6010,7 +5711,7 @@ layout:
             formats: &datetime_formats,
             now: chrono::Local::now(),
         };
-        for summary in registry.summaries() {
+        for summary in registry.summaries(&BTreeMap::new(), &datetime) {
             let template = registry.get(&summary.id).expect("template");
             let mut base_data = test_placeholder_data(template, datetime.now);
             // Engine-upgrade visual baseline, not thumbnail-spec: keep the avery outline
@@ -6152,6 +5853,7 @@ layout:
             let env = crate::render::RenderEnv {
                 settings: &settings,
                 datetime: &datetime,
+                defaults: Default::default(),
             };
             crate::render::compile_label_source(t, &HashMap::new(), &env)
         }
@@ -7112,6 +6814,7 @@ layout:
         let env = super::RenderEnv {
             settings: &no_settings(),
             datetime: &no_datetime(),
+            defaults: Default::default(),
         };
         for spacing in [0.5, 0.99, 1.2, 1.5] {
             for lines in 1..=3usize {
@@ -7125,6 +6828,7 @@ layout:
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 );
                 let template = TemplateContent {
@@ -7349,6 +7053,7 @@ layout:
         let env = super::RenderEnv {
             settings: &no_settings(),
             datetime: &no_datetime(),
+            defaults: Default::default(),
         };
         let tpl_tight = make_range_template(Some(0.8));
         let compiled_tight =
@@ -7706,6 +7411,7 @@ layout:
         let env1 = super::RenderEnv {
             settings: &no_settings(),
             datetime: &dt,
+            defaults: Default::default(),
         };
         let compiled1 =
             super::compile_label_source(printed_on, &data1, &env1).expect("compile printed_on");
@@ -7726,6 +7432,7 @@ layout:
         let env2 = super::RenderEnv {
             settings: &no_settings(),
             datetime: &no_datetime(),
+            defaults: Default::default(),
         };
         let compiled2 = super::compile_label_source(lines_divider, &data2, &env2)
             .expect("compile lines_divider");
@@ -7747,6 +7454,7 @@ layout:
         let env3 = super::RenderEnv {
             settings: &no_settings(),
             datetime: &no_datetime(),
+            defaults: Default::default(),
         };
         let compiled3 =
             super::compile_label_source(multiline, &data3, &env3).expect("compile multiline");
@@ -7777,6 +7485,7 @@ layout:
         let env4 = super::RenderEnv {
             settings: &no_settings(),
             datetime: &no_datetime(),
+            defaults: Default::default(),
         };
         let compiled4 =
             super::compile_label_source(avery, &data4, &env4).expect("compile avery5163");
@@ -7835,6 +7544,7 @@ layout:
                     min: None,
                     max: None,
                     description: None,
+                    default_instant: None,
                 },
             )]),
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -7894,6 +7604,7 @@ layout:
                     default: Some(crate::models::ParamValue::Float(100.0)),
                     min: Some(10.0),
                     max: Some(100.0),
+                    default_instant: None,
                 },
             )]),
             layout: Layout::Items(vec![LayoutItem::Qr {
@@ -8387,8 +8098,13 @@ layout:
             })
             .expect("template needs a text item");
         let empty_vars = BTreeMap::new();
-        let resolved =
-            super::resolve_parameters(template, data, Some(&empty_vars), Some(resolver))?;
+        let resolved = super::resolve_parameters(
+            template,
+            data,
+            &crate::render::resolve_environment(template, &empty_vars, resolver)
+                .unwrap()
+                .defaults,
+        )?;
         super::helpers::interpolate(
             &value,
             &resolved.data,
@@ -8422,8 +8138,10 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
             .unwrap_err();
-        assert_eq!(err.code(), "UnsupportedLayoutItem");
-        assert!(err.message_text().contains("printed_on:no_such_format"));
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("reference_unresolved"));
+        assert_eq!(err.details().unwrap()["field"], "no_such_format");
+        assert!(err.message_text().contains("no_such_format"));
     }
 
     #[test]
@@ -8468,7 +8186,7 @@ layout:
     }
 
     #[test]
-    fn datetime_param_included_in_fields_and_placeholders() {
+    fn datetime_param_included_in_placeholders() {
         let yaml = r#"
 name: Test DateTime Fields
 unit: mm
@@ -8490,14 +8208,6 @@ layout:
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let mut fields: Vec<String> = test_inputs_all(&template)
-            .into_iter()
-            .filter(|i| i.required)
-            .map(|i| i.name)
-            .collect();
-        fields.sort();
-        assert_eq!(fields, vec!["printed_on".to_string(), "title".to_string()]);
-
         let ph = test_placeholder_data(&template, chrono::Local::now());
         assert!(ph.contains_key("title"));
         assert!(ph.contains_key("printed_on"));
@@ -8586,15 +8296,17 @@ layout:
         let first = super::resolve_parameters(
             &template,
             &HashMap::new(),
-            Some(&empty_vars),
-            Some(&resolver),
+            &crate::render::resolve_environment(&template, &empty_vars, &resolver)
+                .unwrap()
+                .defaults,
         )
         .unwrap();
         let second = super::resolve_parameters(
             &template,
             &HashMap::new(),
-            Some(&empty_vars),
-            Some(&resolver),
+            &crate::render::resolve_environment(&template, &empty_vars, &resolver)
+                .unwrap()
+                .defaults,
         )
         .unwrap();
 
@@ -8629,43 +8341,6 @@ layout:
         );
     }
 
-    #[test]
-    fn advertised_fields_token_grammar_test() {
-        // {datetime} is an advertised data field; {sys.now} and {sys.now:<fmt>} produce nothing
-        // {vars} is an advertised data field; {vars.<key>} produces nothing
-        // Declared parameter of type datetime (e.g. printed_on) is excluded from advertised data fields
-        let yaml = r#"
-name: Adv Test
-unit: mm
-dpi: 200
-params:
-  - name: datetime
-    type: string
-  - name: vars
-    type: string
-  - name: printed_on
-    type: datetime
-    default: "{sys.now}"
-format:
-  type: single
-  height: 20
-  width: 50
-layout:
-  - type: text
-    value: "{datetime} {sys.now} {sys.now:iso_date} {vars} {vars.site} {printed_on} {printed_on:short_date}"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-"#;
-        let template = parse_and_validate(yaml).unwrap();
-        let fields: Vec<String> = test_inputs_all(&template)
-            .into_iter()
-            .filter(|i| i.required)
-            .map(|i| i.name)
-            .collect();
-        assert_eq!(fields, vec!["datetime".to_string(), "vars".to_string()]);
-    }
-
     /// `when:` sees the parameter through the resolved data map, where the instant is written as
     /// the bare ISO date. That is what a predicate compares against.
     #[test]
@@ -8696,12 +8371,23 @@ layout:
         let images = std::cell::RefCell::new(super::ImageCollector::default());
 
         let active_for = |data: HashMap<String, serde_json::Value>| {
-            let resolved =
-                super::resolve_parameters(&template, &data, None, Some(&resolver)).unwrap();
+            let resolved = super::resolve_parameters(
+                &template,
+                &data,
+                &crate::render::resolve_environment(
+                    &template,
+                    &std::collections::BTreeMap::new(),
+                    &resolver,
+                )
+                .unwrap()
+                .defaults,
+            )
+            .unwrap();
             let empty_settings = BTreeMap::new();
             let env = super::RenderEnv {
                 settings: &empty_settings,
                 datetime: &resolver,
+                defaults: Default::default(),
             };
             super::RenderContext::new("mm", 180, &resolved.data, &env, &images)
                 .with_instants(&resolved.instants)
@@ -8722,9 +8408,19 @@ layout:
         let mut rfc = HashMap::new();
         rfc.insert("printed_on".to_string(), json!("2026-08-19T23:15:00Z"));
         assert_eq!(
-            super::resolve_parameters(&template, &rfc, None, Some(&resolver))
+            super::resolve_parameters(
+                &template,
+                &rfc,
+                &crate::render::resolve_environment(
+                    &template,
+                    &std::collections::BTreeMap::new(),
+                    &resolver
+                )
                 .unwrap()
-                .data["printed_on"],
+                .defaults
+            )
+            .unwrap()
+            .data["printed_on"],
             json!("2026-08-19")
         );
     }
@@ -8742,29 +8438,39 @@ layout:
         };
         let data = test_placeholder_data(template, dt.now);
         assert!(!data.contains_key("orientation"));
-        assert!(!data.contains_key("outline"));
-        // outline declares no default and is only a gate key, so it must be absent and its
-        // container inactive in the thumbnail (the fixture's thumbnail no longer draws the
-        // outline). Horizontal branch must be active via its default.
+        // outline declares no default, so it takes its first value and its container is active.
+        // Horizontal branch must be active via its default.
+        assert_eq!(data.get("outline"), Some(&json!("yes")));
         let settings = BTreeMap::new();
         let dt_resolved = crate::datetime_fmt::DateTimeResolver {
             formats: &BTreeMap::new(),
             now: dt.now,
         };
-        let resolved =
-            super::resolve_parameters(template, &data, None, Some(&dt_resolved)).unwrap();
+        let resolved = super::resolve_parameters(
+            template,
+            &data,
+            &crate::render::resolve_environment(
+                template,
+                &std::collections::BTreeMap::new(),
+                &dt_resolved,
+            )
+            .unwrap()
+            .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &dt_resolved,
+            defaults: Default::default(),
         };
         let ctx =
             super::RenderContext::new(&template.unit, template.dpi, &resolved.data, &env, &images)
                 .with_instants(&resolved.instants);
         let Layout::Items(items) = &template.layout;
         assert!(
-            !ctx.is_item_active(&items[0]),
-            "outline container must be inactive when outline declares no default"
+            ctx.is_item_active(&items[0]),
+            "outline container must be active: an undefaulted enum takes its first value"
         );
         assert!(
             ctx.is_item_active(&items[1]),
@@ -9292,14 +8998,14 @@ layout:
         // 4. Batch render reports circle_box_not_square in failures for failing row while rendering valid row
         let settings = no_settings();
         let datetime = no_datetime();
-        let batch_env = crate::batch::BatchEnv {
-            settings: &settings,
-            datetime: &datetime,
-            render_opts: super::ImageRenderOptions::default(),
-        };
         let template_def = crate::templates::TemplateDefinition {
             id: "CircleParamTest".to_string(),
             content: template,
+        };
+        let render_env = super::resolve_environment(&template_def, &settings, &datetime).unwrap();
+        let batch_env = crate::batch::BatchEnv {
+            render: &render_env,
+            render_opts: super::ImageRenderOptions::default(),
         };
         let labels = vec![
             crate::models::LabelInput { data: data_ok },
@@ -9505,8 +9211,8 @@ layout:
         let png = render_single_label_image(
             &template_nested,
             &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&template_nested, &no_settings(), &no_datetime())
+                .unwrap(),
             super::ImageRenderOptions::default(),
         )
         .expect("render nested shapes png");
@@ -9524,6 +9230,7 @@ layout:
             let env = super::RenderEnv {
                 settings: &settings,
                 datetime: &datetime,
+                defaults: Default::default(),
             };
             let compiled = super::compile_label_source(&template, &data, &env).expect("compile");
             compiled.source
@@ -9542,8 +9249,8 @@ layout:
         let png = render_single_label_image(
             &template_padded,
             &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&template_padded, &no_settings(), &no_datetime())
+                .unwrap(),
             super::ImageRenderOptions::default(),
         )
         .expect("png padded");
@@ -9551,8 +9258,8 @@ layout:
         let pdf = render_single_label_pdf(
             &template_padded,
             &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&template_padded, &no_settings(), &no_datetime())
+                .unwrap(),
         )
         .expect("pdf padded");
         assert_eq!(&pdf[0..4], b"%PDF");
@@ -9566,8 +9273,8 @@ layout:
         let pdf2 = render_single_label_pdf(
             &template_square,
             &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&template_square, &no_settings(), &no_datetime())
+                .unwrap(),
         )
         .expect("pdf square");
         assert_eq!(&pdf2[0..4], b"%PDF");
@@ -9633,8 +9340,8 @@ layout:
         let err = render_single_label_image(
             &template_oval,
             &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&template_oval, &no_settings(), &no_datetime())
+                .unwrap(),
             super::ImageRenderOptions::default(),
         )
         .unwrap_err();
@@ -9667,8 +9374,8 @@ layout:
         let png = render_single_label_image(
             &template_circle,
             &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&template_circle, &no_settings(), &no_datetime())
+                .unwrap(),
             super::ImageRenderOptions::default(),
         )
         .expect("square circle must render");
@@ -9676,8 +9383,8 @@ layout:
         let pdf = render_single_label_pdf(
             &template_circle,
             &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
+            &crate::render::resolve_environment(&template_circle, &no_settings(), &no_datetime())
+                .unwrap(),
         )
         .expect("square circle pdf");
         assert_eq!(&pdf[0..4], b"%PDF");
@@ -9723,16 +9430,19 @@ layout:
         let png = render_single_label_image(
             &template,
             &data,
-            &settings,
-            &datetime,
+            &crate::render::resolve_environment(&template, &settings, &datetime).unwrap(),
             super::ImageRenderOptions::default(),
         )
         .expect("render png");
         assert!(!png.is_empty());
         assert_eq!(&png[1..4], b"PNG");
 
-        let pdf =
-            render_single_label_pdf(&template, &data, &settings, &datetime).expect("render pdf");
+        let pdf = render_single_label_pdf(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime).unwrap(),
+        )
+        .expect("render pdf");
         assert!(!pdf.is_empty());
         assert_eq!(&pdf[0..4], b"%PDF");
     }
@@ -10297,8 +10007,13 @@ layout:
         let labels = vec![LabelInput {
             data: HashMap::new(),
         }];
-        let pdf =
-            render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime()).unwrap();
+        let pdf = render_sheet_pages(
+            &template,
+            &labels,
+            0,
+            &crate::render::resolve_environment(&template, &no_settings(), &no_datetime()).unwrap(),
+        )
+        .unwrap();
         assert!(pdf.starts_with(b"%PDF"));
     }
 
@@ -10375,16 +10090,28 @@ layout:
         let env = super::RenderEnv {
             settings: &empty_settings,
             datetime: &res_dt,
+            defaults: Default::default(),
         };
 
-        // When bold and mode are omitted (no defaults), neither branch selects (both are inactive)
-        let resolved_omitted =
-            super::resolve_parameters(&template, &HashMap::new(), None, Some(&res_dt)).unwrap();
+        // When bold and mode are omitted (no defaults), bold is false, so its branch selects, and
+        // the absent mode's branch does not
+        let resolved_omitted = super::resolve_parameters(
+            &template,
+            &HashMap::new(),
+            &crate::render::resolve_environment(
+                &template,
+                &std::collections::BTreeMap::new(),
+                &res_dt,
+            )
+            .unwrap()
+            .defaults,
+        )
+        .unwrap();
         let ctx = super::RenderContext::new("mm", 200, &resolved_omitted.data, &env, &images)
             .with_instants(&resolved_omitted.instants);
         assert!(
-            !ctx.is_item_active(&items[0]),
-            "when: {{ bold: 'false' }} must not select when bold is omitted"
+            ctx.is_item_active(&items[0]),
+            "when: {{ bold: 'false' }} must select when bold is omitted: a boolean defaults to false"
         );
         assert!(
             !ctx.is_item_active(&items[1]),
@@ -10394,8 +10121,18 @@ layout:
         // When bold: false is explicitly provided, bold branch selects
         let mut with_bold_false = HashMap::new();
         with_bold_false.insert("bold".to_string(), json!(false));
-        let resolved_bf =
-            super::resolve_parameters(&template, &with_bold_false, None, Some(&res_dt)).unwrap();
+        let resolved_bf = super::resolve_parameters(
+            &template,
+            &with_bold_false,
+            &crate::render::resolve_environment(
+                &template,
+                &std::collections::BTreeMap::new(),
+                &res_dt,
+            )
+            .unwrap()
+            .defaults,
+        )
+        .unwrap();
         let ctx_bf = super::RenderContext::new("mm", 200, &resolved_bf.data, &env, &images)
             .with_instants(&resolved_bf.instants);
         assert!(ctx_bf.is_item_active(&items[0]));
@@ -10436,9 +10173,20 @@ layout:
         let env = super::RenderEnv {
             settings: &empty_settings,
             datetime: &res_dt,
+            defaults: Default::default(),
         };
-        let resolved1 =
-            super::resolve_parameters(&template1, &HashMap::new(), None, Some(&res_dt)).unwrap();
+        let resolved1 = super::resolve_parameters(
+            &template1,
+            &HashMap::new(),
+            &crate::render::resolve_environment(
+                &template1,
+                &std::collections::BTreeMap::new(),
+                &res_dt,
+            )
+            .unwrap()
+            .defaults,
+        )
+        .unwrap();
         let ctx1 = super::RenderContext::new("mm", 200, &resolved1.data, &env, &images)
             .with_instants(&resolved1.instants);
         assert!(
@@ -10446,7 +10194,7 @@ layout:
             "default: draft must select when: mode: draft"
         );
 
-        // 2. Tokened default that fails resolution -> fails render with param_default_unresolvable
+        // 2. Tokened default that fails resolution -> fails render with reference_unresolved
         let yaml2 = r#"
 name: Test When Broken Default
 unit: mm
@@ -10473,7 +10221,8 @@ layout:
         let template2 = parse_and_validate(yaml2).unwrap();
         let err = render_single_label(&template2, &HashMap::new(), &BTreeMap::new(), &resolver())
             .unwrap_err();
-        assert_eq!(err.reason(), Some("param_default_unresolvable"));
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("reference_unresolved"));
     }
 
     #[test]
@@ -10497,11 +10246,13 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
             .unwrap_err();
-        assert_eq!(err.reason(), Some("param_default_unresolvable"));
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("reference_unresolved"));
+        assert_eq!(err.details().unwrap()["field"], "vars.missing");
     }
 
     #[test]
-    fn length_default_coercion_and_input_spec() {
+    fn a_suffixed_length_default_is_refused_at_load() {
         let yaml = r#"
 name: Test Length Coercion
 unit: mm
@@ -10518,20 +10269,16 @@ layout:
     size: [50, 20]
     font_size: 10
 "#;
-        let template = parse_and_validate(yaml).unwrap();
-        let s = interpolated(&template, &HashMap::new(), &resolver()).unwrap();
-        assert_eq!(s, "80.0");
-
-        let inputs = test_inputs_all(&template);
-        let input_w = inputs.iter().find(|i| i.name == "w").unwrap();
-        assert_eq!(
-            input_w.default,
-            Some(crate::models::ParamValue::Float(80.0))
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(
+            err.message_text().contains("params.w.default"),
+            "{}",
+            err.message_text()
         );
     }
 
     #[test]
-    fn string_param_null_value_stringifies_to_empty_string() {
+    fn a_null_string_value_is_omitted_and_takes_the_default() {
         let yaml = r#"
 name: Test String Null
 unit: mm
@@ -10539,6 +10286,7 @@ dpi: 200
 params:
   - name: title
     type: string
+    default: Untitled
 format: { type: single, width: 100, height: 20 }
 layout:
   - type: text
@@ -10551,7 +10299,7 @@ layout:
         let mut data = HashMap::new();
         data.insert("title".to_string(), serde_json::Value::Null);
         let s = interpolated(&template, &data, &resolver()).unwrap();
-        assert_eq!(s, "Prefix::Suffix");
+        assert_eq!(s, "Prefix:Untitled:Suffix");
     }
 
     #[test]
@@ -10570,7 +10318,13 @@ layout:
         data.insert("orientation".to_string(), json!("horizontal"));
         // outline is omitted (no default declared) -> outline container is inactive
         let labels = vec![crate::models::LabelInput { data: data.clone() }];
-        let pdf = render_sheet_pages(template, &labels, 0, &BTreeMap::new(), &resolver()).unwrap();
+        let pdf = render_sheet_pages(
+            template,
+            &labels,
+            0,
+            &crate::render::resolve_environment(template, &BTreeMap::new(), &resolver()).unwrap(),
+        )
+        .unwrap();
         assert!(!pdf.is_empty());
 
         let Layout::Items(items) = &template.layout;
@@ -10580,8 +10334,20 @@ layout:
         let env = super::RenderEnv {
             settings: &empty_settings,
             datetime: &res_dt,
+            defaults: Default::default(),
         };
-        let resolved = super::resolve_parameters(template, &data, None, Some(&res_dt)).unwrap();
+        let resolved = super::resolve_parameters(
+            template,
+            &data,
+            &crate::render::resolve_environment(
+                template,
+                &std::collections::BTreeMap::new(),
+                &res_dt,
+            )
+            .unwrap()
+            .defaults,
+        )
+        .unwrap();
         let ctx = super::RenderContext::new("in", 300, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(
@@ -10690,6 +10456,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let data = HashMap::new();
         let compiled_null = super::compile_label_source(&template_null, &data, &env).unwrap();
@@ -10853,6 +10620,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let compiled = super::compile_label_source(&template, &data, &env).unwrap();
         assert!(
@@ -10936,6 +10704,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -11037,6 +10806,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
 
         // 1. Scenario: A referenced colour renders on a shape and on a stroke (#c0392b and navy)
@@ -11045,8 +10815,14 @@ layout:
             ("line_color".to_string(), serde_json::json!("navy")),
             ("palette".to_string(), serde_json::json!("green")),
         ]);
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -11104,8 +10880,9 @@ layout:
             let resolved_enum = super::resolve_parameters(
                 &template_enum,
                 &data_enum,
-                Some(&settings),
-                Some(&datetime),
+                &crate::render::resolve_environment(&template_enum, &settings, &datetime)
+                    .unwrap()
+                    .defaults,
             )
             .unwrap();
             let images_enum = std::cell::RefCell::new(super::ImageCollector::default());
@@ -11165,6 +10942,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let data = HashMap::new();
@@ -11266,6 +11044,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
 
         // Render slot 0 with bg: red, stroke: yellow, txt: white
@@ -11274,9 +11053,14 @@ layout:
             ("stroke_col".to_string(), serde_json::json!("yellow")),
             ("txt_col".to_string(), serde_json::json!("white")),
         ]);
-        let resolved_slot0 =
-            super::resolve_parameters(&template, &data_slot0, Some(&settings), Some(&datetime))
-                .unwrap();
+        let resolved_slot0 = super::resolve_parameters(
+            &template,
+            &data_slot0,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images_slot0 = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx_slot0 =
             super::RenderContext::new("mm", 200, &resolved_slot0.data, &env, &images_slot0);
@@ -11300,9 +11084,14 @@ layout:
             ("stroke_col".to_string(), serde_json::json!("teal")),
             ("txt_col".to_string(), serde_json::json!("lime")),
         ]);
-        let resolved_slot1 =
-            super::resolve_parameters(&template, &data_slot1, Some(&settings), Some(&datetime))
-                .unwrap();
+        let resolved_slot1 = super::resolve_parameters(
+            &template,
+            &data_slot1,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images_slot1 = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx_slot1 =
             super::RenderContext::new("mm", 200, &resolved_slot1.data, &env, &images_slot1);
@@ -11353,7 +11142,13 @@ layout:
             crate::models::LabelInput { data: data_slot0 },
             crate::models::LabelInput { data: data_slot1 },
         ];
-        let pdf = super::render_sheet_pages(&template, &labels, 0, &settings, &datetime).unwrap();
+        let pdf = super::render_sheet_pages(
+            &template,
+            &labels,
+            0,
+            &crate::render::resolve_environment(&template, &settings, &datetime).unwrap(),
+        )
+        .unwrap();
         assert!(pdf.starts_with(b"%PDF"));
     }
 
@@ -11384,6 +11179,7 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
@@ -11417,8 +11213,6 @@ layout:
     #[test]
     fn param_types_refuse_array_values_with_exact_codes_and_reasons() {
         let array_val = serde_json::json!(["foo", "bar"]);
-        let variables = BTreeMap::new();
-        let datetime_ctx = no_datetime();
 
         let tpl_with_param =
             |name: &str, param_type: crate::models::ParamType| -> TemplateContent {
@@ -11431,6 +11225,7 @@ layout:
                         default: None,
                         min: None,
                         max: None,
+                        default_instant: None,
                     },
                 );
                 TemplateContent {
@@ -11455,13 +11250,7 @@ layout:
             let tpl = tpl_with_param(name, param_type);
             let mut submitted = HashMap::new();
             submitted.insert(name.to_string(), array_val.clone());
-            super::resolve_parameters_mode(
-                &tpl,
-                &submitted,
-                Some(&variables),
-                Some(&datetime_ctx),
-                super::ResolveMode::Strict,
-            )
+            super::resolve_parameters(&tpl, &submitted, &Default::default())
         };
 
         // 1. String
@@ -11475,7 +11264,7 @@ layout:
         assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
-            "parameter 'title' is not a valid string"
+            r#"invalid value for parameter 'title': ["foo","bar"] is not a string"#
         );
 
         // 2. Boolean
@@ -11485,7 +11274,7 @@ layout:
         assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
-            "parameter 'flag' is not a valid boolean"
+            r#"invalid value for parameter 'flag': ["foo","bar"] is not a boolean"#
         );
 
         // 3. Integer
@@ -11495,7 +11284,7 @@ layout:
         assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
-            "parameter 'count' is not a valid integer"
+            r#"invalid value for parameter 'count': ["foo","bar"] is not an integer"#
         );
 
         // 4. Number & Length
@@ -11505,14 +11294,17 @@ layout:
         assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
-            "parameter 'ratio' is not a valid number"
+            r#"invalid value for parameter 'ratio': ["foo","bar"] is not a number"#
         );
 
         let err = run_strict("size", crate::models::ParamType::Length).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
         assert_eq!(err.reason(), Some("param_value_invalid"));
-        assert_eq!(err.message_text(), "parameter 'size' is not a valid number");
+        assert_eq!(
+            err.message_text(),
+            r#"invalid value for parameter 'size': ["foo","bar"] is not a number"#
+        );
 
         // 5. Enum
         let err = run_strict(
@@ -11537,43 +11329,34 @@ layout:
         assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
-            "Invalid value for datetime parameter 'created_at': [\"foo\",\"bar\"]"
+            r#"invalid value for parameter 'created_at': ["foo","bar"] is not a datetime string"#
         );
 
         // 7. List with non-array value
         let tpl_list = tpl_with_param("tags", crate::models::ParamType::List);
         let mut submitted_str = HashMap::new();
         submitted_str.insert("tags".to_string(), serde_json::json!("not_an_array"));
-        let err = super::resolve_parameters_mode(
-            &tpl_list,
-            &submitted_str,
-            Some(&variables),
-            Some(&datetime_ctx),
-            super::ResolveMode::Strict,
-        )
-        .unwrap_err();
-        assert_eq!(err.status().as_u16(), 400);
-        assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("param_value_invalid"));
-        assert_eq!(err.message_text(), "parameter 'tags' is not a valid list");
-
-        // 8. List with non-string element
-        let mut submitted_bad_elem = HashMap::new();
-        submitted_bad_elem.insert("tags".to_string(), serde_json::json!(["ok", 42]));
-        let err = super::resolve_parameters_mode(
-            &tpl_list,
-            &submitted_bad_elem,
-            Some(&variables),
-            Some(&datetime_ctx),
-            super::ResolveMode::Strict,
-        )
-        .unwrap_err();
+        let err =
+            super::resolve_parameters(&tpl_list, &submitted_str, &Default::default()).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
         assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
-            "element at position 1 of parameter 'tags' must be a string"
+            r#"invalid value for parameter 'tags': "not_an_array" is not a list of strings"#
+        );
+
+        // 8. List with non-string element
+        let mut submitted_bad_elem = HashMap::new();
+        submitted_bad_elem.insert("tags".to_string(), serde_json::json!(["ok", 42]));
+        let err = super::resolve_parameters(&tpl_list, &submitted_bad_elem, &Default::default())
+            .unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("param_value_invalid"));
+        assert_eq!(
+            err.message_text(),
+            "invalid value for parameter 'tags': element at position 1 is not a string: 42"
         );
     }
 
@@ -11591,6 +11374,7 @@ layout:
                 default: None,
                 min: None,
                 max: None,
+                default_instant: None,
             },
         );
         let template = TemplateContent {
@@ -11609,16 +11393,8 @@ layout:
         };
         let mut submitted = HashMap::new();
         submitted.insert("orientation".to_string(), serde_json::json!("sideways"));
-        let variables = BTreeMap::new();
-        let datetime_ctx = no_datetime();
-        let err = super::resolve_parameters_mode(
-            &template,
-            &submitted,
-            Some(&variables),
-            Some(&datetime_ctx),
-            super::ResolveMode::Strict,
-        )
-        .unwrap_err();
+        let err =
+            super::resolve_parameters(&template, &submitted, &Default::default()).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
         assert_eq!(
@@ -11755,9 +11531,16 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -11846,9 +11629,16 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -11944,9 +11734,16 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -12046,13 +11843,19 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
 
         // 1. Over explicit empty list []
         let data_empty = HashMap::from([("tags".to_string(), serde_json::json!([]))]);
-        let resolved_empty =
-            super::resolve_parameters(&template, &data_empty, Some(&settings), Some(&datetime))
-                .unwrap();
+        let resolved_empty = super::resolve_parameters(
+            &template,
+            &data_empty,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved_empty.data, &env, &images);
         let (meas, _) = ctx
@@ -12082,9 +11885,14 @@ layout:
 
         // 2. Over omitted data using declared default: []
         let data_omitted = HashMap::new();
-        let resolved_def =
-            super::resolve_parameters(&template, &data_omitted, Some(&settings), Some(&datetime))
-                .unwrap();
+        let resolved_def = super::resolve_parameters(
+            &template,
+            &data_omitted,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images_def = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx_def = super::RenderContext::new("mm", 200, &resolved_def.data, &env, &images_def);
         let (meas_def, _) = ctx_def
@@ -12152,9 +11960,16 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -12224,9 +12039,16 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -12294,9 +12116,16 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -12365,9 +12194,16 @@ layout:
         let env = super::RenderEnv {
             settings: &settings,
             datetime: &datetime,
+            defaults: Default::default(),
         };
-        let resolved =
-            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -12398,5 +12234,269 @@ layout:
             .or_else(|| src.find("Tag: C"))
             .expect("Tag: C in Typst");
         assert!(p_a < p_b && p_b < p_c, "instances must be drawn in order");
+    }
+}
+
+/// What a label prints for the values and defaults of its parameters (#413). Assertions read the
+/// `#text("…")` lines of the Typst source a label compiles to.
+#[cfg(test)]
+mod parameter_value_tests {
+    use crate::errors::AppError;
+    use crate::templates::TemplateContent;
+    use serde_json::{json, Value as JsonValue};
+    use std::collections::{BTreeMap, HashMap};
+
+    fn load(yaml: &str) -> TemplateContent {
+        let content = crate::parse::parse_template(yaml).expect("parse template");
+        content.validate().expect("validate template");
+        content
+    }
+
+    /// Every `#text("…")` line in `source`, unescaped.
+    fn text_lines(source: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut rest = source;
+        while let Some(at) = rest.find("#text(\"") {
+            rest = &rest[at + "#text(\"".len()..];
+            let mut line = String::new();
+            let mut chars = rest.char_indices();
+            let mut end = rest.len();
+            while let Some((i, c)) = chars.next() {
+                match c {
+                    '\\' => {
+                        if let Some((_, escaped)) = chars.next() {
+                            line.push(match escaped {
+                                'n' => '\n',
+                                other => other,
+                            });
+                        }
+                    }
+                    '"' => {
+                        end = i;
+                        break;
+                    }
+                    other => line.push(other),
+                }
+            }
+            lines.push(line.replace('\u{00A0}', " "));
+            rest = &rest[end..];
+        }
+        lines
+    }
+
+    /// The lines one label of `template` prints, rendered like a single request against `vars` and
+    /// the seeded datetime formats.
+    fn printed(
+        template: &TemplateContent,
+        data: JsonValue,
+        vars: &[(&str, &str)],
+    ) -> Result<Vec<String>, AppError> {
+        let data: HashMap<String, JsonValue> = serde_json::from_value(data).expect("data object");
+        let vars: BTreeMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let formats = crate::settings::default_datetime_formats();
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now: chrono::Local::now(),
+        };
+        let env = super::resolve_environment(template, &vars, &datetime)?;
+        let compiled = super::compile_label_source(template, &data, &env)?;
+        Ok(text_lines(&compiled.source))
+    }
+
+    /// The lines a template's thumbnail prints, with no variables set.
+    fn thumbnail_printed(template: &TemplateContent) -> Result<Vec<String>, AppError> {
+        let vars = BTreeMap::new();
+        let formats = crate::settings::default_datetime_formats();
+        let now = chrono::Local::now();
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now,
+        };
+        let data = template.placeholder_data(now);
+        let env = super::resolve_environment(template, &vars, &datetime)?;
+        let compiled = super::compile_label_source(template, &data, &env)?;
+        Ok(text_lines(&compiled.source))
+    }
+
+    /// A printed result in a comparable form: the lines, or the error's reason and message.
+    fn shown(result: Result<Vec<String>, AppError>) -> Result<Vec<String>, String> {
+        result.map_err(|e| format!("{:?}: {}", e.reason(), e.message_text()))
+    }
+
+    fn lines(expected: &[&str]) -> Result<Vec<String>, String> {
+        Ok(expected.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn single(params: &str, layout: &str) -> String {
+        format!(
+            "name: T\nunit: mm\ndpi: 100\nparams:\n{params}\nformat: {{ type: single, width: 80, height: 40 }}\nlayout:\n{layout}\n"
+        )
+    }
+
+    fn text_at(value: &str, y: u32) -> String {
+        format!(
+            "  - type: text\n    value: \"{value}\"\n    at: [0, {y}]\n    size: [80, 8]\n    font_size: 6\n"
+        )
+    }
+
+    // A3
+    #[test]
+    fn a_number_prints_as_supplied_and_as_declared() {
+        let supplied = load(&single(
+            "  - name: price\n    type: number\n",
+            &text_at("{price}", 0),
+        ));
+        let defaulted = load(&single(
+            "  - name: price\n    type: number\n    default: 1234.5678\n",
+            &text_at("{price}", 0),
+        ));
+        assert_eq!(
+            [
+                shown(printed(&supplied, json!({ "price": 1234.5678 }), &[])),
+                shown(printed(&defaulted, json!({}), &[])),
+            ],
+            [lines(&["1234.5678"]), lines(&["1234.5678"])],
+            "[supplied, defaulted]"
+        );
+    }
+
+    // A4
+    #[test]
+    fn a_padded_number_default_drives_geometry() {
+        let yaml = single(
+            "  - name: w\n    type: number\n    default: \" 12 \"\n",
+            "  - type: text\n    value: \"box\"\n    at: [0, 0]\n    size: [\"{w}\", 10]\n    font_size: 6\n",
+        );
+        let template = crate::parse::parse_template(&yaml).expect("parse template");
+        template
+            .validate()
+            .expect("a default of \" 12 \" must load as the width 12");
+        let data = HashMap::new();
+        let vars = BTreeMap::new();
+        let formats = crate::settings::default_datetime_formats();
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now: chrono::Local::now(),
+        };
+        let env = super::RenderEnv {
+            settings: &vars,
+            datetime: &datetime,
+            defaults: Default::default(),
+        };
+        let source = super::compile_label_source(&template, &data, &env)
+            .expect("render")
+            .source;
+        assert!(
+            source.contains("width: 12mm"),
+            "expected a 12mm box: {source}"
+        );
+    }
+
+    // A4a
+    #[test]
+    fn a_datetime_default_keeps_its_time() {
+        let layout = text_at("{printed_on}", 0) + &text_at("{printed_on:time}", 10);
+        let literal = load(&single(
+            "  - name: printed_on\n    type: datetime\n    default: \"2026-08-19T14:30\"\n",
+            &layout,
+        ));
+        let tokened = load(&single(
+            "  - name: printed_on\n    type: datetime\n    default: \"{vars.when}\"\n",
+            &layout,
+        ));
+        let expected = lines(&["2026-08-19", "14:30"]);
+        assert_eq!(
+            [
+                shown(printed(
+                    &literal,
+                    json!({ "printed_on": "2026-08-19T14:30" }),
+                    &[]
+                )),
+                shown(printed(&literal, json!({}), &[])),
+                shown(printed(
+                    &tokened,
+                    json!({}),
+                    &[("when", "2026-08-19T14:30")]
+                )),
+            ],
+            [expected.clone(), expected.clone(), expected],
+            "[supplied, literal default, tokened default]"
+        );
+    }
+
+    // A9
+    #[test]
+    fn an_omitted_boolean_without_a_default_is_false() {
+        let template = load(&single(
+            "  - name: bold\n    type: boolean\n",
+            "  - type: container\n    when: { bold: false }\n    at: [0, 0]\n    size: [80, 10]\n    items:\n      - type: text\n        value: \"plain\"\n        at: [0, 0]\n        size: [80, 8]\n        font_size: 6\n",
+        ));
+        assert_eq!(printed(&template, json!({}), &[]).unwrap(), vec!["plain"]);
+    }
+
+    // A13
+    #[test]
+    fn null_and_blank_are_omissions_except_for_a_string() {
+        let template = load(&single(
+            "  - name: tags\n    type: list\n    default: [CONSUMABLE]\n  - name: copies\n    type: integer\n    default: 1\n  - name: title\n    type: string\n    default: Untitled\n",
+            &(text_at("{tags:join(',')}", 0) + &text_at("{copies}", 10) + &text_at("[{title}]", 20)),
+        ));
+        assert_eq!(
+            [
+                shown(printed(
+                    &template,
+                    json!({ "tags": null, "copies": "", "title": "" }),
+                    &[]
+                )),
+                shown(printed(&template, json!({ "tags": "" }), &[])),
+            ],
+            [
+                lines(&["CONSUMABLE", "1", "[]"]),
+                lines(&["CONSUMABLE", "1", "[Untitled]"])
+            ],
+            "[null/blank/empty, blank list]"
+        );
+    }
+
+    // A15
+    #[test]
+    fn a_token_in_a_list_default_is_literal() {
+        let template = load(&single(
+            "  - name: tags\n    type: list\n    default: [\"{vars.brand}\"]\n",
+            &text_at("{tags:join(',')}", 0),
+        ));
+        assert_eq!(
+            printed(&template, json!({}), &[]).unwrap(),
+            vec!["{vars.brand}"]
+        );
+    }
+
+    // A16
+    #[test]
+    fn thumbnail_placeholders_follow_the_type_table() {
+        let bounded = load(&single(
+            "  - name: qty\n    type: integer\n    min: 5\n    max: 10\n",
+            &text_at("{qty}", 0),
+        ));
+        let unbounded = load(&single(
+            "  - name: qty\n    type: integer\n",
+            &text_at("{qty}", 0),
+        ));
+        let gated = load(&single(
+            "  - name: mode\n    type: enum\n    values: [first, second]\n",
+            "  - type: container\n    when: { mode: first }\n    at: [0, 0]\n    size: [80, 10]\n    items:\n      - type: text\n        value: \"gated\"\n        at: [0, 0]\n        size: [80, 8]\n        font_size: 6\n",
+        ));
+        assert_eq!(
+            [
+                shown(thumbnail_printed(&bounded)),
+                shown(thumbnail_printed(&unbounded)),
+                shown(thumbnail_printed(&gated)),
+            ],
+            [lines(&["10"]), lines(&["42"]), lines(&["gated"])],
+            "[bounded, unbounded, gate-only enum]"
+        );
     }
 }

@@ -2,7 +2,6 @@
 //! (ZIP for single templates, PDF for sheet) or a set of print artifacts. Pure/sync; the async print
 //! dispatch lives in the `/batch` handler.
 
-use std::collections::BTreeMap;
 use std::io::Write as _;
 
 use crate::errors::{AppError, BatchFailure};
@@ -17,11 +16,10 @@ pub enum BatchMode {
     Print,
 }
 
-/// Render-time environment: variables map, datetime resolver, and image render options threaded
-/// through batch rendering.
+/// The request's resolved render environment and image render options, threaded through batch
+/// rendering.
 pub struct BatchEnv<'a> {
-    pub settings: &'a BTreeMap<String, String>,
-    pub datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
+    pub render: &'a crate::render::RenderEnv<'a>,
     pub render_opts: crate::render::ImageRenderOptions,
 }
 
@@ -97,14 +95,8 @@ fn render_single_batch(
             continue;
         }
         let res = match ext {
-            "pdf" => render_single_label_pdf(template, &lbl.data, env.settings, env.datetime),
-            _ => render_single_label_image(
-                template,
-                &lbl.data,
-                env.settings,
-                env.datetime,
-                env.render_opts,
-            ),
+            "pdf" => render_single_label_pdf(template, &lbl.data, env.render),
+            _ => render_single_label_image(template, &lbl.data, env.render, env.render_opts),
         };
         match res {
             Ok(bytes) => artifacts.push(bytes),
@@ -160,7 +152,7 @@ fn render_sheet_batch(
     start_slot: u32,
     env: &BatchEnv,
 ) -> Result<RenderedBatch, AppError> {
-    let pdf = render_sheet_pages(template, labels, start_slot, env.settings, env.datetime)?;
+    let pdf = render_sheet_pages(template, labels, start_slot, env.render)?;
     match mode {
         BatchMode::Download => Ok(RenderedBatch::Download {
             bytes: pdf,
@@ -185,6 +177,7 @@ mod tests {
     };
     use crate::templates::TemplateContent;
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::collections::HashMap;
 
     fn single_tpl() -> TemplateDefinition {
@@ -209,6 +202,7 @@ mod tests {
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 )]),
                 layout: Layout::Items(vec![LayoutItem::Text {
@@ -241,15 +235,19 @@ mod tests {
         static EMPTY_SETTINGS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
         static EMPTY_FORMATS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
         static DT: OnceLock<crate::datetime_fmt::DateTimeResolver<'static>> = OnceLock::new();
+        static ENV: OnceLock<crate::render::RenderEnv<'static>> = OnceLock::new();
         let settings = EMPTY_SETTINGS.get_or_init(BTreeMap::new);
         let formats = EMPTY_FORMATS.get_or_init(BTreeMap::new);
         let datetime = DT.get_or_init(|| crate::datetime_fmt::DateTimeResolver {
             formats,
             now: chrono::Local::now(),
         });
+        let render = ENV.get_or_init(|| {
+            crate::render::resolve_environment(&single_tpl(), settings, datetime)
+                .expect("the single template reads no variables")
+        });
         BatchEnv {
-            settings,
-            datetime,
+            render,
             render_opts: crate::render::ImageRenderOptions::default(),
         }
     }

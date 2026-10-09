@@ -1,16 +1,12 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import type { InputSpec, ParamSpec, ParamValue } from "../api/types";
+import type { Param, ParamValue } from "../api/types";
 
 export interface ParamInputProps {
   name: string;
-  spec: InputSpec | ParamSpec;
+  spec: Param;
   value: ParamValue | undefined;
   onChange: (value: ParamValue) => void;
   disabled?: boolean;
-  invalid?: boolean;
-  isImage?: boolean;
-  unit?: string;
-  noteId?: string;
 }
 
 const inputClass =
@@ -36,10 +32,6 @@ export function ParamInput({
   value,
   onChange,
   disabled = false,
-  invalid = false,
-  isImage = false,
-  unit,
-  noteId,
 }: ParamInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   // A file chooser is the browser's own state, not the form's: clearing the value it stands for
@@ -80,11 +72,9 @@ export function ParamInput({
   });
 
   const label = spec.description || name;
-  const inputSpec = spec as InputSpec;
-  const paramSpec = spec as ParamSpec;
-  const control = inputSpec.control;
+  const control = spec.control;
 
-  if (control === "image" || isImage) {
+  if (control === "image") {
     const current = typeof value === "string" ? value : "";
     return (
       <div className="flex flex-col gap-1">
@@ -93,8 +83,6 @@ export function ParamInput({
           type="file"
           accept="image/*"
           aria-label={label}
-          aria-invalid={invalid}
-          aria-describedby={noteId}
           disabled={disabled}
           onChange={async (e) => {
             const file = e.target.files?.[0];
@@ -117,12 +105,10 @@ export function ParamInput({
     );
   }
 
-  if (control === "textarea" || (paramSpec.type === "string" && paramSpec.multiline)) {
+  if (control === "textarea") {
     return (
       <textarea
         aria-label={label}
-        aria-invalid={invalid}
-        aria-describedby={noteId}
         rows={3}
         disabled={disabled}
         value={value !== undefined ? String(value) : ""}
@@ -133,60 +119,12 @@ export function ParamInput({
     );
   }
 
-  if (
-    control === "number" ||
-    control === "integer" ||
-    inputSpec.slider === true ||
-    paramSpec.type === "length" ||
-    paramSpec.type === "number" ||
-    paramSpec.type === "integer"
-  ) {
-    const isInteger = control === "integer" || paramSpec.type === "integer";
-    const hasDefault = spec.default !== undefined && spec.default !== null;
-    const isSlider =
-      (inputSpec.slider === true ||
-        (!control && spec.min !== undefined && spec.max !== undefined)) &&
-      hasDefault;
-
-    if (isSlider) {
-      const currentVal =
-        value !== undefined && value !== ""
-          ? Number(value)
-          : Number((spec.default as number | undefined) ?? spec.min ?? 0);
-
-      return (
-        <div className="flex items-center gap-3">
-          <input
-            type="range"
-            aria-label={label}
-            aria-invalid={invalid}
-            aria-describedby={noteId}
-            min={spec.min}
-            max={spec.max}
-            step={isInteger ? 1 : "any"}
-            disabled={disabled}
-            value={currentVal}
-            onChange={(e) => {
-              const raw = e.target.value;
-              const parsed = isInteger ? parseInt(raw, 10) : parseFloat(raw);
-              onChange(Number.isNaN(parsed) ? "" : parsed);
-            }}
-            className="w-full accent-[var(--accent)]"
-          />
-          <span className="min-w-12 text-right font-mono text-sm" style={{ color: "var(--ink)" }}>
-            {currentVal}
-            {(inputSpec.unit || (paramSpec.type === "length" && unit)) ? ` ${inputSpec.unit || unit}` : ""}
-          </span>
-        </div>
-      );
-    }
-
+  if (control === "number" || control === "integer") {
+    const isInteger = control === "integer";
     return (
       <input
         type="number"
         aria-label={label}
-        aria-invalid={invalid}
-        aria-describedby={noteId}
         min={spec.min}
         max={spec.max}
         step={isInteger ? 1 : "any"}
@@ -207,36 +145,26 @@ export function ParamInput({
     );
   }
 
-  if (control === "checkbox" || paramSpec.type === "boolean") {
-    const isChecked = value !== undefined ? Boolean(value) : undefined;
+  if (control === "checkbox") {
     return (
-      <label className="inline-flex cursor-pointer items-center gap-2">
-        <input
-          type="checkbox"
-          aria-label={label}
-          aria-invalid={invalid}
-          aria-describedby={noteId}
-          disabled={disabled}
-          checked={isChecked ?? false}
-          onChange={(e) => onChange(e.target.checked)}
-          className="h-4 w-4 rounded border"
-          style={{ accentColor: "var(--accent)" }}
-        />
-        <span className="select-none text-sm" style={{ color: isChecked === undefined ? "var(--muted, #888)" : "var(--ink)" }}>
-          {isChecked === undefined ? "Unset" : isChecked ? "Enabled" : "Disabled"}
-        </span>
-      </label>
+      <input
+        type="checkbox"
+        aria-label={label}
+        disabled={disabled}
+        checked={value === true}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 rounded border"
+        style={{ accentColor: "var(--accent)" }}
+      />
     );
   }
 
-  if (control === "select" || paramSpec.type === "enum") {
+  if (control === "select") {
     const currentVal = value !== undefined ? String(value) : "";
     const hasMatch = (spec.values ?? []).includes(currentVal);
     return (
       <select
         aria-label={label}
-        aria-invalid={invalid}
-        aria-describedby={noteId}
         disabled={disabled}
         value={currentVal}
         onChange={(e) => onChange(e.target.value)}
@@ -257,15 +185,12 @@ export function ParamInput({
     );
   }
 
-  if (control === "date" || control === "datetime" || paramSpec.type === "datetime") {
-    const inputType =
-      control === "datetime" || (control === undefined && paramSpec.time) ? "datetime-local" : "date";
+  if (control === "date" || control === "datetime") {
+    const inputType = control === "datetime" ? "datetime-local" : "date";
     return (
       <input
         type={inputType}
         aria-label={label}
-        aria-invalid={invalid}
-        aria-describedby={noteId}
         disabled={disabled}
         value={value !== undefined ? String(value) : ""}
         onChange={(e) => onChange(e.target.value)}
@@ -275,14 +200,13 @@ export function ParamInput({
     );
   }
 
-  if (control === "list" || paramSpec.type === "list") {
+  if (control === "list") {
     const items: string[] = Array.isArray(value) ? (value as string[]) : [];
 
     return (
       <div
         role="group"
         aria-label={label}
-        aria-describedby={noteId}
         className="flex flex-col gap-2"
       >
         {items.map((item, idx) => {
@@ -297,7 +221,6 @@ export function ParamInput({
               <input
                 type="text"
                 aria-label={`${name} ${pos}`}
-                aria-invalid={invalid}
                 disabled={disabled}
                 value={item}
                 onChange={(e) => {
@@ -407,8 +330,6 @@ export function ParamInput({
     <input
       type="text"
       aria-label={label}
-      aria-invalid={invalid}
-      aria-describedby={noteId}
       disabled={disabled}
       value={value !== undefined ? String(value) : ""}
       onChange={(e) => onChange(e.target.value)}

@@ -1,6 +1,6 @@
 import { newId, type LabelGridRow } from "./labelGrid";
 import type { CellValue, FieldSpec, LabelRowResult } from "../api/connectors";
-import type { InputSpec, ParamValue } from "../api/types";
+import type { Param, ParamValue } from "../api/types";
 
 // One shared helper for displaying cell text across the browser, filters, sort, and grid.
 export function displayCellText(value: CellValue | ParamValue | undefined): string {
@@ -15,7 +15,7 @@ export type FieldMapping = Record<string, string>;
 // Pre-fill the mapping: a template field is mapped to a connector column of the same key only when
 // the column's multi_valued matches whether the parameter is declared list.
 export function defaultMapping(
-  templateFields: InputSpec[],
+  templateFields: Param[],
   connectorFields: FieldSpec[],
 ): FieldMapping {
   const colMap = new Map<string, boolean>();
@@ -38,7 +38,7 @@ export function defaultMapping(
 // Reports each (parameter, column) pair whose cardinality does not match.
 export function validateMapping(
   mapping: FieldMapping,
-  templateFields: InputSpec[],
+  templateFields: Param[],
   connectorFields: FieldSpec[],
 ): string[] {
   const colMap = new Map<string, boolean>();

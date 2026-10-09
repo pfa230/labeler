@@ -7,28 +7,11 @@ use thiserror::Error;
 use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow, FontSize,
-    InputControl, InputSpec, Layout, LayoutItem, ParamDefaultReport, ParamEntry, ParamSpec,
-    ParamType, Placement, Point, ResolvedDefaults, Shape, Size, SizeValue, Stroke, TemplateDetail,
-    TemplateFormat, TemplateInputs, TemplateSummary,
+    Layout, LayoutItem, ParamControl, ParamEntry, ParamSpec, ParamType, Placement, Point, Shape,
+    Size, SizeValue, Stroke, TemplateDetail, TemplateFormat, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
-
-/// The bare `{token}` names an interpolated string reads: its request fields and parameters.
-/// `{vars.*}` and `{sys.*}` resolve without caller input, and a token whose grammar is invalid is
-/// left to validation, so neither is an input (#239).
-fn bare_token_names(s: &str) -> Vec<&str> {
-    crate::interpolation::scan_tokens(s)
-        .into_iter()
-        .filter_map(|scanned| match crate::interpolation::parse(scanned.raw) {
-            Ok(token) => match token.source {
-                crate::interpolation::Source::Bare(name) => Some(name),
-                _ => None,
-            },
-            Err(_) => None,
-        })
-        .collect()
-}
 
 /// The `{vars.<key>}` keys an interpolated string reads.
 fn vars_token_keys(s: &str) -> Vec<&str> {
@@ -76,461 +59,158 @@ impl std::ops::DerefMut for TemplateDefinition {
     }
 }
 
+/// What a thumbnail prints for an undefaulted `number` or `integer`, clamped into its bounds.
+const PLACEHOLDER_NUMBER: f64 = 42.0;
+
 impl TemplateContent {
-    pub fn variables(&self) -> Vec<String> {
-        let mut vars = HashSet::new();
-        let Layout::Items(items) = &self.layout;
-        fn walk(items: &[LayoutItem], vars: &mut HashSet<String>) {
-            for item in items {
+    /// Every interpolated string with the path it is read at: each `text`/`qr` `value` and `image`
+    /// `src` in the layout, inactive branches and `repeat:` subtrees included, and each tokened
+    /// default. A `list` default is literal, so it is not one.
+    pub fn interpolated_strings(&self) -> Vec<(String, &str)> {
+        fn walk<'a>(items: &'a [LayoutItem], prefix: &str, out: &mut Vec<(String, &'a str)>) {
+            for (idx, item) in items.iter().enumerate() {
+                let path = format!("{prefix}[{idx}]");
                 match item {
                     LayoutItem::Text { value, .. } | LayoutItem::Qr { value, .. } => {
-                        for key in vars_token_keys(value) {
-                            vars.insert(key.to_string());
-                        }
+                        out.push((format!("{path}.value"), value));
                     }
                     LayoutItem::Image { src: Some(src), .. } => {
-                        for key in vars_token_keys(src) {
-                            vars.insert(key.to_string());
-                        }
+                        out.push((format!("{path}.src"), src));
                     }
                     LayoutItem::Container { items, .. } => {
-                        walk(items, vars);
+                        walk(items, &format!("{path}.items"), out);
                     }
-                    _ => {}
+                    LayoutItem::Image { src: None, .. } | LayoutItem::Line { .. } => {}
                 }
             }
         }
-        walk(items, &mut vars);
-        let mut res: Vec<String> = vars.into_iter().collect();
-        res.sort();
-        res
+        let Layout::Items(items) = &self.layout;
+        let mut out = Vec::new();
+        walk(items, "layout", &mut out);
+        for (name, spec) in &self.params {
+            if let Some(text) = spec.tokened_default() {
+                out.push((format!("params.{name}.default"), text));
+            }
+        }
+        out
     }
 
-    pub fn inputs_all(&self, resolved_defaults: &ResolvedDefaults) -> Vec<InputSpec> {
-        self.derive_inputs_internal(resolved_defaults, None)
+    /// The `{vars.<key>}` keys the template reads, ascending.
+    pub fn variables(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .interpolated_strings()
+            .into_iter()
+            .flat_map(|(_, text)| vars_token_keys(text))
+            .map(String::from)
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
     }
 
-    pub fn inputs_default(
-        &self,
-        resolved_defaults: &ResolvedDefaults,
-        variables: &BTreeMap<String, String>,
-        datetime: &crate::datetime_fmt::DateTimeResolver,
-    ) -> Vec<InputSpec> {
-        self.derive_inputs_for_label(resolved_defaults, &HashMap::new(), variables, datetime)
+    /// The control a client shows for parameter `name` (`parameters`, the type table): a
+    /// `string` whose token is the whole `src` of some `image` item is `image`.
+    pub fn param_control(&self, name: &str, spec: &ParamSpec) -> ParamControl {
+        fn is_whole_src(items: &[LayoutItem], token: &str) -> bool {
+            items.iter().any(|item| match item {
+                LayoutItem::Image { src: Some(src), .. } => src == token,
+                LayoutItem::Container { items, .. } => is_whole_src(items, token),
+                _ => false,
+            })
+        }
+        match &spec.param_type {
+            ParamType::String { multiline } => {
+                let Layout::Items(items) = &self.layout;
+                if is_whole_src(items, &format!("{{{name}}}")) {
+                    ParamControl::Image
+                } else if *multiline {
+                    ParamControl::Textarea
+                } else {
+                    ParamControl::Text
+                }
+            }
+            ParamType::Integer => ParamControl::Integer,
+            ParamType::Number | ParamType::Length => ParamControl::Number,
+            ParamType::Boolean => ParamControl::Checkbox,
+            ParamType::Enum { .. } => ParamControl::Select,
+            ParamType::Datetime { time: true } => ParamControl::Datetime,
+            ParamType::Datetime { time: false } => ParamControl::Date,
+            ParamType::List => ParamControl::List,
+        }
     }
 
-    pub fn derive_inputs_for_label(
-        &self,
-        resolved_defaults: &ResolvedDefaults,
-        data: &HashMap<String, serde_json::Value>,
-        variables: &BTreeMap<String, String>,
-        datetime: &crate::datetime_fmt::DateTimeResolver,
-    ) -> Vec<InputSpec> {
-        let resolved = crate::render::resolve_parameters_mode(
-            self,
-            data,
-            Some(variables),
-            Some(datetime),
-            crate::render::ResolveMode::Lenient,
-        )
-        .expect("lenient resolution never fails");
-        self.derive_inputs_internal(resolved_defaults, Some(&resolved.data))
-    }
-
+    /// The `data` a thumbnail renders with (`parameters`, "Placeholder values"): a placeholder by
+    /// type for every parameter without a default. A defaulted parameter, and every `boolean`,
+    /// is left out, so the render resolves it as any render does.
     pub fn placeholder_data(
         &self,
-        resolved_defaults: &ResolvedDefaults,
         now: chrono::DateTime<chrono::Local>,
     ) -> HashMap<String, serde_json::Value> {
         let mut data = HashMap::new();
-        for input in self.inputs_all(resolved_defaults) {
-            if input.interpolated && input.required {
-                let val = match input.control {
-                    InputControl::Image => {
-                        serde_json::Value::String(crate::render::SAMPLE_PNG_DATA_URI.to_string())
-                    }
-                    InputControl::Text | InputControl::Textarea => {
-                        serde_json::Value::String(input.name.clone())
-                    }
-                    InputControl::Integer => {
-                        let n = input.min.map(|m| m as i64).unwrap_or(1);
-                        serde_json::json!(n)
-                    }
-                    InputControl::Number => {
-                        let n = input.min.unwrap_or(1.0);
-                        serde_json::json!(n)
-                    }
-                    InputControl::Checkbox => serde_json::Value::Bool(false),
-                    InputControl::Date | InputControl::Datetime => {
-                        serde_json::Value::String(now.format("%Y-%m-%dT%H:%M:%S").to_string())
-                    }
-                    InputControl::List => {
-                        serde_json::Value::Array(vec![serde_json::Value::String(
-                            input.name.clone(),
-                        )])
-                    }
-                    InputControl::Select => {
-                        if input.default_error.is_some() {
-                            continue;
-                        }
-                        let values = input.values.as_ref().unwrap_or_else(|| {
-                            panic!("select placeholder for '{}' has no values", input.name)
-                        });
-                        let first = values.first().unwrap_or_else(|| {
-                            panic!("select placeholder for '{}' has empty values", input.name)
-                        });
-                        serde_json::Value::String(first.clone())
-                    }
-                };
-                data.insert(input.name, val);
+        for (name, spec) in &self.params {
+            if spec.default.is_some() {
+                continue;
             }
+            let placeholder = match &spec.param_type {
+                ParamType::Boolean => continue,
+                ParamType::String { .. } => {
+                    if self.param_control(name, spec) == ParamControl::Image {
+                        serde_json::json!(crate::render::SAMPLE_PNG_DATA_URI)
+                    } else {
+                        serde_json::json!(name)
+                    }
+                }
+                ParamType::List => serde_json::json!([name]),
+                ParamType::Integer | ParamType::Number | ParamType::Length => {
+                    // An integer clamps into the whole numbers its bounds admit, which coercion
+                    // compares against the same way.
+                    let whole = spec.param_type == ParamType::Integer;
+                    let mut number = PLACEHOLDER_NUMBER;
+                    if let Some(min) = spec.min {
+                        number = number.max(if whole { min.ceil() } else { min });
+                    }
+                    if let Some(max) = spec.max {
+                        number = number.min(if whole { max.floor() } else { max });
+                    }
+                    serde_json::json!(number)
+                }
+                // Load refuses an enum without values.
+                ParamType::Enum { values } => serde_json::json!(values[0]),
+                ParamType::Datetime { .. } => serde_json::json!(now.to_rfc3339()),
+            };
+            data.insert(name.clone(), placeholder);
         }
         data
     }
 
-    fn derive_inputs_internal(
+    /// The published `params` (`parameters`): declaration order, each with its control and its
+    /// default by value. A literal default is the value judged at load; a tokened default is
+    /// resolved against this snapshot, and left out when the template's environment does not
+    /// resolve, which every render of the template then reports.
+    fn published_params(
         &self,
-        resolved_defaults: &ResolvedDefaults,
-        resolved_data: Option<&HashMap<String, serde_json::Value>>,
-    ) -> Vec<InputSpec> {
-        let single_line_names = collect_single_line_names(&self.layout);
-        let mut collected: HashMap<String, NameInfo> = HashMap::new();
-
-        let mut record_ref = |name: &str, interpolated: bool, image_bound: bool| {
-            let entry = collected.entry(name.to_string()).or_default();
-            if interpolated {
-                entry.interpolated = true;
-            }
-            if image_bound {
-                entry.image_bound = true;
-            }
-        };
-
-        // 1. format dynamic dimensions
-        if let TemplateFormat::Single { width, height, .. } = &self.format {
-            for dim in [width, height] {
-                match dim {
-                    DynamicDimension::Fixed(DynamicValue::Ref(r)) => {
-                        record_ref(r, false, false);
-                    }
-                    DynamicDimension::Dynamic { min, max } => {
-                        if let Some(DynamicValue::Ref(r)) = min {
-                            record_ref(r, false, false);
-                        }
-                        if let Some(DynamicValue::Ref(r)) = max {
-                            record_ref(r, false, false);
-                        }
-                    }
-                    _ => {}
+        variables: &BTreeMap<String, String>,
+        datetime: &crate::datetime_fmt::DateTimeResolver,
+    ) -> Vec<ParamEntry> {
+        let env = crate::render::resolve_environment(self, variables, datetime).ok();
+        self.params
+            .iter()
+            .map(|(name, spec)| {
+                let mut spec = spec.clone();
+                if spec.tokened_default().is_some() {
+                    spec.default = env
+                        .as_ref()
+                        .and_then(|env| env.defaults.get(name))
+                        .map(|resolved| resolved.value.clone());
                 }
-            }
-        }
-
-        // 2. layout items walk
-        let Layout::Items(items) = &self.layout;
-        fn walk_items<F>(
-            items: &[LayoutItem],
-            resolved_data: Option<&HashMap<String, serde_json::Value>>,
-            repeated_names: &std::collections::BTreeSet<String>,
-            record_ref: &mut F,
-        ) where
-            F: FnMut(&str, bool, bool),
-        {
-            for item in items {
-                // Record when: keys unconditionally for any item encountered in this active scope
-                if let Some(when) = item.when() {
-                    for key in when.keys() {
-                        if !repeated_names.contains(key) {
-                            record_ref(key, false, false);
-                        }
-                    }
+                ParamEntry {
+                    name: name.clone(),
+                    control: self.param_control(name, &spec),
+                    spec,
                 }
-
-                // Check active state
-                let is_active = if let Some(data) = resolved_data {
-                    if let Some(when) = item.when() {
-                        when.iter().all(|(param_name, expected_val)| {
-                            data.get(param_name)
-                                .map(|v| &crate::render::value_to_string(v) == expected_val)
-                                .unwrap_or(false)
-                        })
-                    } else {
-                        true
-                    }
-                } else {
-                    true
-                };
-
-                if !is_active {
-                    continue;
-                }
-
-                // Process active item
-                match item {
-                    LayoutItem::Text {
-                        placement,
-                        font_weight,
-                        color,
-                        line_spacing,
-                        value,
-                        ..
-                    } => {
-                        if let Extent::Size(size) = &placement.extent {
-                            for sv in &size.0 {
-                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false);
-                                }
-                            }
-                        }
-                        if let Some(DynamicValue::Ref(r)) = font_weight {
-                            record_ref(r, false, false);
-                        }
-                        if let Some(DynamicValue::Ref(r)) = color {
-                            record_ref(r, false, false);
-                        }
-                        if let Some(DynamicValue::Ref(r)) = line_spacing {
-                            record_ref(r, false, false);
-                        }
-                        for name in bare_token_names(value) {
-                            if !repeated_names.contains(name) {
-                                record_ref(name, true, false);
-                            }
-                        }
-                    }
-                    LayoutItem::Qr {
-                        placement, value, ..
-                    } => {
-                        if let Extent::Size(size) = &placement.extent {
-                            for sv in &size.0 {
-                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false);
-                                }
-                            }
-                        }
-                        for name in bare_token_names(value) {
-                            if !repeated_names.contains(name) {
-                                record_ref(name, true, false);
-                            }
-                        }
-                    }
-                    LayoutItem::Image {
-                        placement,
-                        name,
-                        src,
-                        ..
-                    } => {
-                        if let Extent::Size(size) = &placement.extent {
-                            for sv in &size.0 {
-                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false);
-                                }
-                            }
-                        }
-                        if let Some(n) = name {
-                            record_ref(n, true, true);
-                        }
-                        if let Some(s) = src {
-                            for name in bare_token_names(s) {
-                                if !repeated_names.contains(name) {
-                                    record_ref(name, true, false);
-                                }
-                            }
-                        }
-                    }
-                    LayoutItem::Line { stroke, .. } => {
-                        if let Some(Stroke {
-                            color: DynamicValue::Ref(r),
-                            ..
-                        }) = stroke
-                        {
-                            record_ref(r, false, false);
-                        }
-                    }
-                    LayoutItem::Container {
-                        placement,
-                        stroke,
-                        background,
-                        repeat,
-                        items,
-                        ..
-                    } => {
-                        if let Extent::Size(size) = &placement.extent {
-                            for sv in &size.0 {
-                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false);
-                                }
-                            }
-                        }
-                        if let Some(Stroke {
-                            color: DynamicValue::Ref(r),
-                            ..
-                        }) = stroke
-                        {
-                            record_ref(r, false, false);
-                        }
-                        if let Some(DynamicValue::Ref(r)) = background {
-                            record_ref(r, false, false);
-                        }
-
-                        if let Some(rep_name) = repeat {
-                            record_ref(rep_name, true, false);
-                            let mut child_repeated = repeated_names.clone();
-                            child_repeated.insert(rep_name.clone());
-
-                            if let Some(data) = resolved_data {
-                                if let Some(serde_json::Value::Array(elements)) = data.get(rep_name)
-                                {
-                                    for elem in elements {
-                                        let mut child_data = data.clone();
-                                        child_data.insert(
-                                            rep_name.clone(),
-                                            serde_json::Value::String(
-                                                crate::render::value_to_string(elem),
-                                            ),
-                                        );
-                                        walk_items(
-                                            items,
-                                            Some(&child_data),
-                                            &child_repeated,
-                                            record_ref,
-                                        );
-                                    }
-                                }
-                            } else {
-                                walk_items(items, None, &child_repeated, record_ref);
-                            }
-                        } else {
-                            walk_items(items, resolved_data, repeated_names, record_ref);
-                        }
-                    }
-                }
-            }
-        }
-
-        let initial_repeated = std::collections::BTreeSet::new();
-        walk_items(items, resolved_data, &initial_repeated, &mut record_ref);
-
-        let mut specs = Vec::new();
-
-        for (name, spec) in &self.params {
-            let Some(info) = collected.get(name) else {
-                continue;
-            };
-            let truncated_elsewhere = single_line_names.contains(name);
-
-            let control = if info.image_bound {
-                InputControl::Image
-            } else {
-                match &spec.param_type {
-                    ParamType::Enum { .. } => InputControl::Select,
-                    ParamType::Boolean => InputControl::Checkbox,
-                    ParamType::Datetime { time } => {
-                        if *time {
-                            InputControl::Datetime
-                        } else {
-                            InputControl::Date
-                        }
-                    }
-                    ParamType::Integer => InputControl::Integer,
-                    ParamType::Number | ParamType::Length => InputControl::Number,
-                    ParamType::String { multiline } => {
-                        if *multiline {
-                            InputControl::Textarea
-                        } else {
-                            InputControl::Text
-                        }
-                    }
-                    ParamType::List => InputControl::List,
-                }
-            };
-            let slider = matches!(
-                spec.param_type,
-                ParamType::Integer | ParamType::Number | ParamType::Length
-            ) && spec.min.is_some()
-                && spec.max.is_some();
-            let (default, default_error, required) = match resolved_defaults.get(name) {
-                Some(ParamDefaultReport::Resolved { resolved }) => {
-                    (Some(resolved.clone()), None, false)
-                }
-                Some(ParamDefaultReport::Error { error }) => (None, Some(error.clone()), true),
-                None => (None, None, true),
-            };
-            let values = if let ParamType::Enum { values } = &spec.param_type {
-                Some(values.clone())
-            } else {
-                None
-            };
-            let min = if matches!(
-                spec.param_type,
-                ParamType::Integer | ParamType::Number | ParamType::Length
-            ) {
-                spec.min
-            } else {
-                None
-            };
-            let max = if matches!(
-                spec.param_type,
-                ParamType::Integer | ParamType::Number | ParamType::Length
-            ) {
-                spec.max
-            } else {
-                None
-            };
-            let unit = if matches!(spec.param_type, ParamType::Length) {
-                Some(self.unit.clone())
-            } else {
-                None
-            };
-
-            specs.push(InputSpec {
-                name: name.clone(),
-                control,
-                slider,
-                required,
-                default,
-                default_error,
-                values,
-                min,
-                max,
-                unit,
-                description: spec.description.clone(),
-                interpolated: info.interpolated,
-                truncated_elsewhere,
-            });
-        }
-
-        specs
+            })
+            .collect()
     }
-}
-
-#[derive(Default, Debug)]
-struct NameInfo {
-    interpolated: bool,
-    image_bound: bool,
-}
-
-fn collect_single_line_names(layout: &Layout) -> HashSet<String> {
-    let mut names = HashSet::new();
-    let Layout::Items(items) = layout;
-    fn walk(items: &[LayoutItem], names: &mut HashSet<String>) {
-        for item in items {
-            match item {
-                LayoutItem::Text { value, wrap, .. } => {
-                    if !*wrap {
-                        for name in bare_token_names(value) {
-                            names.insert(name.to_string());
-                        }
-                    }
-                }
-                LayoutItem::Container { items, .. } => {
-                    walk(items, names);
-                }
-                _ => {}
-            }
-        }
-    }
-    walk(items, &mut names);
-    names
 }
 
 /// A templates-folder entry the registry refused: not a template file, or a template file that
@@ -662,8 +342,16 @@ impl TemplateRegistry {
         &self.broken
     }
 
-    pub fn summaries(&self) -> Vec<TemplateSummary> {
-        let mut items: Vec<_> = self.templates.values().map(TemplateSummary::from).collect();
+    pub fn summaries(
+        &self,
+        variables: &BTreeMap<String, String>,
+        datetime: &crate::datetime_fmt::DateTimeResolver,
+    ) -> Vec<TemplateSummary> {
+        let mut items: Vec<_> = self
+            .templates
+            .values()
+            .map(|t| t.summary(variables, datetime))
+            .collect();
         items.sort_by(|a, b| a.id.cmp(&b.id));
         items
     }
@@ -701,7 +389,7 @@ impl TemplateContent {
         for (name, spec) in &self.params {
             validate_param_name(name)?;
             validate_param_spec(name, spec)?;
-            if let Some(crate::models::ParamValue::String(s)) = &spec.default {
+            if let Some(s) = spec.tokened_default() {
                 crate::interpolation::validate_default_syntax(s).map_err(|e| {
                     format!("invalid interpolation syntax in default of parameter '{name}': {e}")
                 })?;
@@ -934,58 +622,12 @@ fn validate_param_name(name: &str) -> Result<(), String> {
 }
 
 fn validate_param_spec(name: &str, spec: &ParamSpec) -> Result<(), String> {
-    match &spec.param_type {
-        ParamType::Datetime { .. } => {
-            if let Some(default) = &spec.default {
-                if !matches!(default, crate::models::ParamValue::String(_)) {
-                    return Err(format!(
-                        "default on a datetime parameter '{name}' must be a string"
-                    ));
-                }
-            }
+    if let (Some(min), Some(max)) = (spec.min, spec.max) {
+        if min > max {
+            return Err(format!(
+                "parameter '{name}' min ({min}) must be <= max ({max})"
+            ));
         }
-        ParamType::Enum { values } => {
-            if values.is_empty() {
-                return Err(format!("parameter '{name}' enum values must not be empty"));
-            }
-            if values.iter().any(|opt| opt.trim().is_empty()) {
-                return Err("options must not contain empty values".to_string());
-            }
-            if let Some(default) = &spec.default {
-                match default {
-                    crate::models::ParamValue::String(s) => {
-                        if !s.contains('{') && !s.contains('}') && !values.iter().any(|v| v == s) {
-                            return Err(format!(
-                                "parameter '{name}' default '{s}' is not in enum values"
-                            ));
-                        }
-                    }
-                    crate::models::ParamValue::Integer(i) => {
-                        let s = i.to_string();
-                        if !values.contains(&s) {
-                            return Err(format!(
-                                "parameter '{name}' default '{i}' is not in enum values"
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(format!(
-                            "parameter '{name}' default must be one of the declared enum values"
-                        ));
-                    }
-                }
-            }
-        }
-        ParamType::Length | ParamType::Number | ParamType::Integer => {
-            if let (Some(min), Some(max)) = (spec.min, spec.max) {
-                if min > max {
-                    return Err(format!(
-                        "parameter '{name}' min ({min}) must be <= max ({max})"
-                    ));
-                }
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -1334,11 +976,11 @@ fn load_geometry_values(template: &TemplateContent) -> HashMap<String, f32> {
     let mut map = HashMap::new();
     for (name, spec) in &template.params {
         let val = match &spec.default {
-            Some(crate::models::ParamValue::Float(f)) => *f,
+            Some(crate::models::ParamValue::Float(f)) => *f as f32,
             Some(crate::models::ParamValue::Integer(i)) => *i as f32,
             _ => match (spec.min, spec.max) {
-                (Some(min), _) => min,
-                (_, Some(max)) => max,
+                (Some(min), _) => min as f32,
+                (_, Some(max)) => max as f32,
                 _ => 0.0,
             },
         };
@@ -1350,12 +992,9 @@ fn load_geometry_values(template: &TemplateContent) -> HashMap<String, f32> {
 fn resolve_f32_default(params: &indexmap::IndexMap<String, ParamSpec>, name: &str) -> f32 {
     if let Some(spec) = params.get(name) {
         match &spec.default {
-            Some(crate::models::ParamValue::Float(f)) => *f,
+            Some(crate::models::ParamValue::Float(f)) => *f as f32,
             Some(crate::models::ParamValue::Integer(i)) => *i as f32,
-            Some(crate::models::ParamValue::String(s)) => {
-                s.parse::<f32>().unwrap_or_else(|_| spec.min.unwrap_or(0.0))
-            }
-            _ => spec.min.unwrap_or(0.0),
+            _ => spec.min.unwrap_or(0.0) as f32,
         }
     } else {
         0.0
@@ -2002,37 +1641,29 @@ fn validate_font_size(font_size: &FontSize) -> Result<(), String> {
     Ok(())
 }
 
-impl From<&TemplateDefinition> for TemplateSummary {
-    fn from(template: &TemplateDefinition) -> Self {
-        Self {
-            id: template.id.clone(),
-            name: template.name.clone(),
-            description: template.description.clone(),
-            categories: template.categories.clone(),
-            unit: template.unit.clone(),
-            dpi: template.dpi,
-            params: template
-                .params
-                .iter()
-                .map(|(name, spec)| ParamEntry {
-                    name: name.clone(),
-                    spec: spec.clone(),
-                })
-                .collect(),
-            format: template.format.clone(),
+impl TemplateDefinition {
+    pub fn summary(
+        &self,
+        variables: &BTreeMap<String, String>,
+        datetime: &crate::datetime_fmt::DateTimeResolver,
+    ) -> TemplateSummary {
+        TemplateSummary {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            categories: self.categories.clone(),
+            unit: self.unit.clone(),
+            dpi: self.dpi,
+            params: self.published_params(variables, datetime),
+            format: self.format.clone(),
         }
     }
-}
 
-impl TemplateDefinition {
     pub fn build_detail(
         &self,
         variables: &BTreeMap<String, String>,
         datetime: &crate::datetime_fmt::DateTimeResolver,
     ) -> TemplateDetail {
-        let param_defaults = crate::render::resolve_declared_defaults(self, variables, datetime);
-        let default_inputs = self.inputs_default(&param_defaults, variables, datetime);
-        let all_inputs = self.inputs_all(&param_defaults);
         TemplateDetail {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -2041,20 +1672,8 @@ impl TemplateDefinition {
             unit: self.unit.clone(),
             dpi: self.dpi,
             format: self.format.clone(),
-            params: self
-                .params
-                .iter()
-                .map(|(name, spec)| ParamEntry {
-                    name: name.clone(),
-                    spec: spec.clone(),
-                })
-                .collect(),
-            inputs: TemplateInputs {
-                default: default_inputs,
-                all: all_inputs,
-            },
+            params: self.published_params(variables, datetime),
             variables: self.variables(),
-            param_defaults,
         }
     }
 }
@@ -2103,20 +1722,16 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        bare_token_names, load_all_for_tests, validate_template_id_stem, TemplateContent,
-        TemplateDefinition, TemplateRegistry,
-    };
+    use super::{validate_template_id_stem, TemplateContent, TemplateDefinition, TemplateRegistry};
     use crate::errors::TemplateError;
     use crate::models::{
-        Alignment, Color, Dimension, DynamicDimension, DynamicValue, Extent, FontSize,
-        InputControl, InputSpec, Layout, LayoutItem, ParamSpec, ParamType, ParamValue, Position,
-        Shape, Size, SizeValue, Stroke, TemplateFormat,
+        Alignment, Color, Dimension, DynamicDimension, DynamicValue, FontSize, Layout, LayoutItem,
+        ParamControl, ParamSpec, ParamType, Position, Shape, Size, SizeValue, Stroke,
+        TemplateFormat,
     };
-    use crate::reason::Reason;
     use indexmap::IndexMap;
     use serde_json::json;
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -2135,61 +1750,11 @@ mod tests {
         t
     }
 
-    fn test_defaults(template: &TemplateContent) -> super::ResolvedDefaults {
-        let variables = BTreeMap::new();
-        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
-        let now = chrono::Local::now();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &dt_formats,
-            now,
-        };
-        crate::render::resolve_declared_defaults(template, &variables, &dt)
-    }
-
-    fn test_inputs_all(template: &TemplateContent) -> Vec<InputSpec> {
-        let defaults = test_defaults(template);
-        template.inputs_all(&defaults)
-    }
-
-    fn test_inputs_default(template: &TemplateContent) -> Vec<InputSpec> {
-        let variables = BTreeMap::new();
-        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
-        let now = chrono::Local::now();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &dt_formats,
-            now,
-        };
-        let defaults = crate::render::resolve_declared_defaults(template, &variables, &dt);
-        template.inputs_default(&defaults, &variables, &dt)
-    }
-
-    fn test_derive_inputs_for_label(
-        template: &TemplateContent,
-        data: &HashMap<String, serde_json::Value>,
-    ) -> Vec<InputSpec> {
-        let variables = BTreeMap::new();
-        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
-        let now = chrono::Local::now();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &dt_formats,
-            now,
-        };
-        let defaults = crate::render::resolve_declared_defaults(template, &variables, &dt);
-        template.derive_inputs_for_label(&defaults, data, &variables, &dt)
-    }
-
     fn test_placeholder_data(
         template: &TemplateContent,
         now: chrono::DateTime<chrono::Local>,
     ) -> HashMap<String, serde_json::Value> {
-        let variables = BTreeMap::new();
-        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &dt_formats,
-            now,
-        };
-        let defaults = crate::render::resolve_declared_defaults(template, &variables, &dt);
-        template.placeholder_data(&defaults, now)
+        template.placeholder_data(now)
     }
 
     #[test]
@@ -3162,33 +2727,14 @@ layout:
 
     #[test]
     fn validate_rejects_empty_option_value() {
-        let template = TemplateContent {
-            name: "Label".to_string(),
-            description: "desc".to_string(),
-            categories: Vec::new(),
-            unit: "mm".to_string(),
-            dpi: 300,
-            format: TemplateFormat::Single {
-                width: Dimension::Fixed(12.0).into(),
-                height: Dimension::Fixed(25.0).into(),
-                media_width: None,
-            },
-            params: IndexMap::from([(
-                "variant".to_string(),
-                ParamSpec {
-                    param_type: ParamType::Enum {
-                        values: vec!["".to_string()],
-                    },
-                    default: None,
-                    min: None,
-                    max: None,
-                    description: None,
-                },
-            )]),
-            layout: Layout::Items(Vec::new()),
-        };
-        let err = template.validate().expect_err("expected error");
-        assert!(err.contains("options must not contain empty values"));
+        let yaml = "name: Label\nunit: mm\ndpi: 300\nparams:\n  - name: variant\n    type: enum\n    values: [\"\"]\nformat: { type: single, width: 12, height: 25 }\nlayout: []\n";
+        let err = crate::parse::parse_template(yaml)
+            .expect_err("expected error")
+            .to_string();
+        assert!(
+            err.contains("params.variant.values") && err.contains("empty value"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -3384,7 +2930,12 @@ layout: []
         );
 
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
-        let summaries = registry.summaries();
+        let formats = BTreeMap::new();
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now: chrono::Local::now(),
+        };
+        let summaries = registry.summaries(&BTreeMap::new(), &datetime);
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].id, "a");
         assert_eq!(summaries[1].id, "b");
@@ -3467,6 +3018,7 @@ layout: []
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 ),
                 (
@@ -3477,6 +3029,7 @@ layout: []
                         min: None,
                         max: None,
                         description: None,
+                        default_instant: None,
                     },
                 ),
             ]),
@@ -4486,479 +4039,7 @@ layout:
     }
 
     #[test]
-    fn reference_site_guard_all_validation_params_appear_in_inputs_all() {
-        let registry = load_all_for_tests().0;
-        for summary in registry.summaries() {
-            let template = registry.get(&summary.id).expect("template");
-            let inputs_all_names: HashSet<String> = test_inputs_all(template)
-                .into_iter()
-                .map(|i| i.name)
-                .collect();
-
-            // Check format refs
-            if let TemplateFormat::Single { width, height, .. } = &template.format {
-                for dim in [width, height] {
-                    match dim {
-                        DynamicDimension::Fixed(DynamicValue::Ref(r)) => {
-                            assert!(
-                                inputs_all_names.contains(r),
-                                "template {} missing format ref {r} in inputs.all",
-                                template.id
-                            );
-                        }
-                        DynamicDimension::Dynamic { min, max } => {
-                            if let Some(DynamicValue::Ref(r)) = min {
-                                assert!(
-                                    inputs_all_names.contains(r),
-                                    "template {} missing format min ref {r} in inputs.all",
-                                    template.id
-                                );
-                            }
-                            if let Some(DynamicValue::Ref(r)) = max {
-                                assert!(
-                                    inputs_all_names.contains(r),
-                                    "template {} missing format max ref {r} in inputs.all",
-                                    template.id
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            // Check layout items refs and when keys
-            fn check_items(
-                items: &[LayoutItem],
-                inputs_all_names: &HashSet<String>,
-                template_id: &str,
-            ) {
-                for item in items {
-                    if let Some(when) = item.when() {
-                        for k in when.keys() {
-                            assert!(
-                                inputs_all_names.contains(k),
-                                "template {template_id} missing when key {k} in inputs.all"
-                            );
-                        }
-                    }
-                    match item {
-                        LayoutItem::Text {
-                            placement,
-                            font_weight,
-                            color,
-                            value,
-                            ..
-                        } => {
-                            if let Extent::Size(size) = &placement.extent {
-                                for sv in &size.0 {
-                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                        assert!(
-                                            inputs_all_names.contains(r),
-                                            "template {template_id} missing text size ref {r} in inputs.all"
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(DynamicValue::Ref(r)) = font_weight {
-                                assert!(
-                                    inputs_all_names.contains(r),
-                                    "template {template_id} missing font_weight ref {r} in inputs.all"
-                                );
-                            }
-                            if let Some(DynamicValue::Ref(r)) = color {
-                                assert!(
-                                    inputs_all_names.contains(r),
-                                    "template {template_id} missing text color ref {r} in inputs.all"
-                                );
-                            }
-                            for name in bare_token_names(value) {
-                                assert!(
-                                    inputs_all_names.contains(name),
-                                    "template {template_id} missing token {name} in inputs.all"
-                                );
-                            }
-                        }
-                        LayoutItem::Qr {
-                            placement, value, ..
-                        } => {
-                            if let Extent::Size(size) = &placement.extent {
-                                for sv in &size.0 {
-                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                        assert!(
-                                            inputs_all_names.contains(r),
-                                            "template {template_id} missing qr size ref {r} in inputs.all"
-                                        );
-                                    }
-                                }
-                            }
-                            for name in bare_token_names(value) {
-                                assert!(
-                                    inputs_all_names.contains(name),
-                                    "template {template_id} missing token {name} in inputs.all"
-                                );
-                            }
-                        }
-                        LayoutItem::Image {
-                            placement,
-                            name,
-                            src,
-                            ..
-                        } => {
-                            if let Extent::Size(size) = &placement.extent {
-                                for sv in &size.0 {
-                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                        assert!(
-                                            inputs_all_names.contains(r),
-                                            "template {template_id} missing image size ref {r} in inputs.all"
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(n) = name {
-                                assert!(
-                                    inputs_all_names.contains(n),
-                                    "template {template_id} missing image name {n} in inputs.all"
-                                );
-                            }
-                            if let Some(s) = src {
-                                for name in bare_token_names(s) {
-                                    assert!(
-                                        inputs_all_names.contains(name),
-                                        "template {template_id} missing token {name} in inputs.all"
-                                    );
-                                }
-                            }
-                        }
-                        LayoutItem::Line { stroke, .. } => {
-                            if let Some(Stroke {
-                                color: DynamicValue::Ref(r),
-                                ..
-                            }) = stroke
-                            {
-                                assert!(
-                                    inputs_all_names.contains(r),
-                                    "template {template_id} missing line stroke color ref {r} in inputs.all"
-                                );
-                            }
-                        }
-                        LayoutItem::Container {
-                            placement,
-                            stroke,
-                            background,
-                            items,
-                            ..
-                        } => {
-                            if let Extent::Size(size) = &placement.extent {
-                                for sv in &size.0 {
-                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                        assert!(
-                                            inputs_all_names.contains(r),
-                                            "template {template_id} missing container size ref {r} in inputs.all"
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(Stroke {
-                                color: DynamicValue::Ref(r),
-                                ..
-                            }) = stroke
-                            {
-                                assert!(
-                                    inputs_all_names.contains(r),
-                                    "template {template_id} missing container stroke color ref {r} in inputs.all"
-                                );
-                            }
-                            if let Some(DynamicValue::Ref(r)) = background {
-                                assert!(
-                                    inputs_all_names.contains(r),
-                                    "template {template_id} missing container background ref {r} in inputs.all"
-                                );
-                            }
-                            check_items(items, inputs_all_names, template_id);
-                        }
-                    }
-                }
-            }
-            let Layout::Items(items) = &template.layout;
-            check_items(items, &inputs_all_names, &template.id);
-        }
-    }
-
-    fn whole_manifest_yaml() -> &'static str {
-        r#"
-name: Whole Manifest Fixture
-unit: mm
-dpi: 200
-params:
-  - name: branch
-    type: enum
-    values: [alpha, beta]
-    default: alpha
-  - name: sub_branch
-    type: enum
-    values: [sub1, sub2]
-    default: sub1
-  - name: dyn_w
-    type: length
-    min: 20
-    max: 100
-  - name: weight
-    type: integer
-    min: 100
-    max: 900
-    default: 400
-  - name: text_w
-    type: length
-    min: 10
-    max: 30
-  - name: qr_dim
-    type: length
-    min: 10
-    max: 40
-  - name: img_dim
-    type: length
-    min: 10
-    max: 30
-  - name: cont_dim
-    type: length
-    min: 10
-    max: 50
-  - name: img_param
-    type: string
-  - name: single_title
-    type: string
-  - name: alpha_text
-    type: string
-  - name: qr_code_val
-    type: string
-  - name: beta_multiline
-    type: string
-    multiline: true
-  - name: asset_path
-    type: string
-format:
-  type: single
-  width:
-    min: "{dyn_w}"
-    max: 100
-  height: 50
-layout:
-  - type: line
-    at: [0, 0]
-    to: [10, 0]
-    stroke:
-      thickness: 0.5
-  - type: container
-    when:
-      branch: alpha
-    at: [0, 0]
-    size: [50, 50]
-    items:
-      - type: text
-        value: "{single_title} {alpha_text}"
-        at: [0, 0]
-        size: ["{text_w}", 10]
-        font_size: 10
-        font_weight: "{weight}"
-      - type: image
-        name: img_param
-        at: [0, 10]
-        size: ["{img_dim}", "{img_dim}"]
-      - type: container
-        when:
-          sub_branch: sub1
-        at: [0, 20]
-        size: [30, 20]
-        items:
-          - type: qr
-            value: "https://example.com/{qr_code_val}"
-            at: [0, 0]
-            size: ["{qr_dim}", "{qr_dim}"]
-  - type: container
-    when:
-      branch: beta
-    at: [0, 0]
-    size: ["{cont_dim}", 50]
-    items: []
-  - type: container
-    when:
-      branch: beta
-    at: [0, 0]
-    size: [40, 50]
-    items:
-      - type: text
-        value: "{beta_multiline}\n{vars.secret}"
-        wrap: true
-        at: [0, 0]
-        size: [40, 20]
-        font_size: 10
-      - type: image
-        src: "{asset_path}"
-        at: [0, 20]
-        size: [20, 20]
-"#
-    }
-
-    #[test]
-    fn whole_manifest_inputs_default_and_inputs_all() {
-        let template = parse_template_ok(whole_manifest_yaml());
-
-        let defaults = test_inputs_default(&template);
-        let default_names: Vec<&str> = defaults.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(
-            default_names,
-            vec![
-                "branch",
-                "sub_branch",
-                "dyn_w",
-                "weight",
-                "text_w",
-                "qr_dim",
-                "img_dim",
-                "img_param",
-                "single_title",
-                "alpha_text",
-                "qr_code_val",
-            ]
-        );
-
-        // Check controls and properties on default list
-        let get_def = |name: &str| defaults.iter().find(|i| i.name == name).unwrap();
-        assert_eq!(get_def("branch").control, InputControl::Select);
-        assert!(!get_def("branch").required);
-        assert_eq!(
-            get_def("branch").default,
-            Some(ParamValue::String("alpha".to_string()))
-        );
-
-        assert_eq!(get_def("text_w").control, InputControl::Number);
-        assert!(get_def("text_w").slider);
-        assert_eq!(get_def("text_w").unit, Some("mm".to_string()));
-
-        assert_eq!(get_def("img_param").control, InputControl::Image);
-        assert!(get_def("img_param").interpolated);
-
-        assert_eq!(get_def("single_title").control, InputControl::Text);
-        assert!(get_def("single_title").truncated_elsewhere);
-
-        assert_eq!(get_def("weight").control, InputControl::Integer);
-        assert!(get_def("weight").slider);
-        assert!(!get_def("weight").required);
-
-        assert_eq!(get_def("alpha_text").control, InputControl::Text);
-        assert!(get_def("alpha_text").required);
-        assert!(get_def("alpha_text").truncated_elsewhere);
-
-        assert_eq!(get_def("qr_code_val").control, InputControl::Text);
-        assert!(get_def("qr_code_val").required);
-
-        let all = test_inputs_all(&template);
-        let all_names: Vec<&str> = all.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(
-            all_names,
-            vec![
-                "branch",
-                "sub_branch",
-                "dyn_w",
-                "weight",
-                "text_w",
-                "qr_dim",
-                "img_dim",
-                "cont_dim",
-                "img_param",
-                "single_title",
-                "alpha_text",
-                "qr_code_val",
-                "beta_multiline",
-                "asset_path",
-            ]
-        );
-
-        let get_all = |name: &str| all.iter().find(|i| i.name == name).unwrap();
-        assert_eq!(get_all("cont_dim").control, InputControl::Number);
-        assert_eq!(get_all("beta_multiline").control, InputControl::Textarea);
-        assert_eq!(get_all("asset_path").control, InputControl::Text);
-        assert!(get_all("asset_path").interpolated);
-
-        assert_eq!(template.variables(), vec!["secret".to_string()]);
-    }
-
-    #[test]
-    fn endpoint_matches_render_for_whole_manifest() {
-        let template = parse_template_ok(whole_manifest_yaml());
-
-        // Label 1: branch alpha, sub_branch sub1
-        let mut data1 = HashMap::new();
-        data1.insert("dyn_w".to_string(), json!(50.0));
-        data1.insert("text_w".to_string(), json!(20.0));
-        data1.insert("single_title".to_string(), json!("Title"));
-        data1.insert("alpha_text".to_string(), json!("Alpha"));
-        data1.insert(
-            "img_param".to_string(),
-            json!(crate::render::SAMPLE_PNG_DATA_URI),
-        );
-        data1.insert("img_dim".to_string(), json!(15.0));
-        data1.insert("qr_dim".to_string(), json!(15.0));
-        data1.insert("qr_code_val".to_string(), json!("123"));
-
-        let inputs1 = test_derive_inputs_for_label(&template, &data1);
-        let input_names1: HashSet<String> = inputs1.into_iter().map(|i| i.name).collect();
-
-        let resolved1 = crate::render::resolve_parameters(&template, &data1, None, None)
-            .expect("resolve label 1");
-        for k in data1.keys() {
-            assert!(
-                input_names1.contains(k),
-                "data key {k} must be reported in inputs"
-            );
-        }
-        for name in &input_names1 {
-            assert!(
-                resolved1.data.contains_key(name),
-                "reported input {name} must be resolved by render"
-            );
-        }
-
-        // Label 2: branch beta
-        let mut data2 = HashMap::new();
-        data2.insert("branch".to_string(), json!("beta"));
-        data2.insert("dyn_w".to_string(), json!(60.0));
-        data2.insert("cont_dim".to_string(), json!(35.0));
-        data2.insert("beta_multiline".to_string(), json!("Multi\nLine"));
-        data2.insert(
-            "asset_path".to_string(),
-            json!(crate::render::SAMPLE_PNG_DATA_URI),
-        );
-
-        let inputs2 = test_derive_inputs_for_label(&template, &data2);
-        let input_names2: HashSet<String> = inputs2.into_iter().map(|i| i.name).collect();
-        assert!(!input_names2.contains("alpha_text"));
-        assert!(!input_names2.contains("qr_code_val"));
-        assert!(!input_names2.contains("img_param"));
-        assert!(input_names2.contains("cont_dim"));
-        assert!(input_names2.contains("beta_multiline"));
-        assert!(input_names2.contains("asset_path"));
-        assert!(input_names2.contains("dyn_w"));
-
-        let resolved2 = crate::render::resolve_parameters(&template, &data2, None, None)
-            .expect("resolve label 2");
-        for k in data2.keys() {
-            assert!(
-                input_names2.contains(k),
-                "data key {k} must be reported in inputs"
-            );
-        }
-        for name in &input_names2 {
-            assert!(
-                resolved2.data.contains_key(name),
-                "reported input {name} must be resolved by render"
-            );
-        }
-    }
-
-    #[test]
-    fn thumbnail_closure_renders_required_and_min_values() {
+    fn thumbnail_closure_renders_every_undefaulted_parameter() {
         let yaml = r#"
 name: Thumbnail Closure
 unit: mm
@@ -5009,7 +4090,7 @@ layout:
     size: [50, 20]
     items:
       - type: text
-        value: "Never rendered"
+        value: "Gated"
         at: [0, 0]
         size: [50, 10]
         font_size: 10
@@ -5019,10 +4100,10 @@ layout:
         let ph = test_placeholder_data(&template, now);
         assert_eq!(ph.get("mode"), Some(&json!("mode")));
         assert_eq!(ph.get("subtitle"), Some(&json!("subtitle")));
-        assert_eq!(ph.get("length_param"), Some(&json!(15.0)));
+        assert_eq!(ph.get("length_param"), Some(&json!(42.0)));
         assert_eq!(ph.get("style"), None);
         assert_eq!(ph.get("str_with_default"), None);
-        assert_eq!(ph.get("gate_only"), None);
+        assert_eq!(ph.get("gate_only"), Some(&json!("gate_only")));
 
         let dt_formats = BTreeMap::new();
         let dt = crate::datetime_fmt::DateTimeResolver {
@@ -5035,7 +4116,47 @@ layout:
     }
 
     #[test]
-    fn gate_key_not_interpolated_is_never_invented_for() {
+    fn an_integer_placeholder_clamps_to_a_whole_bound() {
+        let yaml = r#"
+name: Fractional Bound
+unit: mm
+dpi: 200
+params:
+  - name: count
+    type: integer
+    max: 10.5
+  - name: ratio
+    type: number
+    max: 10.5
+  - name: floor
+    type: integer
+    min: 42.5
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{count} {ratio} {floor}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+        let ph = test_placeholder_data(&template, now);
+        assert_eq!(ph.get("count"), Some(&json!(10.0)));
+        assert_eq!(ph.get("ratio"), Some(&json!(10.5)));
+        assert_eq!(ph.get("floor"), Some(&json!(43.0)));
+
+        let dt_formats = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now,
+        };
+        crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt)
+            .expect("an integer placeholder must pass its own bounds");
+    }
+
+    #[test]
+    fn a_gate_only_parameter_takes_its_placeholder() {
         let yaml = r#"
 name: Gate Not Interpolated
 unit: mm
@@ -5071,7 +4192,7 @@ layout:
     size: [50, 20]
     items:
       - type: text
-        value: "Should not be active"
+        value: "Gated"
         at: [0, 0]
         size: [50, 10]
         font_size: 10
@@ -5079,7 +4200,10 @@ layout:
         let template = parse_template_ok(yaml);
         let now = chrono::Local::now();
         let ph = test_placeholder_data(&template, now);
-        assert_eq!(ph.get("uninterpolated_req"), None);
+        assert_eq!(
+            ph.get("uninterpolated_req"),
+            Some(&json!("uninterpolated_req"))
+        );
         assert_eq!(ph.get("branch_mode"), None);
         assert_eq!(ph.get("message"), Some(&json!("message")));
 
@@ -5140,7 +4264,7 @@ layout:
         assert_eq!(ph.get("count"), None);
 
         let now = chrono::Local::now();
-        let resolved = crate::render::resolve_parameters(&template, &ph, None, None)
+        let resolved = crate::render::resolve_parameters(&template, &ph, &Default::default())
             .expect("resolve placeholder parameters");
         assert_eq!(resolved.data.get("orientation"), Some(&json!("horizontal")));
         assert_eq!(resolved.data.get("prefix"), Some(&json!("custom_prefix")));
@@ -5154,130 +4278,6 @@ layout:
         let png = crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt)
             .expect("render thumbnail with resolved defaults");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-    }
-
-    #[test]
-    fn lenient_versus_strict_resolution() {
-        let yaml = r#"
-name: Lenient Strict
-unit: mm
-dpi: 200
-params:
-  - name: choice
-    type: enum
-    values: [one, two]
-    default: one
-  - name: count
-    type: integer
-    default: 5
-  - name: printed_on
-    type: datetime
-format:
-  type: single
-  width: 50
-  height: 20
-layout:
-  - type: text
-    value: "{choice} {count} {printed_on}"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-"#;
-        let template = parse_template_ok(yaml);
-
-        // 1. Invalid enum value
-        let mut bad_enum = HashMap::new();
-        bad_enum.insert("choice".to_string(), json!("invalid_choice"));
-        let lenient_enum = test_derive_inputs_for_label(&template, &bad_enum);
-        assert_eq!(
-            lenient_enum
-                .iter()
-                .find(|i| i.name == "choice")
-                .unwrap()
-                .default,
-            Some(ParamValue::String("one".to_string()))
-        );
-        let strict_enum_err =
-            crate::render::resolve_parameters(&template, &bad_enum, None, None).unwrap_err();
-        assert_eq!(strict_enum_err.code(), "InvalidRequest");
-        assert_eq!(strict_enum_err.status().as_u16(), 400);
-        assert_eq!(
-            strict_enum_err.reason(),
-            Some(Reason::ParamValueInvalid.as_slug())
-        );
-
-        // 2. Non-numeric integer
-        let mut bad_int = HashMap::new();
-        bad_int.insert("count".to_string(), json!("not_a_number"));
-        let lenient_int = test_derive_inputs_for_label(&template, &bad_int);
-        assert_eq!(
-            lenient_int
-                .iter()
-                .find(|i| i.name == "count")
-                .unwrap()
-                .default,
-            Some(ParamValue::Integer(5))
-        );
-        let strict_int_err =
-            crate::render::resolve_parameters(&template, &bad_int, None, None).unwrap_err();
-        assert_eq!(
-            strict_int_err.reason(),
-            Some(Reason::ParamValueInvalid.as_slug())
-        );
-
-        // 3. Unparseable datetime
-        let mut bad_dt = HashMap::new();
-        bad_dt.insert("printed_on".to_string(), json!("not_a_date"));
-        let lenient_dt = test_derive_inputs_for_label(&template, &bad_dt);
-        assert!(lenient_dt.iter().any(|i| i.name == "printed_on"));
-        let strict_dt_err =
-            crate::render::resolve_parameters(&template, &bad_dt, None, None).unwrap_err();
-        assert_eq!(
-            strict_dt_err.reason(),
-            Some(Reason::ParamValueInvalid.as_slug())
-        );
-    }
-
-    #[test]
-    fn option_key_on_submitted_label_changes_neither_input_list_nor_render() {
-        let yaml = r#"
-name: Option Test
-unit: mm
-dpi: 200
-params:
-  - name: title
-    type: string
-  - name: style
-    type: enum
-    values: [plain, fancy]
-    default: plain
-format:
-  type: single
-  width: 50
-  height: 20
-layout:
-  - type: text
-    value: "{style} {title}"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-"#;
-        let template = parse_template_ok(yaml);
-
-        let mut data = HashMap::new();
-        data.insert("title".to_string(), json!("Hello"));
-
-        let inputs_no_opt = test_derive_inputs_for_label(&template, &data);
-
-        let mut opt_map = BTreeMap::new();
-        opt_map.insert("style".to_string(), "fancy".to_string());
-
-        // Derive inputs uses data and lenient resolution
-        let inputs_with_opt = test_derive_inputs_for_label(&template, &data);
-        assert_eq!(inputs_no_opt, inputs_with_opt);
-
-        let render_plain = crate::render::resolve_parameters(&template, &data, None, None).unwrap();
-        assert_eq!(render_plain.data["style"], json!("plain"));
     }
 
     /// Proves that structural flow schema violations (missing/invalid direction, negative gaps,
@@ -5724,80 +4724,6 @@ layout: []
     }
 
     #[test]
-    fn input_list_required_and_defaults() {
-        let yaml = r#"
-name: Input List Rules
-unit: mm
-dpi: 200
-params:
-  - name: no_def_bool
-    type: boolean
-  - name: no_def_enum
-    type: enum
-    values: [a, b]
-  - name: no_def_dt
-    type: datetime
-  - name: token_def
-    type: string
-    default: "{vars.site}"
-  - name: lit_def
-    type: string
-    default: "literal"
-  - name: gated_on_token
-    type: string
-format:
-  type: single
-  width: 50
-  height: 20
-layout:
-  - type: text
-    value: "{no_def_bool} {no_def_enum} {no_def_dt} {token_def} {lit_def}"
-    at: [0, 0]
-    size: [50, 10]
-    font_size: 10
-  - type: container
-    when:
-      token_def: "my_site"
-    at: [0, 10]
-    size: [50, 10]
-    items:
-      - type: text
-        value: "{gated_on_token}"
-        at: [0, 0]
-        size: [50, 10]
-        font_size: 10
-"#;
-        let template = parse_template_ok(yaml);
-        let inputs_all = test_inputs_all(&template);
-
-        let b = inputs_all.iter().find(|i| i.name == "no_def_bool").unwrap();
-        assert!(b.required);
-        assert!(b.default.is_none());
-
-        let e = inputs_all.iter().find(|i| i.name == "no_def_enum").unwrap();
-        assert!(e.required);
-        assert!(e.default.is_none());
-
-        let dt = inputs_all.iter().find(|i| i.name == "no_def_dt").unwrap();
-        assert!(dt.required);
-        assert!(dt.default.is_none());
-
-        let tok = inputs_all.iter().find(|i| i.name == "token_def").unwrap();
-        assert!(tok.required);
-        assert!(tok.default.is_none());
-        assert!(tok.default_error.is_some());
-
-        let lit = inputs_all.iter().find(|i| i.name == "lit_def").unwrap();
-        assert!(!lit.required);
-        assert_eq!(lit.default, Some(ParamValue::String("literal".to_string())));
-
-        // derive_inputs_for_label without variables/dt treats token_def as absent,
-        // so when: token_def: "my_site" is inactive, and gated_on_token is omitted from derived inputs
-        let derived = test_derive_inputs_for_label(&template, &HashMap::new());
-        assert!(!derived.iter().any(|i| i.name == "gated_on_token"));
-    }
-
-    #[test]
     fn thumbnail_tests_for_new_default_rules() {
         // 1. Template with undefaulted datetime still renders a real date
         let yaml_dt = r#"
@@ -5827,7 +4753,7 @@ layout:
             crate::render::render_thumbnail_png(&t_dt, &ph_dt, &BTreeMap::new(), &dt_res).unwrap();
         assert!(!png.is_empty());
 
-        // 2. Reading undefaulted boolean renders via placeholder (false)
+        // 2. Reading undefaulted boolean renders via its default (false), with no placeholder
         let yaml_bool = r#"
 name: Thumbnail Undefaulted Bool
 unit: mm
@@ -5845,12 +4771,12 @@ layout:
 "#;
         let t_bool = parse_template_ok(yaml_bool);
         let ph_bool = test_placeholder_data(&t_bool, now);
-        assert_eq!(ph_bool.get("flag"), Some(&json!(false)));
+        assert_eq!(ph_bool.get("flag"), None);
         let png = crate::render::render_thumbnail_png(&t_bool, &ph_bool, &BTreeMap::new(), &dt_res)
             .unwrap();
         assert!(!png.is_empty());
 
-        // 3. Enum-gated container renders through option selection
+        // 3. Enum-gated container renders through the first value
         let yaml_enum_gate = r#"
 name: Thumbnail Enum Gate
 unit: mm
@@ -5875,15 +4801,26 @@ layout:
 "#;
         let t_enum = parse_template_ok(yaml_enum_gate);
         let ph_enum = test_placeholder_data(&t_enum, now);
-        assert!(!ph_enum.contains_key("mode"));
+        assert_eq!(ph_enum.get("mode"), Some(&json!("primary")));
         let Layout::Items(items_enum) = &t_enum.layout;
         let images_enum = std::cell::RefCell::new(crate::render::ImageCollector::default());
-        let resolved_enum =
-            crate::render::resolve_parameters(&t_enum, &ph_enum, None, Some(&dt_res)).unwrap();
+        let resolved_enum = crate::render::resolve_parameters(
+            &t_enum,
+            &ph_enum,
+            &crate::render::resolve_environment(
+                &t_enum,
+                &std::collections::BTreeMap::new(),
+                &dt_res,
+            )
+            .unwrap()
+            .defaults,
+        )
+        .unwrap();
         let empty_settings_enum = BTreeMap::new();
         let env_enum = crate::render::RenderEnv {
             settings: &empty_settings_enum,
             datetime: &dt_res,
+            defaults: Default::default(),
         };
         let ctx_enum = crate::render::RenderContext::new(
             "mm",
@@ -5894,14 +4831,14 @@ layout:
         )
         .with_instants(&resolved_enum.instants);
         assert!(
-            !ctx_enum.is_item_active(&items_enum[0]),
-            "enum container with no default must be inactive in thumbnail"
+            ctx_enum.is_item_active(&items_enum[0]),
+            "enum container with no default takes its first value in the thumbnail"
         );
         let png = crate::render::render_thumbnail_png(&t_enum, &ph_enum, &BTreeMap::new(), &dt_res)
             .unwrap();
         assert!(!png.is_empty());
 
-        // 4. Boolean-gated container with no default does NOT render in thumbnail
+        // 4. Boolean-gated container with no default renders: the boolean defaults to false
         let yaml_bool_gate = r#"
 name: Thumbnail Bool Gate
 unit: mm
@@ -5925,25 +4862,31 @@ layout:
 "#;
         let t_bg = parse_template_ok(yaml_bool_gate);
         let ph_bg = test_placeholder_data(&t_bg, now);
-        // enabled is not interpolated, so placeholder_data does not invent for it; it stays absent -> branch inactive
         assert!(!ph_bg.contains_key("enabled"));
         let Layout::Items(items_bg) = &t_bg.layout;
         let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
-        let resolved =
-            crate::render::resolve_parameters(&t_bg, &ph_bg, None, Some(&dt_res)).unwrap();
+        let resolved = crate::render::resolve_parameters(
+            &t_bg,
+            &ph_bg,
+            &crate::render::resolve_environment(&t_bg, &std::collections::BTreeMap::new(), &dt_res)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let empty_settings = BTreeMap::new();
         let env = crate::render::RenderEnv {
             settings: &empty_settings,
             datetime: &dt_res,
+            defaults: Default::default(),
         };
         let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(
-            !ctx.is_item_active(&items_bg[0]),
-            "boolean container with no default must be inactive in thumbnail"
+            ctx.is_item_active(&items_bg[0]),
+            "boolean container with no default is active: the boolean defaults to false"
         );
 
-        // 5. Broken default: thumbnail renders with placeholder because broken default is required
+        // 5. Broken default: the thumbnail fails as a render does
         let yaml_bad_def = r#"
 name: Thumbnail Bad Def
 unit: mm
@@ -5962,10 +4905,12 @@ layout:
 "#;
         let t_bad = parse_template_ok(yaml_bad_def);
         let ph_bad = test_placeholder_data(&t_bad, now);
-        assert_eq!(ph_bad.get("val"), Some(&json!("val")));
-        let png = crate::render::render_thumbnail_png(&t_bad, &ph_bad, &BTreeMap::new(), &dt_res)
-            .unwrap();
-        assert!(!png.is_empty());
+        assert_eq!(ph_bad.get("val"), None);
+        let err = crate::render::render_thumbnail_png(&t_bad, &ph_bad, &BTreeMap::new(), &dt_res)
+            .unwrap_err();
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("reference_unresolved"));
+        assert_eq!(err.details().unwrap()["field"], "vars.missing");
 
         // 6. List placeholder: required list with no default is invented as [name]
         let yaml_list_no_def = r#"
@@ -6025,8 +4970,13 @@ layout:
         let resolved_def = crate::render::resolve_parameters(
             &t_list_def,
             &std::collections::HashMap::new(),
-            None,
-            Some(&dt_res),
+            &crate::render::resolve_environment(
+                &t_list_def,
+                &std::collections::BTreeMap::new(),
+                &dt_res,
+            )
+            .unwrap()
+            .defaults,
         )
         .unwrap();
         assert_eq!(
@@ -6060,8 +5010,13 @@ layout:
         let resolved_empty = crate::render::resolve_parameters(
             &t_list_empty,
             &std::collections::HashMap::new(),
-            None,
-            Some(&dt_res),
+            &crate::render::resolve_environment(
+                &t_list_empty,
+                &std::collections::BTreeMap::new(),
+                &dt_res,
+            )
+            .unwrap()
+            .defaults,
         )
         .unwrap();
         assert_eq!(resolved_empty.data.get("tags"), Some(&json!([])));
@@ -6184,12 +5139,19 @@ layout:
             .expect("thumbnail with undefaulted printed enum must render");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
-        let resolved = crate::render::resolve_parameters(&template, &ph, None, Some(&dt)).unwrap();
+        let resolved = crate::render::resolve_parameters(
+            &template,
+            &ph,
+            &crate::render::resolve_environment(&template, &std::collections::BTreeMap::new(), &dt)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         assert_eq!(resolved.data.get("orientation"), Some(&json!("horizontal")));
     }
 
     #[test]
-    fn thumbnail_enum_only_gate_without_default_is_absent() {
+    fn thumbnail_enum_only_gate_without_default_takes_the_first_value() {
         let yaml = r#"
 name: Enum Gate No Default
 unit: mm
@@ -6215,22 +5177,30 @@ layout:
         let template = parse_template_ok(yaml);
         let now = chrono::Local::now();
         let ph = test_placeholder_data(&template, now);
-        assert!(!ph.contains_key("outline"));
+        assert_eq!(ph.get("outline"), Some(&json!("yes")));
         let dt = crate::datetime_fmt::DateTimeResolver {
             formats: &BTreeMap::new(),
             now,
         };
-        let resolved = crate::render::resolve_parameters(&template, &ph, None, Some(&dt)).unwrap();
-        assert!(!resolved.data.contains_key("outline"));
+        let resolved = crate::render::resolve_parameters(
+            &template,
+            &ph,
+            &crate::render::resolve_environment(&template, &std::collections::BTreeMap::new(), &dt)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
+        assert_eq!(resolved.data.get("outline"), Some(&json!("yes")));
         let Layout::Items(items) = &template.layout;
         let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
         let env = crate::render::RenderEnv {
             settings: &BTreeMap::new(),
             datetime: &dt,
+            defaults: Default::default(),
         };
         let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
-        assert!(!ctx.is_item_active(&items[0]));
+        assert!(ctx.is_item_active(&items[0]));
         let png =
             crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -6269,13 +5239,21 @@ layout:
             formats: &BTreeMap::new(),
             now,
         };
-        let resolved = crate::render::resolve_parameters(&template, &ph, None, Some(&dt)).unwrap();
+        let resolved = crate::render::resolve_parameters(
+            &template,
+            &ph,
+            &crate::render::resolve_environment(&template, &std::collections::BTreeMap::new(), &dt)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         assert_eq!(resolved.data.get("outline"), Some(&json!("yes")));
         let Layout::Items(items) = &template.layout;
         let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
         let env = crate::render::RenderEnv {
             settings: &BTreeMap::new(),
             datetime: &dt,
+            defaults: Default::default(),
         };
         let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
@@ -6315,24 +5293,20 @@ layout:
             formats: &BTreeMap::new(),
             now,
         };
-        let variables = BTreeMap::new();
-        let resolved_defaults =
-            crate::render::resolve_declared_defaults(&template, &variables, &dt);
-        let ph2 = template.placeholder_data(&resolved_defaults, now);
-        assert!(!ph2.contains_key("orientation"));
-        let err =
-            crate::render::render_thumbnail_png(&template, &ph2, &variables, &dt).unwrap_err();
+        let variables = BTreeMap::from([("orient".to_string(), "sideways".to_string())]);
+        let err = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt).unwrap_err();
         assert_eq!(err.code(), "TemplateInvalid");
-        assert_eq!(err.reason(), Some("param_default_unresolvable"));
+        assert_eq!(err.reason(), Some("reference_unresolved"));
+        assert_eq!(err.details().unwrap()["field"], "orientation");
         assert!(
-            err.message_text().contains("orientation"),
-            "error must name orientation: {}",
+            err.message_text().contains("sideways"),
+            "error must name the resolved value: {}",
             err.message_text()
         );
     }
 
     #[test]
-    fn thumbnail_broken_string_default_is_masked() {
+    fn thumbnail_broken_string_default_fails() {
         let yaml = r#"
 name: Broken String Default
 unit: mm
@@ -6356,32 +5330,21 @@ layout:
             formats: &BTreeMap::new(),
             now,
         };
-        let resolved_defaults =
-            crate::render::resolve_declared_defaults(&template, &variables, &dt);
-        let ph = template.placeholder_data(&resolved_defaults, now);
-        assert_eq!(ph.get("title"), Some(&json!("title")));
-        let png = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt).unwrap();
-        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-
-        // caller's render omitting title must still fail
-        let err = crate::render::resolve_parameters(
-            &template,
-            &HashMap::new(),
-            Some(&variables),
-            Some(&dt),
-        )
-        .unwrap_err();
+        let ph = template.placeholder_data(now);
+        assert!(
+            !ph.contains_key("title"),
+            "a defaulted parameter takes no placeholder"
+        );
+        let err = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt).unwrap_err();
         assert_eq!(err.code(), "TemplateInvalid");
-        assert_eq!(err.reason(), Some("param_default_unresolvable"));
+        assert_eq!(err.reason(), Some("reference_unresolved"));
+        assert_eq!(err.details().unwrap()["field"], "vars.base");
     }
 
     #[test]
-    fn thumbnail_enum_colour_ref_without_default_fails() {
-        // An active text item that reads an undefaulted enum through a colour `{ref}` is
-        // `interpolated: false` (`src/templates.rs:295`), so `placeholder_data` does not invent
-        // for it. The thumbnail must therefore fail with `color_param_invalid`, while a caller's
-        // render that supplies the enum succeeds. This pins the unlisted BREAKING change where the
-        // deleted `default_option_selection` previously supplied every declared enum.
+    fn thumbnail_enum_colour_ref_without_default_takes_the_first_value() {
+        // An undefaulted enum takes its first value as a thumbnail placeholder, whatever reads it,
+        // so a colour `{ref}` to it renders.
         let yaml = r#"
 name: Enum Colour Ref
 unit: mm
@@ -6406,27 +5369,10 @@ layout:
             formats: &BTreeMap::new(),
             now,
         };
-        let resolved_defaults =
-            crate::render::resolve_declared_defaults(&template, &variables, &dt);
-        let ph = template.placeholder_data(&resolved_defaults, now);
-        assert!(
-            !ph.contains_key("palette"),
-            "colour ref is not interpolated, so placeholder must not contain palette"
-        );
-        let err = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt).unwrap_err();
-        assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("color_param_invalid"));
-        assert!(
-            err.message_text().contains("palette"),
-            "error must name palette: {}",
-            err.message_text()
-        );
-
-        // Caller's render supplying the enum succeeds.
-        let mut data = HashMap::new();
-        data.insert("palette".to_string(), json!("red"));
-        let png = crate::render::render_thumbnail_png(&template, &data, &variables, &dt)
-            .expect("caller supplying palette must render");
+        let ph = template.placeholder_data(now);
+        assert_eq!(ph.get("palette"), Some(&json!("red")));
+        let png = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt)
+            .expect("the first value renders");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -6470,10 +5416,16 @@ layout:
         let env = crate::render::RenderEnv {
             settings: &empty_settings,
             datetime: &dt_res,
+            defaults: Default::default(),
         };
-        let resolved =
-            crate::render::resolve_parameters(&template, &ph, Some(&empty_settings), Some(&dt_res))
-                .unwrap();
+        let resolved = crate::render::resolve_parameters(
+            &template,
+            &ph,
+            &crate::render::resolve_environment(&template, &empty_settings, &dt_res)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
         let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
         let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
@@ -6973,146 +5925,6 @@ layout:
       color: "{border}"
 "#;
         assert!(parse_and_validate(good_line_stroke).is_ok());
-    }
-
-    #[test]
-    fn input_derivation_for_color_references() {
-        // 1. Ungated color, background, stroke.color (on container and line) references marked not interpolated
-        let ungated_yaml = r#"
-name: Ungated Colors
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-  - name: bg_color
-    type: string
-  - name: border_color
-    type: string
-  - name: line_color
-    type: string
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: line
-    at: [0, 0]
-    to: [50, 0]
-    stroke:
-      thickness: 1
-      color: "{line_color}"
-  - type: container
-    at: [0, 0]
-    size: [50, 20]
-    background: "{bg_color}"
-    stroke:
-      thickness: 1
-      color: "{border_color}"
-    items:
-      - type: text
-        value: "Hello"
-        at: [0, 0]
-        size: [50, 20]
-        font_size: 10
-        color: "{brand}"
-"#;
-        let t_ungated = parse_template_ok(ungated_yaml);
-        let inputs = test_inputs_all(&t_ungated);
-        for param_name in ["brand", "bg_color", "border_color", "line_color"] {
-            let input = inputs
-                .iter()
-                .find(|i| i.name == param_name)
-                .unwrap_or_else(|| panic!("{param_name} in inputs_all"));
-            assert!(
-                !input.interpolated,
-                "{param_name} reference must not be marked interpolated"
-            );
-        }
-
-        // 2. when-gated-off item (container background or line stroke) contributes nothing while when's own parameters still appear
-        let gated_yaml = r#"
-name: Gated Color
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-  - name: line_color
-    type: string
-  - name: show_brand
-    type: boolean
-    default: false
-  - name: show_line
-    type: boolean
-    default: false
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 20]
-    background: "{brand}"
-    when:
-      show_brand: "true"
-    items: []
-  - type: line
-    at: [0, 0]
-    to: [50, 0]
-    stroke:
-      thickness: 1
-      color: "{line_color}"
-    when:
-      show_line: "true"
-"#;
-        let t_gated = parse_template_ok(gated_yaml);
-        let mut data = HashMap::new();
-        data.insert("show_brand".to_string(), serde_json::json!(false));
-        data.insert("show_line".to_string(), serde_json::json!(false));
-        let inputs_for_label = test_derive_inputs_for_label(&t_gated, &data);
-        assert!(
-            !inputs_for_label.iter().any(|i| i.name == "brand"),
-            "gated-off container background color param must not be in input list"
-        );
-        assert!(
-            !inputs_for_label.iter().any(|i| i.name == "line_color"),
-            "gated-off line stroke color param must not be in input list"
-        );
-        assert!(
-            inputs_for_label.iter().any(|i| i.name == "show_brand"),
-            "when param must be in input list"
-        );
-        assert!(
-            inputs_for_label.iter().any(|i| i.name == "show_line"),
-            "when param must be in input list"
-        );
-
-        // 3. Parameter used as a color and interpolated elsewhere appears once, interpolated
-        let dual_yaml = r#"
-name: Dual Color
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Brand: {brand}"
-    at: [0, 0]
-    size: [50, 10]
-    font_size: 10
-  - type: text
-    value: "Title"
-    at: [0, 10]
-    size: [50, 10]
-    font_size: 10
-    color: "{brand}"
-"#;
-        let t_dual = parse_template_ok(dual_yaml);
-        let inputs = test_inputs_all(&t_dual);
-        let matching: Vec<_> = inputs.iter().filter(|i| i.name == "brand").collect();
-        assert_eq!(matching.len(), 1, "brand must appear exactly once");
-        assert!(
-            matching[0].interpolated,
-            "interpolated wins when parameter is used both ways"
-        );
     }
 
     #[test]
@@ -7745,8 +6557,7 @@ layout:
         let png = crate::render::render_single_label_image(
             &template,
             &data,
-            &BTreeMap::new(),
-            &dt,
+            &crate::render::resolve_environment(&template, &BTreeMap::new(), &dt).unwrap(),
             crate::render::ImageRenderOptions::default(),
         );
         assert!(png.is_ok());
@@ -7756,8 +6567,7 @@ layout:
         let err = crate::render::render_single_label_image(
             &template,
             &empty_data,
-            &BTreeMap::new(),
-            &dt,
+            &crate::render::resolve_environment(&template, &BTreeMap::new(), &dt).unwrap(),
             crate::render::ImageRenderOptions::default(),
         )
         .unwrap_err();
@@ -7765,61 +6575,9 @@ layout:
         assert_eq!(err.details().unwrap()["field"], "logo");
     }
 
-    // Issue 322: Task 4.2 - Post-change input entry derivation rules
-    #[test]
-    fn issue_322_input_entry_derivation_rules() {
-        let yaml = r#"
-name: T
-unit: mm
-dpi: 200
-params:
-  - name: zeta_text
-    type: string
-    multiline: false
-  - name: alpha_area
-    type: string
-    multiline: true
-  - name: asset_path
-    type: string
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "{zeta_text}"
-    wrap: true
-    at: [0, 0]
-    size: [50, 10]
-    font_size: 8
-  - type: text
-    value: "{alpha_area}"
-    at: [0, 10]
-    size: [50, 10]
-    font_size: 8
-  - type: image
-    src: "{asset_path}"
-    at: [0, 0]
-    size: [10, 10]
-"#;
-        let template = parse_template_ok(yaml);
-        let inputs = test_inputs_all(&template);
-        let names: Vec<&str> = inputs.iter().map(|i| i.name.as_str()).collect();
-
-        // 1. In declaration order (Issue 360)
-        assert_eq!(names, vec!["zeta_text", "alpha_area", "asset_path"]);
-
-        // 2. multiline: false string read by wrap: true item keeps Text (no promotion)
-        assert_eq!(inputs[0].control, InputControl::Text);
-
-        // 3. multiline: true string gets Textarea
-        assert_eq!(inputs[1].control, InputControl::Textarea);
-
-        // 4. image src over declared param gets Text
-        assert_eq!(inputs[2].control, InputControl::Text);
-        assert!(inputs[2].interpolated);
-    }
-
     // Issue 322: Task 4.3 - Union rule: image name in one branch and text in another gets Image
     #[test]
-    fn issue_322_input_entry_union_rule_image_wins() {
+    fn a_whole_src_parameter_is_published_as_image() {
         let yaml = r#"
 name: T
 unit: mm
@@ -7840,7 +6598,7 @@ layout:
     size: [50, 20]
     items:
       - type: image
-        name: shared
+        src: "{shared}"
         at: [0, 0]
         size: [10, 10]
   - type: container
@@ -7856,12 +6614,10 @@ layout:
         font_size: 8
 "#;
         let template = parse_template_ok(yaml);
-        let all = test_inputs_all(&template);
-        let shared_input = all.iter().find(|i| i.name == "shared").unwrap();
         assert_eq!(
-            shared_input.control,
-            InputControl::Image,
-            "image binding must win in inputs.all union"
+            template.param_control("shared", &template.params["shared"]),
+            ParamControl::Image,
+            "a whole-src token makes the image control, whatever else reads the parameter"
         );
     }
 
@@ -8335,87 +7091,7 @@ layout:
     }
 
     #[test]
-    fn repeat_input_derivation() {
-        // 5.4: template with repeat: tags reports tags in inputs.all with interpolated: true, control: list
-        // child {tags} token does not add an extra input
-        let yaml = r#"
-name: T
-unit: mm
-dpi: 200
-params:
-  - name: tags
-    type: list
-  - name: extra_a
-    type: string
-  - name: extra_b
-    type: string
-format: { type: single, width: 50, height: 50 }
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 50]
-    flow: { direction: column }
-    items:
-      - type: container
-        repeat: tags
-        items:
-          - type: text
-            value: "Tag: {tags}"
-            size: [10, 5]
-            font_size: 8
-          - type: text
-            when:
-              tags: A
-            value: "Extra A: {extra_a}"
-            size: [10, 5]
-            font_size: 8
-          - type: text
-            when:
-              tags: B
-            value: "Extra B: {extra_b}"
-            size: [10, 5]
-            font_size: 8
-"#;
-        let template = parse_template_ok(yaml);
-        let all = test_inputs_all(&template);
-        let tag_input = all
-            .iter()
-            .find(|i| i.name == "tags")
-            .expect("tags in inputs.all");
-        assert_eq!(tag_input.control, InputControl::List);
-        assert!(tag_input.interpolated);
-        assert!(tag_input.required);
-
-        // Per-label derive_inputs with tags: ["A", "B"] expands instances and evaluates when: gates
-        let mut data = HashMap::new();
-        data.insert("tags".to_string(), serde_json::json!(["A", "B"]));
-        let derived = test_derive_inputs_for_label(&template, &data);
-        let names: Vec<&str> = derived.iter().map(|i| i.name.as_str()).collect();
-        assert!(names.contains(&"tags"));
-        assert!(names.contains(&"extra_a"));
-        assert!(names.contains(&"extra_b"));
-
-        // With tags: ["A"], only extra_a is active
-        let mut data_a = HashMap::new();
-        data_a.insert("tags".to_string(), serde_json::json!(["A"]));
-        let derived_a = test_derive_inputs_for_label(&template, &data_a);
-        let names_a: Vec<&str> = derived_a.iter().map(|i| i.name.as_str()).collect();
-        assert!(names_a.contains(&"tags"));
-        assert!(names_a.contains(&"extra_a"));
-        assert!(!names_a.contains(&"extra_b"));
-
-        // With tags: ["C"], neither extra_a nor extra_b is active
-        let mut data_c = HashMap::new();
-        data_c.insert("tags".to_string(), serde_json::json!(["C"]));
-        let derived_c = test_derive_inputs_for_label(&template, &data_c);
-        let names_c: Vec<&str> = derived_c.iter().map(|i| i.name.as_str()).collect();
-        assert!(names_c.contains(&"tags"));
-        assert!(!names_c.contains(&"extra_a"));
-        assert!(!names_c.contains(&"extra_b"));
-    }
-
-    #[test]
-    fn issue_360_input_list_and_wire_order_preserves_declaration_order() {
+    fn issue_360_wire_order_preserves_declaration_order() {
         let yaml = r#"
 name: Ordering Test
 unit: mm
@@ -8447,31 +7123,11 @@ layout:
 "#;
         let template = parse_template_ok(yaml);
 
-        // 1. inputs.default is in declaration order: title, subtitle, code
-        let defaults = test_inputs_default(&template);
-        let default_names: Vec<&str> = defaults.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(default_names, vec!["title", "subtitle", "code"]);
-
-        // 2. inputs.all is in declaration order: title, subtitle, code
-        let all = test_inputs_all(&template);
-        let all_names: Vec<&str> = all.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(all_names, vec!["title", "subtitle", "code"]);
-
-        // 3. derive_inputs_for_label returns title, subtitle, code
-        let derived_inputs = test_derive_inputs_for_label(&template, &HashMap::new());
-        let derived_names: Vec<&str> = derived_inputs.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(derived_names, vec!["title", "subtitle", "code"]);
-
-        // 4. TemplateSummary and TemplateDetail params match declaration order
+        // TemplateSummary and TemplateDetail params match declaration order
         let def = TemplateDefinition {
             id: "ordering_test".to_string(),
             content: template,
         };
-        let summary = crate::models::TemplateSummary::from(&def);
-        let summary_param_names: Vec<&str> =
-            summary.params.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(summary_param_names, vec!["title", "subtitle", "code"]);
-
         let vars = BTreeMap::new();
         let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
         let now = chrono::Local::now();
@@ -8479,6 +7135,11 @@ layout:
             formats: &dt_formats,
             now,
         };
+        let summary = def.summary(&vars, &dt);
+        let summary_param_names: Vec<&str> =
+            summary.params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(summary_param_names, vec!["title", "subtitle", "code"]);
+
         let detail = def.build_detail(&vars, &dt);
         let detail_param_names: Vec<&str> = detail.params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(detail_param_names, vec!["title", "subtitle", "code"]);
@@ -8574,8 +7235,7 @@ params:
     default: invalid_alpha
 layout: []
 "#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        let err = template.validate().unwrap_err();
+        let err = crate::parse::parse_template(yaml).unwrap_err().to_string();
         assert!(
             err.contains("zebra"),
             "expected error to surface zebra first in declaration order, got: {err}"
@@ -8720,7 +7380,7 @@ layout:
         write_template(
             &dir,
             "length.yaml",
-            &make_yaml("type: length\n    default: 1.2mm"),
+            &make_yaml("type: length\n    default: 1.2"),
         );
         write_template(
             &dir,
@@ -8740,7 +7400,7 @@ layout:
         write_template(
             &dir,
             "datetime.yaml",
-            &make_yaml("type: datetime\n    default: now"),
+            &make_yaml("type: datetime\n    default: \"2026-08-19\""),
         );
         write_template(&dir, "list.yaml", &make_yaml("type: list\n    default: []"));
 
@@ -8808,75 +7468,5 @@ layout:
             "template with default: 0 must load and be served"
         );
         assert!(registry.broken().is_empty());
-    }
-
-    #[test]
-    fn line_spacing_input_discovery_active_and_gated() {
-        let yaml_active = r#"name: InputTest
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-        let template_active = crate::parse::parse_template(yaml_active).unwrap();
-        let inputs_active = test_derive_inputs_for_label(&template_active, &HashMap::new());
-        let pitch_input = inputs_active
-            .iter()
-            .find(|i| i.name == "pitch")
-            .expect("pitch input must be discovered");
-        assert_eq!(pitch_input.control, InputControl::Number);
-        assert!(
-            !pitch_input.interpolated,
-            "pitch parameter must have interpolated: false"
-        );
-
-        // Gated off
-        let yaml_gated = r#"name: GatedInputTest
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-  - name: show
-    type: boolean
-    default: false
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-    when:
-      show: true
-"#;
-        let template_gated = crate::parse::parse_template(yaml_gated).unwrap();
-        // When show is false
-        let mut data_false = HashMap::new();
-        data_false.insert("show".to_string(), serde_json::json!(false));
-        let inputs_false = test_derive_inputs_for_label(&template_gated, &data_false);
-        assert!(
-            inputs_false.iter().find(|i| i.name == "pitch").is_none(),
-            "pitch input should NOT be present when gate is false"
-        );
-
-        // When show is true
-        let mut data_true = HashMap::new();
-        data_true.insert("show".to_string(), serde_json::json!(true));
-        let inputs_true = test_derive_inputs_for_label(&template_gated, &data_true);
-        assert!(
-            inputs_true.iter().find(|i| i.name == "pitch").is_some(),
-            "pitch input SHOULD be present when gate is true"
-        );
     }
 }

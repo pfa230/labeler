@@ -6,29 +6,7 @@ export type TemplateFormat =
 
 export type ParamValue = string | number | boolean | string[];
 
-export interface ParamDefaultError {
-  reason: string;
-  message: string;
-  token?: string;
-  value?: string;
-}
-
-export type ParamDefaultReport =
-  | { resolved: ParamValue }
-  | { error: ParamDefaultError };
-
-export interface ParamSpec {
-  type: "string" | "number" | "integer" | "boolean" | "enum" | "length" | "datetime" | "list";
-  default?: ParamValue;
-  values?: string[];
-  min?: number;
-  max?: number;
-  multiline?: boolean;
-  time?: boolean;
-  description?: string;
-}
-
-export type InputControl =
+export type ParamControl =
   | "text"
   | "textarea"
   | "select"
@@ -40,25 +18,17 @@ export type InputControl =
   | "datetime"
   | "list";
 
-export interface InputSpec {
+export interface Param {
   name: string;
-  control: InputControl;
-  slider?: boolean;
-  required?: boolean;
+  type: "string" | "number" | "integer" | "boolean" | "enum" | "length" | "datetime" | "list";
+  control: ParamControl;
   default?: ParamValue;
-  default_error?: ParamDefaultError;
+  description?: string;
   values?: string[];
   min?: number;
   max?: number;
-  unit?: string;
-  description?: string;
-  interpolated?: boolean;
-  truncated_elsewhere?: boolean;
-}
-
-export interface TemplateInputs {
-  default: InputSpec[];
-  all: InputSpec[];
+  multiline?: boolean;
+  time?: boolean;
 }
 
 export interface BrokenTemplate {
@@ -75,7 +45,7 @@ export interface TemplateSummary {
   unit: string;
   dpi: number;
   format: TemplateFormat;
-  params: Array<{ name: string } & ParamSpec>;
+  params: Param[];
 }
 
 export interface TemplateListResponse {
@@ -91,19 +61,10 @@ export interface TemplateDetail {
   unit: string;
   dpi: number;
   format: TemplateFormat;
-  params: Array<{ name: string } & ParamSpec>;
-  param_defaults?: Record<string, ParamDefaultReport>;
-  inputs: TemplateInputs;
+  params: Param[];
   variables: string[];
 }
 
-export interface TemplateInputsRequest {
-  labels: { data?: Record<string, unknown> }[];
-}
-
-export interface TemplateInputsResponse {
-  inputs: InputSpec[][];
-}
 export interface BatchSummary { total: number; succeeded: number; failed: { index: number; error: string }[]; jobs: number }
 export interface RenderProfile { color_mode?: "color" | "bilevel"; resolution?: number }
 

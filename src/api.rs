@@ -29,13 +29,15 @@ use crate::{
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, NewPrinter,
         PrintRequest, Printer, PrinterConnection, PrinterUpdate, ReloadResponse,
-        RenderLabelRequest, TemplateDetail, TemplateInputsRequest, TemplateInputsResponse,
-        TemplateList, VariableValue,
+        RenderLabelRequest, TemplateDetail, TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
     reason::Reason,
-    render::{render_single_label_image, render_single_label_pdf, ColorMode, ImageRenderOptions},
+    render::{
+        render_single_label_image, render_single_label_pdf, resolve_environment, ColorMode,
+        ImageRenderOptions,
+    },
     store::Store,
     templates::{
         validate_template_id_stem, TemplateContent, TemplateDefinition, TemplateRegistry,
@@ -194,7 +196,6 @@ fn api_router() -> Router<Arc<AppState>> {
         )
         .route("/templates/{id}/source", get(template_source))
         .route("/templates/{id}/thumbnail", get(thumbnail))
-        .route("/templates/{id}/inputs", post(template_inputs))
         .route("/printers", get(list_printers).post(create_printer))
         .route("/printers/probe", post(probe_printer))
         .route(
@@ -349,9 +350,16 @@ pub async fn health() -> impl IntoResponse {
         (status = 200, description = "List templates", body = TemplateList)
     )
 )]
-pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn list_templates(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<TemplateList>, AppError> {
+    let context = detail_context(&state).await?;
+    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
+        formats: &context.dt_formats,
+        now: chrono::Local::now(),
+    };
     let registry = state.templates.load_full();
-    let templates = registry.summaries();
+    let templates = registry.summaries(&context.variables, &dt_resolver);
     let broken = registry
         .broken()
         .iter()
@@ -360,7 +368,7 @@ pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResp
             error: b.error.clone(),
         })
         .collect();
-    Json(TemplateList { templates, broken })
+    Ok(Json(TemplateList { templates, broken }))
 }
 
 #[utoipa::path(
@@ -405,8 +413,8 @@ fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
     Ok(content)
 }
 
-/// The variables and datetime formats a write's response detail is resolved against. Read before
-/// the write, so a store failure answers `500` with nothing written.
+/// The variables and datetime formats a response's published `params` are resolved against. A
+/// write reads them before writing, so a store failure answers `500` with nothing written.
 struct DetailContext {
     variables: BTreeMap<String, String>,
     dt_formats: BTreeMap<String, String>,
@@ -634,8 +642,7 @@ pub async fn thumbnail(
         now,
     };
     let variables = state.store().all_variables().await?;
-    let resolved_defaults = crate::render::resolve_declared_defaults(template, &variables, &dt);
-    let data = template.placeholder_data(&resolved_defaults, now);
+    let data = template.placeholder_data(now);
     let png = crate::render::render_thumbnail_png(template, &data, &variables, &dt)?;
 
     // #129: key the ETag on the rendered bytes, not the template YAML. The image depends on the
@@ -666,57 +673,6 @@ pub async fn thumbnail(
         png,
     )
         .into_response())
-}
-
-#[utoipa::path(
-    post,
-    path = "/templates/{id}/inputs",
-    params(("id" = String, Path, description = "Template id")),
-    request_body = TemplateInputsRequest,
-    responses(
-        (status = 200, description = "Derived input lists per label", body = TemplateInputsResponse),
-        (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 422, description = "Batch too large", body = ErrorResponse),
-    )
-)]
-pub async fn template_inputs(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(req): Json<TemplateInputsRequest>,
-) -> Result<Json<TemplateInputsResponse>, AppError> {
-    if req.labels.len() > MAX_BATCH_LABELS {
-        return Err(AppError::batch_too_large(
-            req.labels.len(),
-            MAX_BATCH_LABELS,
-        ));
-    }
-    let registry = state.templates.load_full();
-    let template = registry
-        .get(&id)
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
-
-    let variables = state.store().all_variables().await?;
-    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    let now = chrono::Local::now();
-    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
-        formats: &dt_formats,
-        now,
-    };
-    let resolved_defaults =
-        crate::render::resolve_declared_defaults(template, &variables, &dt_resolver);
-
-    let mut inputs = Vec::with_capacity(req.labels.len());
-    for label in &req.labels {
-        inputs.push(template.derive_inputs_for_label(
-            &resolved_defaults,
-            &label.data,
-            &variables,
-            &dt_resolver,
-        ));
-    }
-    Ok(Json(TemplateInputsResponse { inputs }))
 }
 
 fn validate_printer(id: &str, name: &str, connection: &PrinterConnection) -> Result<(), AppError> {
@@ -1590,11 +1546,11 @@ async fn run_batch(
         formats: &dt_formats,
         now: chrono::Local::now(),
     };
+    let render_env = resolve_environment(template, &variables, &dt)?;
     match mode {
         crate::batch::BatchMode::Download => {
             let env = crate::batch::BatchEnv {
-                settings: &variables,
-                datetime: &dt,
+                render: &render_env,
                 render_opts: crate::render::ImageRenderOptions::default(),
             };
             let rendered = crate::batch::render_batch(
@@ -1671,8 +1627,7 @@ async fn run_batch(
                 _ => "pdf",
             };
             let env = crate::batch::BatchEnv {
-                settings: &variables,
-                datetime: &dt,
+                render: &render_env,
                 render_opts,
             };
             // Validate-then-execute: render everything first; bad data => 422 before any send.
@@ -1920,15 +1875,16 @@ pub async fn render_label(
         }
     };
 
+    let env = resolve_environment(template, &variables, &dt)?;
     crate::render::validate_label_data_keys(template, &req.data)?;
 
     let (bytes, content_type) = match format {
         RenderFormat::Png => (
-            render_single_label_image(template, &req.data, &variables, &dt, img_opts)?,
+            render_single_label_image(template, &req.data, &env, img_opts)?,
             "image/png",
         ),
         RenderFormat::Pdf => (
-            render_single_label_pdf(template, &req.data, &variables, &dt)?,
+            render_single_label_pdf(template, &req.data, &env)?,
             "application/pdf",
         ),
     };

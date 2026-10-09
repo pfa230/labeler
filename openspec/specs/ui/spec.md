@@ -90,7 +90,7 @@ Each parameter's control SHALL be labelled with its `description`, else its `nam
 | `image` | image file chooser | read-only mark that a value is held |
 | `list` | editor of text elements the operator can add, remove and reorder | read-only (see "List values in the grids") |
 
-A print form field for a parameter with a default SHALL start blank and show the default as its hint. Grid cells SHALL be editable in place.
+A print form field for a parameter with a default SHALL start blank and show the default as its hint, except a checkbox, which has no blank state and starts at its default. Grid cells SHALL be editable in place.
 
 #### Scenario: A defaulted field starts blank
 
@@ -163,9 +163,9 @@ The Import screen SHALL parse and edit a CSV in the browser and submit its rows 
 
 ### Requirement: Template page
 
-The template page SHALL show the template's thumbnail (`templates`) and list its `params` in declaration order, showing each declared `default:` as written.
+The template page SHALL show the template's thumbnail (`templates`) and list its `params` in declaration order, showing each published `default` (`parameters`).
 
-#### Scenario: A tokened default is shown as written
+#### Scenario: A tokened default is shown by value
 
-- **WHEN** a parameter declares `default: "{sys.now}"`
-- **THEN** the page shows `default: {sys.now}` beside the parameter
+- **WHEN** a parameter declares `default: "{vars.qr_base_url}"` and the store holds `qr_base_url = https://ex.co/`
+- **THEN** the page shows `https://ex.co/` as that parameter's default

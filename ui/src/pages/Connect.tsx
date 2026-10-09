@@ -15,10 +15,10 @@ import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { useSheetPreview } from "../lib/sheetPreview";
-import { useBatchRowInputs, pruneDataForSubmit } from "../lib/labelInputs";
+import { getOwnKey, pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
-import type { TemplateDetail, InputSpec } from "../api/types";
+import type { TemplateDetail } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
@@ -170,10 +170,10 @@ function Composer({
   const { push } = useToast();
   const connectorColumns = useMemo(() => schema.resources.flatMap((r) => r.columns), [schema]);
   const connectorKeys = useMemo(() => [...new Set(connectorColumns.map((c) => c.key))], [connectorColumns]);
-  const templateFields = useMemo(() => detail.inputs.all.map((i) => i.name), [detail]);
-  const [mapping, setMapping] = useState<FieldMapping>(() => defaultMapping(detail.inputs.all, connectorColumns));
+  const templateFields = useMemo(() => detail.params.map((p) => p.name), [detail]);
+  const [mapping, setMapping] = useState<FieldMapping>(() => defaultMapping(detail.params, connectorColumns));
   const mappingErrors = useMemo(
-    () => validateMapping(mapping, detail.inputs.all, connectorColumns),
+    () => validateMapping(mapping, detail.params, connectorColumns),
     [mapping, detail, connectorColumns],
   );
 
@@ -188,45 +188,18 @@ function Composer({
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
-  const { getRowInputs, pending: rowsPending } = useBatchRowInputs(
-    detail.id,
-    rows,
-    detail.inputs.default,
-  );
-
   const isSheet = detail.format.type === "sheet";
   const positions = detail.format.type === "sheet" ? detail.format.positions.length : 0;
 
-  const cellInput = (row: LabelGridRow, field: string): InputSpec | undefined => {
-    const inputs = getRowInputs(row.id);
-    if (!inputs) return { name: field, control: "text" };
-    return inputs.find((i) => i.name === field) ?? detail.inputs.all.find((i) => i.name === field);
-  };
+  const cellInput = (_row: LabelGridRow, field: string) => detail.params.find((p) => p.name === field);
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
     const field: Record<string, string> = {};
-    const inputs = getRowInputs(row.id) ?? detail.inputs.default;
-    for (const input of inputs) {
-      if (input.control === "list") continue;
-      const valStr = row.data[input.name] !== undefined && row.data[input.name] !== null ? String(row.data[input.name]) : "";
-      if (input.control === "datetime" || input.control === "date") {
-        const dtErr = datetimeCellError(valStr);
-        if (dtErr) {
-          field[input.name] = dtErr;
-        } else if (valStr.trim().length === 0) {
-          if (input.default_error?.message) {
-            field[input.name] = input.default_error.message;
-          } else if (input.required) {
-            field[input.name] = "required";
-          }
-        }
-      } else if (valStr.length === 0) {
-        if (input.default_error?.message) {
-          field[input.name] = input.default_error.message;
-        } else if (input.required) {
-          field[input.name] = "required";
-        }
-      }
+    for (const param of detail.params) {
+      if (param.control !== "datetime" && param.control !== "date") continue;
+      const held = getOwnKey(row.data, param.name);
+      const dtErr = datetimeCellError(held !== undefined && held !== null ? String(held) : "");
+      if (dtErr) field[param.name] = dtErr;
     }
     return Object.keys(field).length ? { field } : {};
   };
@@ -240,8 +213,7 @@ function Composer({
   const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
   const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
 
-  const dataFor = (r: LabelGridRow) =>
-    pruneDataForSubmit(r.data, getRowInputs(r.id) ?? detail.inputs.default);
+  const dataFor = (r: LabelGridRow) => pruneDataForSubmit(r.data, detail.params);
 
   // Build the resolved label for the selected row using the same resolution the submit path uses.
   const selRow = rows.find((r) => r.id === resolvedSelectedId);
@@ -256,20 +228,14 @@ function Composer({
 
   const sheetPreview = useSheetPreview(
     { templateId: detail.id, labels: resolveLabels(rows, copies, dataFor), startSlot },
-    isSheet && rows.length > 0 && !rowsPending && !blocked,
+    isSheet && rows.length > 0 && !blocked,
   );
   const rowPreview = useRowPreview({
     templateId: detail.id,
     label: isSheet ? undefined : previewLabel,
   });
 
-  const preview = isSheet
-    ? rowsPending
-      ? { loading: true }
-      : blocked
-        ? { loading: false, blocked }
-        : sheetPreview
-    : rowPreview;
+  const preview = isSheet ? (blocked ? { loading: false, blocked } : sheetPreview) : rowPreview;
 
   const addRows = async () => {
     if (selected.length === 0 || mappingErrors.length > 0) return;
@@ -296,7 +262,6 @@ function Composer({
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
-    if (rowsPending) { setFormError("Resolving row inputs; please wait."); return; }
     if (snapshot.some(rowInvalid)) { setFormError("Fix the highlighted rows before running."); return; }
     if (expandedCount(snapshot.length, copies) > MAX_BATCH_LABELS) { setFormError(`Too many labels (over the ${MAX_BATCH_LABELS} limit).`); return; }
     if (mode === "print" && !printer) { setFormError("Select a printer to print."); return; }

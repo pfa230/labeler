@@ -12,10 +12,7 @@ const detail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  inputs: {
-    all: [{ name: "message", control: "text" }],
-    default: [{ name: "message", control: "text" }],
-  },
+  params: [{ name: "message", type: "string", control: "text" }],
 };
 
 const detail2 = {
@@ -25,10 +22,7 @@ const detail2 = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  inputs: {
-    all: [{ name: "message", control: "text" }],
-    default: [{ name: "message", control: "text" }],
-  },
+  params: [{ name: "message", type: "string", control: "text" }],
 };
 
 const list = {
@@ -49,28 +43,6 @@ const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 function stubFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("test_tpl/inputs")) {
-      return new Response(
-        JSON.stringify({
-          inputs: [
-            [
-              { name: "message", control: "text", description: "Single line" },
-              { name: "notes", control: "textarea", default: "", description: "Notes" },
-              { name: "target_width", control: "number", slider: true, default: 80, min: 25, max: 200, description: "Target width" },
-              { name: "show_border", control: "checkbox", default: false, description: "Show border" },
-              { name: "orientation", control: "select", values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
-            ],
-          ],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    if (url.includes("/inputs")) {
-      return new Response(
-        JSON.stringify({ inputs: [[{ name: "message", control: "text" }]] }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
     // Detail BEFORE list so the broad /api/templates branch doesn't swallow it.
     if (url.startsWith("/api/templates/nope")) {
       return new Response(
@@ -171,35 +143,26 @@ describe("Print screen", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders dynamic inputs for multiline string, length slider, toggle, and enum", async () => {
+  it("renders a control per published parameter: textarea, number, checkbox and select", async () => {
     const templateWithParams = {
       id: "test_tpl",
       name: "Test Template",
       description: "",
       unit: "mm",
       dpi: 300,
-      inputs: {
-        all: [
-          { name: "message", control: "text" as const, description: "Single line" },
-          { name: "notes", control: "textarea" as const, default: "", description: "Notes" },
-          { name: "target_width", control: "number" as const, slider: true, default: 80, min: 25, max: 200, description: "Target width" },
-          { name: "show_border", control: "checkbox" as const, default: false, description: "Show border" },
-          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
-        ],
-        default: [
-          { name: "message", control: "text" as const, description: "Single line" },
-          { name: "notes", control: "textarea" as const, default: "", description: "Notes" },
-          { name: "target_width", control: "number" as const, slider: true, default: 80, min: 25, max: 200, description: "Target width" },
-          { name: "show_border", control: "checkbox" as const, default: false, description: "Show border" },
-          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
-        ],
-      },
+      params: [
+        { name: "message", type: "string", control: "text", description: "Single line" },
+        { name: "notes", type: "string", control: "textarea", multiline: true, default: "", description: "Notes" },
+        { name: "target_width", type: "length", control: "number", default: 80, min: 25, max: 200, description: "Target width" },
+        { name: "show_border", type: "boolean", control: "checkbox", default: false, description: "Show border" },
+        { name: "orientation", type: "enum", control: "select", values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
+      ],
       format: { type: "single" as const, height: 18, width: { min: 25, max: 80 } },
     };
 
     renderWithProviders(<Print />, { template: templateWithParams });
     expect(await screen.findByRole("textbox", { name: /notes/i })).toBeInstanceOf(HTMLTextAreaElement);
-    expect(screen.getByRole("slider", { name: /target width/i })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: /target width/i })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /show border/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /orientation/i })).toBeInTheDocument();
   });
@@ -209,22 +172,21 @@ describe("Print screen", () => {
     expect(await screen.findByText("labels grid")).toBeInTheDocument();
   });
 
-  it("gates Download on a filled field and Print on a printer, then prints", async () => {
+  it("gates Print on a printer, not on a filled field, then prints", async () => {
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     renderPage("/print/t1");
 
     // The message field appears once the detail loads.
     const message = (await screen.findByLabelText("message")) as HTMLInputElement;
 
+    // The screen does not judge completeness: Download is enabled with the field blank, and only
+    // the missing printer gates Print.
     const download = screen.getByRole("button", { name: /download/i });
     const print = screen.getByRole("button", { name: /print/i });
-    expect(download).toBeDisabled();
+    expect(download).toBeEnabled();
     expect(print).toBeDisabled();
 
-    // Fill the field: Download enables; Print stays disabled (no printer).
     fireEvent.change(message, { target: { value: "hello" } });
-    await waitFor(() => expect(download).not.toBeDisabled());
-    expect(print).toBeDisabled();
 
     // Let the live preview settle so we can assert on the download delta.
     await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));

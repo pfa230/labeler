@@ -17,11 +17,11 @@ import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { useSheetPreview } from "../lib/sheetPreview";
-import { useBatchRowInputs, pruneDataForSubmit } from "../lib/labelInputs";
+import { getOwnKey, pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
-import type { TemplateDetail, InputSpec } from "../api/types";
+import type { TemplateDetail } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
@@ -103,26 +103,14 @@ function CsvEditor({
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
-  const { getRowInputs, pending: rowsPending } = useBatchRowInputs(
-    detail?.id,
-    rows,
-    detail?.inputs?.default,
-  );
-
   const isSheet = detail?.format.type === "sheet";
 
-  const templateFields = useMemo(() => {
-    if (!detail) return [];
-    return detail.inputs.all.map((i) => i.name);
-  }, [detail]);
-
-  const listNames = useMemo(() => {
-    if (!detail) return new Set<string>();
-    const s = new Set<string>();
-    for (const inp of detail.inputs.all) if (inp.control === "list") s.add(inp.name);
-    for (const inp of detail.inputs.default ?? []) if (inp.control === "list") s.add(inp.name);
-    return s;
-  }, [detail]);
+  const params = useMemo(() => detail?.params ?? [], [detail]);
+  const templateFields = useMemo(() => params.map((p) => p.name), [params]);
+  const listNames = useMemo(
+    () => new Set(params.filter((p) => p.control === "list").map((p) => p.name)),
+    [params],
+  );
 
   const displayedFields = useMemo(() => {
     const set = new Set(csvFields);
@@ -130,38 +118,16 @@ function CsvEditor({
     return [...set].filter((f) => !listNames.has(f));
   }, [csvFields, templateFields, listNames]);
 
-  const cellInput = (row: LabelGridRow, field: string): InputSpec | undefined => {
-    if (!detail) return { name: field, control: "text" };
-    const inputs = getRowInputs(row.id);
-    if (!inputs) return { name: field, control: "text" };
-    return inputs.find((i) => i.name === field) ?? detail.inputs.all.find((i) => i.name === field);
-  };
+  const cellInput = (_row: LabelGridRow, field: string) =>
+    detail ? params.find((p) => p.name === field) : { name: field, control: "text" as const };
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
-    if (!detail) return {};
     const field: Record<string, string> = {};
-    const inputs = getRowInputs(row.id) ?? detail.inputs?.default ?? [];
-    for (const input of inputs) {
-      if (input.control === "list") continue;
-      const valStr = row.data[input.name] !== undefined && row.data[input.name] !== null ? String(row.data[input.name]) : "";
-      if (input.control === "datetime" || input.control === "date") {
-        const dtErr = datetimeCellError(valStr);
-        if (dtErr) {
-          field[input.name] = dtErr;
-        } else if (valStr.trim().length === 0) {
-          if (input.default_error?.message) {
-            field[input.name] = input.default_error.message;
-          } else if (input.required) {
-            field[input.name] = "required";
-          }
-        }
-      } else if (valStr.length === 0) {
-        if (input.default_error?.message) {
-          field[input.name] = input.default_error.message;
-        } else if (input.required) {
-          field[input.name] = "required";
-        }
-      }
+    for (const param of params) {
+      if (param.control !== "datetime" && param.control !== "date") continue;
+      const held = getOwnKey(row.data, param.name);
+      const dtErr = datetimeCellError(held !== undefined && held !== null ? String(held) : "");
+      if (dtErr) field[param.name] = dtErr;
     }
     return Object.keys(field).length ? { field } : {};
   };
@@ -178,8 +144,7 @@ function CsvEditor({
   const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
   const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
 
-  const dataFor = (r: LabelGridRow) =>
-    pruneDataForSubmit(r.data, getRowInputs(r.id) ?? detail?.inputs?.default ?? []);
+  const dataFor = (r: LabelGridRow) => pruneDataForSubmit(r.data, params);
 
   // Build the resolved label for the selected row using the same resolution the submit path uses.
   const selRow = rows.find((r) => r.id === resolvedSelectedId);
@@ -194,20 +159,14 @@ function CsvEditor({
 
   const sheetPreview = useSheetPreview(
     { templateId: detail?.id ?? "", labels: resolveLabels(rows, copies, dataFor), startSlot },
-    isSheet && rows.length > 0 && !rowsPending && !blocked,
+    isSheet && rows.length > 0 && !blocked,
   );
   const rowPreview = useRowPreview({
     templateId: detail?.id ?? "",
     label: isSheet ? undefined : detail ? previewLabel : undefined,
   });
 
-  const preview = isSheet
-    ? rowsPending
-      ? { loading: true }
-      : blocked
-        ? { loading: false, blocked }
-        : sheetPreview
-    : rowPreview;
+  const preview = isSheet ? (blocked ? { loading: false, blocked } : sheetPreview) : rowPreview;
 
   const ignoredNotices: string[] = [];
 
@@ -261,10 +220,6 @@ function CsvEditor({
     // disabled state lags a blur-commit by one render). Validate the live snapshot and the cap/printer.
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
-    if (rowsPending) {
-      setFormError("Resolving row inputs; please wait.");
-      return;
-    }
     if (snapshot.some(rowInvalid)) {
       setFormError("Fix the highlighted rows before running.");
       return;
