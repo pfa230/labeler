@@ -1102,12 +1102,11 @@ mod http_tests {
         let app = build_app();
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "print",
             "printer": "missing",
             "labels": [{ "data": { "code": "A", "message": "m", "bad_key": "x" } }]
         });
         let res = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -1932,7 +1931,6 @@ layout:
     async fn batch_datetime_param_failure_names_its_label_and_returns_no_artifact() {
         let payload = json!({
             "template": "brother_24mm_printed_on",
-            "mode": "download",
             "labels": [
                 { "data": { "message": "one", "printed_on": "2026-08-18" } },
                 { "data": { "message": "two", "printed_on": "not a date" } },
@@ -1940,7 +1938,7 @@ layout:
             ]
         });
         let response = build_app()
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -1988,14 +1986,13 @@ layout:
         let app = build_app();
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "download",
             "labels": [
                 { "data": { "message": "Hello", "code": "QR-1" } },
                 { "data": { "message": "World", "code": "QR-2" } }
             ]
         });
         let response = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -2023,11 +2020,10 @@ layout:
         });
         let payload = json!({
             "template": "avery5163_asset_tag",
-            "mode": "download",
             "labels": [label.clone(), label]
         });
         let response = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -2049,11 +2045,10 @@ layout:
         let label = json!({ "data": { "message": "Kitchen — spare parts" } });
         let payload = json!({
             "template": "avery5163",
-            "mode": "download",
             "labels": [label.clone(), label]
         });
         let response = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -2066,14 +2061,13 @@ layout:
         let app = build_app();
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "download",
             "labels": [
                 { "data": { "message": "Hello", "code": "QR-1" } },
                 { "data": { "message": "World" } }
             ]
         });
         let response = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -2092,7 +2086,6 @@ layout:
         create_fake_printer(&app, "ok-printer", false).await;
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "print",
             "printer": "ok-printer",
             "labels": [
                 { "data": { "message": "Hello", "code": "QR-1" } },
@@ -2101,13 +2094,13 @@ layout:
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
         assert_eq!(body["total"], 2);
-        assert_eq!(body["succeeded"], 2);
+        assert_eq!(body["sent"], 2);
         assert_eq!(body["failed"].as_array().expect("failed array").len(), 0);
     }
 
@@ -2117,7 +2110,6 @@ layout:
         create_fake_printer(&app, "bad-printer", true).await;
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "print",
             "printer": "bad-printer",
             "labels": [
                 { "data": { "message": "Hello", "code": "QR-1" } },
@@ -2126,12 +2118,12 @@ layout:
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
-        assert_eq!(body["succeeded"], 0);
+        assert_eq!(body["sent"], 0);
         let failed = body["failed"].as_array().expect("failed array");
         assert_eq!(failed.len(), 2);
         assert_eq!(failed[0]["index"], 0);
@@ -2158,20 +2150,19 @@ layout:
         // print a SINGLE template -> bilevel png path runs end-to-end
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "print",
             "printer": "bl",
             "labels": [ { "data": { "message": "Hi", "code": "Q" } } ]
         });
         let resp = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("req");
         assert_eq!(resp.status(), StatusCode::OK);
         let summary = json_response(resp).await;
-        // succeeded == 1 is LOAD-BEARING: the fake driver rejects a non-PNG artifact when
+        // sent == 1 is LOAD-BEARING: the fake driver rejects a non-PNG artifact when
         // configured bilevel, so success proves the print path rendered + sent a bilevel PNG.
-        assert_eq!(summary["succeeded"], 1);
+        assert_eq!(summary["sent"], 1);
         assert_eq!(summary["failed"].as_array().unwrap().len(), 0);
     }
 
@@ -2190,19 +2181,18 @@ layout:
         });
         let payload = json!({
             "template": "avery5163_asset_tag",
-            "mode": "print",
             "printer": "bad-sheet-printer",
             "labels": [label.clone(), label]
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
         assert_eq!(body["total"], 2);
-        assert_eq!(body["succeeded"], 0);
+        assert_eq!(body["sent"], 0);
         let failed = body["failed"].as_array().expect("failed array");
         assert_eq!(failed.len(), 2);
         assert_eq!(body["jobs"], 1);
@@ -2223,41 +2213,192 @@ layout:
         });
         let payload = json!({
             "template": "avery5163_asset_tag",
-            "mode": "print",
             "printer": "ok-sheet-printer",
             "labels": [label.clone(), label]
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
         assert_eq!(body["total"], 2);
-        assert_eq!(body["succeeded"], 2);
+        assert_eq!(body["sent"], 2);
         assert_eq!(body["failed"].as_array().expect("failed array").len(), 0);
         assert_eq!(body["jobs"], 1);
     }
 
-    #[tokio::test]
-    async fn batch_start_slot_single_400() {
-        let app = build_app();
-        let payload = json!({
-            "template": "brother_24mm_qr",
-            "mode": "download",
-            "start_slot": 1,
-            "labels": [
-                { "data": { "message": "Hello", "code": "QR-1" } }
-            ]
-        });
-        let response = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+    async fn post_batch(app: &axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", uri, body.to_string()))
             .await
             .expect("request");
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(response).await;
-        assert_eq!(body["error"]["details"]["reason"], "field_not_applicable");
+        let status = resp.status();
+        (status, json_response(resp).await)
+    }
+
+    #[tokio::test]
+    async fn inapplicable_batch_fields_are_refused_whatever_their_value() {
+        let app = build_app();
+        create_fake_printer(&app, "p", false).await;
+        let single = json!([{ "data": { "message": "Hi", "code": "Q" } }]);
+        let sheet =
+            json!([{ "data": { "id": "A1", "url": "https://example.com/A1", "name": "Grinder" } }]);
+        let cases = [
+            (
+                "/api/render",
+                json!({ "template": "brother_24mm_qr", "labels": single, "start_slot": 0 }),
+            ),
+            (
+                "/api/print",
+                json!({ "template": "brother_24mm_qr", "labels": single, "start_slot": 0, "printer": "p" }),
+            ),
+            (
+                "/api/render",
+                json!({ "template": "avery5163_asset_tag", "labels": sheet, "format": "pdf" }),
+            ),
+            (
+                "/api/render",
+                json!({ "template": "avery5163_asset_tag", "labels": sheet, "format": "png" }),
+            ),
+        ];
+        for (uri, body) in cases {
+            let (status, resp) = post_batch(&app, uri, body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {body}");
+            assert_eq!(
+                resp["error"]["details"]["reason"], "field_not_applicable",
+                "{uri} {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_fields_of_the_other_endpoint_are_unlisted_keys() {
+        let app = build_app();
+        create_fake_printer(&app, "p", false).await;
+        let labels = json!([{ "data": { "message": "Hi", "code": "Q" } }]);
+        let cases = [
+            (
+                "/api/render",
+                json!({ "template": "brother_24mm_qr", "labels": labels, "printer": "p" }),
+            ),
+            (
+                "/api/print",
+                json!({ "template": "brother_24mm_qr", "labels": labels, "printer": "p", "format": "png" }),
+            ),
+            (
+                "/api/render",
+                json!({ "template": "brother_24mm_qr", "labels": labels, "mode": "download" }),
+            ),
+            (
+                "/api/render",
+                json!({ "template": "brother_24mm_qr", "labels": labels, "start_slot": null }),
+            ),
+            (
+                "/api/print",
+                json!({ "template": "brother_24mm_qr", "labels": labels }),
+            ),
+        ];
+        for (uri, body) in cases {
+            let (status, resp) = post_batch(&app, uri, body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {body}");
+            assert_eq!(
+                resp["error"]["details"]["reason"], "json_malformed",
+                "{uri} {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn render_format_is_png_or_pdf_exactly() {
+        let app = build_app();
+        let labels = json!([{ "data": { "message": "Hi", "code": "Q" } }]);
+        let (status, resp) = post_batch(
+            &app,
+            "/api/render",
+            json!({ "template": "brother_24mm_qr", "labels": labels, "format": "" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(resp["error"]["details"]["reason"], "format_unknown");
+    }
+
+    #[tokio::test]
+    async fn single_render_zip_entries_are_padded_label_indices() {
+        use std::io::Read as _;
+        let app = build_app();
+        let label = json!({ "data": { "message": "Hi", "code": "Q" } });
+        for (count, format, want_first, want_last) in [
+            (10, Some("pdf"), "01.pdf", "10.pdf"),
+            (1, None, "1.png", "1.png"),
+        ] {
+            let mut body =
+                json!({ "template": "brother_24mm_qr", "labels": vec![label.clone(); count] });
+            if let Some(f) = format {
+                body["format"] = json!(f);
+            }
+            let resp = app
+                .clone()
+                .oneshot(json_req("POST", "/api/render", body.to_string()))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::OK);
+            let disposition = resp.headers()["content-disposition"]
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(disposition, "attachment; filename=\"brother_24mm_qr.zip\"");
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+            let names: Vec<String> = (0..zip.len())
+                .map(|i| zip.by_index(i).unwrap().name().to_string())
+                .collect();
+            assert_eq!(names.len(), count);
+            assert_eq!(
+                (names[0].as_str(), names[count - 1].as_str()),
+                (want_first, want_last)
+            );
+            let mut first = Vec::new();
+            zip.by_index(0).unwrap().read_to_end(&mut first).unwrap();
+            let magic: &[u8] = if format == Some("pdf") {
+                b"%PDF"
+            } else {
+                b"\x89PNG"
+            };
+            assert!(first.starts_with(magic), "{want_first} content");
+        }
+    }
+
+    #[tokio::test]
+    async fn print_takes_the_shared_body_limit() {
+        let app = build_app();
+        let body = |len: usize| {
+            json!({
+                "template": "brother_24mm_qr",
+                "printer": "no-such-printer",
+                "labels": [{ "data": { "message": "a".repeat(len), "code": "Q" } }]
+            })
+        };
+        // Above the old 64 KiB layer, below ~2 MiB: reaches the handler, which refuses the printer.
+        let (status, resp) = post_batch(&app, "/api/print", body(100 * 1024)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(resp["error"]["details"]["kind"], "printer");
+        // Above ~2 MiB: the shared limit.
+        let (status, resp) = post_batch(&app, "/api/print", body(2200 * 1024)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(resp["error"]["code"], "PayloadTooLarge");
+    }
+
+    #[tokio::test]
+    async fn removed_batch_endpoints_are_unknown_routes() {
+        let app = build_app();
+        for uri in ["/api/batch", "/api/import/csv"] {
+            let (status, resp) = post_batch(&app, uri, json!({})).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(resp["error"]["details"]["kind"], "route", "{uri}");
+        }
     }
 
     #[tokio::test]
@@ -2355,81 +2496,6 @@ layout:
         assert_eq!(body["error"]["details"]["reason"], "format_unsupported");
     }
 
-    #[tokio::test]
-    async fn import_csv_download_zips_rows() {
-        let app = build_app();
-        let csv = "message,code\nHello,QR-1\nWorld,QR-2\n";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=brother_24mm_qr")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("");
-        assert_eq!(content_type, "application/zip");
-        let body = bytes_response(response).await;
-        assert!(body.len() > 4, "zip body too small");
-        assert_eq!(&body[..4], b"PK\x03\x04");
-    }
-
-    #[tokio::test]
-    async fn import_csv_strips_leading_bom() {
-        let app = build_app();
-        let csv = format!("{}message,code\nHello,QR-1\n", '\u{feff}');
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=brother_24mm_qr")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("");
-        assert_eq!(content_type, "application/zip");
-        let body = bytes_response(response).await;
-        assert_eq!(&body[..4], b"PK\x03\x04");
-    }
-
-    #[tokio::test]
-    async fn import_csv_duplicate_headers_returns_400() {
-        let app = build_app();
-        let csv = "message,message\nHello,World\n";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=brother_24mm_qr")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        // Same code as the unknown-format case above, different reason. That is the whole point.
-        assert_eq!(body["error"]["details"]["reason"], "csv_header_invalid");
-    }
-
     /// `NotFound` names what is missing by `kind` and `id`, and carries no reason.
     #[tokio::test]
     async fn unknown_template_is_not_found_by_kind_and_id() {
@@ -2449,180 +2515,6 @@ layout:
         assert_eq!(
             body["error"]["details"],
             serde_json::json!({ "kind": "template", "id": "does-not-exist" })
-        );
-    }
-
-    #[tokio::test]
-    async fn import_csv_missing_field_is_atomic() {
-        let app = build_app();
-        // brother_24mm_qr needs `message` and `code`. The CSV omits the `code` column, so every row
-        // fails to render and the atomic batch aborts with a BatchInvalid before any output.
-        let csv = "message\nHello\nWorld\n";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=brother_24mm_qr")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "BatchInvalid");
-        let failures = body["error"]["details"]["failures"]
-            .as_array()
-            .expect("failures array");
-        assert_eq!(failures[0]["index"], 0);
-        assert_eq!(failures[0]["details"]["reason"], "missing_field");
-    }
-
-    #[tokio::test]
-    async fn import_csv_print_reports_per_row() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let csv = "message,code\nHello,QR-1\nWorld,QR-2\n";
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=brother_24mm_qr&mode=print&printer=ok-printer")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = json_response(response).await;
-        assert_eq!(body["total"], 2);
-        assert_eq!(body["succeeded"], 2);
-        assert_eq!(body["failed"].as_array().expect("failed array").len(), 0);
-
-        create_fake_printer(&app, "bad-printer", true).await;
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=brother_24mm_qr&mode=print&printer=bad-printer")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = json_response(response).await;
-        assert_eq!(body["total"], 2);
-        assert_eq!(body["succeeded"], 0);
-        let failed = body["failed"].as_array().expect("failed array");
-        assert_eq!(failed.len(), 2);
-        assert_eq!(failed[0]["index"], 0);
-        assert_eq!(failed[1]["index"], 1);
-        assert!(!failed[0]["error"]
-            .as_str()
-            .expect("error string")
-            .is_empty());
-    }
-
-    #[tokio::test]
-    async fn import_csv_print_requires_printer() {
-        let app = build_app();
-        let csv = "message,code\nHello,QR-1\n";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=brother_24mm_qr&mode=print")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn import_csv_routes_option_columns() {
-        let app = build_app();
-        // avery5163_asset_tag declares orientation/outline. The orientation column routes
-        // into data, so the horizontal variant renders.
-        let csv = "id,url,name,tags,description,orientation,outline\n\
-            A1,https://x,Widget,t,desc,horizontal,yes\n";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=avery5163_asset_tag&mode=download")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn import_csv_undeclared_option_column_returns_400() {
-        let app = build_app();
-        // avery5163_asset_tag does not declare `option.bogus`; an unrecognized column must be
-        // rejected as csv_data_column_unknown, not silently ignored.
-        let csv = "id,url,name,tags,description,option.bogus\n\
-            A1,https://x,Widget,t,desc,whatever\n";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=avery5163_asset_tag")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "csv_data_column_unknown"
-        );
-    }
-
-    #[tokio::test]
-    async fn import_csv_disallowed_option_value_is_atomic() {
-        let app = build_app();
-        // A disallowed option value flows through the shared batch path and fails the row as
-        // BatchInvalid with a per-row param_value_invalid (not a top-level error).
-        let csv = "id,url,name,tags,description,orientation\n\
-            A1,https://x,Widget,t,desc,sideways\n";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/import/csv?template=avery5163_asset_tag&mode=download")
-                    .header("content-type", "text/csv")
-                    .body(Body::from(csv))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "BatchInvalid");
-        let failures = body["error"]["details"]["failures"]
-            .as_array()
-            .expect("failures array");
-        assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(
-            failures[0]["details"],
-            serde_json::json!({ "reason": "param_value_invalid", "param": "orientation" })
         );
     }
 
@@ -2688,14 +2580,13 @@ layout:
         let (app, _) = build_app_with_custom_templates(vec![("enum_batch", yaml)]);
         let payload = serde_json::json!({
             "template": "enum_batch",
-            "mode": "download",
             "labels": [
                 { "data": { "orientation": "horizontal" } },
                 { "data": { "orientation": "sideways" } }
             ]
         })
         .to_string();
-        let req = json_req("POST", "/api/batch", payload);
+        let req = json_req("POST", "/api/render", payload);
         let res = app.oneshot(req).await.expect("request");
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(res).await;
@@ -5044,12 +4935,11 @@ layout:
         assert_eq!(json_response(resp).await["error"]["code"], "NotFound");
     }
 
-    async fn print_succeeded(app: &axum::Router, printer: &str) -> u64 {
+    async fn print_sent(app: &axum::Router, printer: &str) -> u64 {
         let payload = json!({
             "template": "brother_24mm_qr",
             "printer": printer,
-            "data": { "message": "x", "code": "y" },
-            "copies": 1
+            "labels": [{ "data": { "message": "x", "code": "y" } }]
         });
         let resp = app
             .clone()
@@ -5057,9 +4947,9 @@ layout:
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::OK, "print to {printer}");
-        json_response(resp).await["succeeded"]
+        json_response(resp).await["sent"]
             .as_u64()
-            .expect("succeeded count")
+            .expect("sent count")
     }
 
     #[tokio::test]
@@ -5221,7 +5111,7 @@ layout:
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CREATED);
-        assert_eq!(print_succeeded(&app, "pw").await, 1, "created");
+        assert_eq!(print_sent(&app, "pw").await, 1, "created");
 
         async fn replace(app: &axum::Router, body: Value) {
             let resp = app
@@ -5237,33 +5127,25 @@ layout:
             json!({ "name": "pw", "uri": "ipp://fake.test/?password=other" }),
         )
         .await;
-        assert_eq!(
-            print_succeeded(&app, "pw").await,
-            0,
-            "a wrong password fails"
-        );
+        assert_eq!(print_sent(&app, "pw").await, 0, "a wrong password fails");
         replace(
             &app,
             json!({ "name": "pw", "uri": "ipp://fake.test/?password=s1" }),
         )
         .await;
-        assert_eq!(
-            print_succeeded(&app, "pw").await,
-            1,
-            "omitted password kept"
-        );
+        assert_eq!(print_sent(&app, "pw").await, 1, "omitted password kept");
         replace(
             &app,
             json!({ "name": "pw", "uri": "ipp://fake.test/?password=s2", "password": "s2" }),
         )
         .await;
-        assert_eq!(print_succeeded(&app, "pw").await, 1, "password replaced");
+        assert_eq!(print_sent(&app, "pw").await, 1, "password replaced");
         replace(
             &app,
             json!({ "name": "pw", "uri": "ipp://fake.test/", "password": "" }),
         )
         .await;
-        assert_eq!(print_succeeded(&app, "pw").await, 1, "empty string clears");
+        assert_eq!(print_sent(&app, "pw").await, 1, "empty string clears");
     }
 
     /// errors spec: a key written as `null` is `json_malformed`; an absent key is accepted.
@@ -6392,106 +6274,6 @@ layout:
     }
 
     #[tokio::test]
-    async fn print_webhook_ok_single_template_jobs_equal_copies() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({
-            "template": "brother_24mm_qr",
-            "printer": "ok-printer",
-            "data": { "message": "Hello", "code": "QR-1" },
-            "copies": 2
-        });
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = json_response(resp).await;
-        assert_eq!(body["total"], 2);
-        assert_eq!(body["succeeded"], 2);
-        assert_eq!(body["jobs"], 2); // single/tape template: one send per copy
-    }
-
-    #[tokio::test]
-    async fn print_webhook_defaults_to_one_copy() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({
-            "template": "brother_24mm_qr",
-            "printer": "ok-printer",
-            "data": { "message": "Hi", "code": "Q" }
-        });
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(json_response(resp).await["total"], 1);
-    }
-
-    #[tokio::test]
-    async fn print_webhook_copies_out_of_range_is_400() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        for bad in [0u32, 101] {
-            let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","data":{"message":"x","code":"y"},"copies":bad});
-            let resp = app
-                .clone()
-                .oneshot(json_req("POST", "/api/print", payload.to_string()))
-                .await
-                .expect("request");
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "copies={bad}");
-            let body = json_response(resp).await;
-            assert_eq!(body["error"]["code"], "InvalidRequest");
-            assert_eq!(body["error"]["details"]["reason"], "copies_invalid");
-        }
-    }
-
-    #[tokio::test]
-    async fn print_webhook_unknown_template_is_404() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({"template":"nope","printer":"ok-printer","data":{}});
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn print_webhook_malformed_json_is_400() {
-        let app = build_app();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", "{not json".to_string()))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn print_webhook_oversized_body_is_413() {
-        let app = build_app();
-        // > 64 KiB body via a huge field value.
-        let big = "x".repeat(80 * 1024);
-        let payload = json!({"template":"brother_24mm_qr","printer":"p","data":{"message":big}});
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(
-            json_response(resp).await["error"]["code"],
-            "PayloadTooLarge"
-        );
-    }
-
-    #[tokio::test]
     async fn api_templates_detail_exposes_params_schema() {
         let app = build_app();
         let res = app
@@ -6509,153 +6291,11 @@ layout:
     }
 
     #[tokio::test]
-    async fn api_print_fields_is_rejected() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({
-            "template": "brother_24mm_qr",
-            "printer": "ok-printer",
-            "fields": { "message": "Hello", "code": "QR-1" }
-        });
-        let res = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
-        let err = body["error"]["details"]["error"].as_str().unwrap_or("");
-        assert!(
-            err.contains("fields"),
-            "expected error to name `fields`, got {err}"
-        );
-        // No dispatch: recent-templates still empty (rejection before handler).
-        let recents = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/recent-templates")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(recents.status(), StatusCode::OK);
-        assert_eq!(json_response(recents).await, json!([]));
-    }
-
-    #[tokio::test]
-    async fn api_print_fields_alongside_data_is_rejected() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({
-            "template": "brother_24mm_qr",
-            "printer": "ok-printer",
-            "data": { "message": "Hello", "code": "QR-1" },
-            "fields": { "message": "From fields" }
-        });
-        let res = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
-        // No dispatch: recent-templates still empty (rejection before handler).
-        let recents = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/recent-templates")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(recents.status(), StatusCode::OK);
-        assert_eq!(json_response(recents).await, json!([]));
-    }
-
-    #[tokio::test]
-    async fn api_print_neither_data_nor_fields_is_rejected() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","copies":1});
-        let res = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
-        // No label was printed from an empty map: recent-templates still empty.
-        let recents = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/recent-templates")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(recents.status(), StatusCode::OK);
-        assert_eq!(json_response(recents).await, json!([]));
-    }
-
-    #[tokio::test]
-    async fn api_print_unknown_key_is_rejected() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({
-            "template": "brother_24mm_qr",
-            "printer": "ok-printer",
-            "data": { "message": "Hello", "code": "QR-1" },
-            "extra": 1
-        });
-        let res = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
-        let err = body["error"]["details"]["error"].as_str().unwrap_or("");
-        assert!(
-            err.contains("extra"),
-            "expected error to name `extra`, got {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn api_print_missing_data_reports_json_malformed_not_copies_invalid() {
-        let app = build_app();
-        create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","copies":0});
-        let res = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload.to_string()))
-            .await
-            .expect("request");
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
-    }
-
-    #[tokio::test]
     async fn api_print_empty_data_is_passed_to_template() {
         let app = build_app();
         create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","data":{}});
+        let payload =
+            json!({"template":"brother_24mm_qr","printer":"ok-printer","labels":[{"data":{}}]});
         let res = app
             .clone()
             .oneshot(json_req("POST", "/api/print", payload.to_string()))
@@ -6726,34 +6366,51 @@ layout:
     }
 
     #[test]
-    fn openapi_print_request_is_strict() {
+    fn openapi_batch_requests_are_strict() {
         use utoipa::OpenApi;
         let doc = crate::openapi::ApiDoc::openapi();
         let schemas = doc.components.as_ref().unwrap().schemas.clone();
-        assert!(
-            schemas.contains_key("PrintRequest"),
-            "PrintRequest missing in openapi schemas"
-        );
-        let schema = serde_json::to_value(&schemas["PrintRequest"]).unwrap();
-        let required = schema["required"].as_array().expect("required array");
-        let req_strs: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
-        assert!(
-            req_strs.contains(&"data"),
-            "data must be required, got {schema}"
-        );
-        let props = schema["properties"].as_object().expect("properties object");
-        assert!(
-            !props.contains_key("fields"),
-            "fields must not be a property, got {schema}"
-        );
-        assert!(
-            props.contains_key("data"),
-            "data must be a property, got {schema}"
-        );
-        assert_eq!(
-            schema["additionalProperties"], false,
-            "additionalProperties must be false, got {schema}"
-        );
+        let names = |v: &Value| -> std::collections::BTreeSet<String> {
+            match v {
+                Value::Array(a) => a.iter().map(|x| x.as_str().unwrap().to_string()).collect(),
+                Value::Object(o) => o.keys().cloned().collect(),
+                _ => panic!("expected array or object, got {v}"),
+            }
+        };
+        let set = |xs: &[&str]| {
+            xs.iter()
+                .map(|x| x.to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        for (name, properties, required) in [
+            (
+                "RenderRequest",
+                &["template", "labels", "start_slot", "format"][..],
+                &["template", "labels"][..],
+            ),
+            (
+                "PrintRequest",
+                &["template", "labels", "start_slot", "printer"][..],
+                &["template", "labels", "printer"][..],
+            ),
+        ] {
+            let schema = serde_json::to_value(&schemas[name]).unwrap();
+            assert_eq!(
+                names(&schema["properties"]),
+                set(properties),
+                "{name}: {schema}"
+            );
+            assert_eq!(
+                names(&schema["required"]),
+                set(required),
+                "{name}: {schema}"
+            );
+            assert_eq!(schema["additionalProperties"], false, "{name}: {schema}");
+            assert!(
+                !schema.to_string().contains("\"null\""),
+                "{name} offers null: {schema}"
+            );
+        }
     }
 
     /// The printer bodies refuse `null` (errors spec, request body rejection), so the published
@@ -6814,17 +6471,16 @@ layout:
         );
     }
 
-    // Verify the API-wide behavior: oversized bodies on non-/print JSON endpoints also return 413.
-    // axum's global DefaultBodyLimit (~2 MiB) triggers the same JsonRejection->PayloadTooLarge path.
+    // axum's global DefaultBodyLimit (~2 MiB) triggers the JsonRejection->PayloadTooLarge path.
     #[tokio::test]
     async fn batch_oversized_body_is_413() {
         let app = build_app();
         // ~2.1 MiB body; exceeds the global ~2 MiB DefaultBodyLimit.
         let big = "x".repeat(2 * 1024 * 1024 + 100 * 1024);
-        let payload = json!({"labels":[{"template":"brother_24mm_qr","data":{"message":big}}]});
+        let payload = json!({"template":"brother_24mm_qr","labels":[{"data":{"message":big}}]});
         let resp = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
@@ -6997,17 +6653,16 @@ layout:
             assert_eq!(c.status(), StatusCode::CREATED, "create {id}");
             let payload = json!({
                 "template": "brother_24mm_qr",
-                "mode": "print",
                 "printer": id,
                 "labels": [ { "data": { "message": "Hi", "code": "Q" } } ]
             });
             let resp = app
                 .clone()
-                .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+                .oneshot(json_req("POST", "/api/print", payload.to_string()))
                 .await
                 .expect("req");
             assert_eq!(resp.status(), StatusCode::OK, "print {id}");
-            assert_eq!(json_response(resp).await["succeeded"], 1, "succeeded {id}");
+            assert_eq!(json_response(resp).await["sent"], 1, "sent {id}");
         }
         // 1. no render + caps bilevel+png -> negotiated bilevel -> PNG
         print_ok(
@@ -7035,81 +6690,101 @@ layout:
     }
 
     #[tokio::test]
-    async fn print_media_gate() {
+    async fn every_job_carries_the_template_media_size() {
         let app = build_app();
+        let short = json!({ "message": "a", "code": "Q" });
+        let long = json!({ "message": "a much longer message on the tape", "code": "Q" });
+        // The same fixtures `build_app` serves.
+        let registry = crate::templates::load_all_for_tests().0;
+        let template = registry.get("brother_24mm_qr").expect("fixture");
+        let (settings, formats) = (
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+        );
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now: chrono::Local::now(),
+        };
+        let env = crate::render::resolve_environment(template, &settings, &datetime).unwrap();
+        let length = |data: &Value| {
+            let data: std::collections::HashMap<String, Value> =
+                serde_json::from_value(data.clone()).unwrap();
+            let label = crate::render::render_single_label_as(
+                template,
+                &data,
+                &env,
+                crate::render::SingleKind::Png,
+                Default::default(),
+            )
+            .unwrap();
+            crate::driver::hundredths_mm(label.width_mm)
+        };
+        let short_y = length(&short);
+        assert_ne!(
+            short_y,
+            length(&long),
+            "the two labels must differ in length"
+        );
 
-        /// `knobs` is the fake.test query; `media=<mm>` reports the loaded media width.
-        async fn mk(app: &axum::Router, id: &str, knobs: &str) {
-            let body = json!({ "id": id, "name": id, "uri": format!("ipp://fake.test/?{knobs}") })
-                .to_string();
-            let c = app
+        // tape24 reports 12 mm loaded (`media=12`) but accepts x=2400 with the short label's length:
+        // a surviving 409 pre-check (it reads the advertised width) fails this test.
+        // tape12 refuses x=2400 at send time.
+        for (id, knobs) in [
+            ("tape24", format!("media=12&media_x=2400&media_y={short_y}")),
+            ("tape12", "media_x=1200".to_string()),
+        ] {
+            let body = json!({ "id": id, "name": id, "uri": format!("ipp://fake.test/?{knobs}") });
+            let resp = app
                 .clone()
-                .oneshot(json_req("POST", "/api/printers", body))
+                .oneshot(json_req("POST", "/api/printers", body.to_string()))
                 .await
-                .expect("req");
-            assert_eq!(c.status(), StatusCode::CREATED);
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::CREATED);
         }
+        let labels = json!([{ "data": short }, { "data": long }]);
+        let print = |printer: &'static str| {
+            let app = app.clone();
+            let body =
+                json!({ "template": "brother_24mm_qr", "printer": printer, "labels": labels });
+            async move {
+                let resp = app
+                    .oneshot(json_req("POST", "/api/print", body.to_string()))
+                    .await
+                    .expect("request");
+                assert_eq!(resp.status(), StatusCode::OK, "print to {printer}");
+                json_response(resp).await
+            }
+        };
+        let indices = |summary: &Value| -> Vec<Value> {
+            summary["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["index"].clone())
+                .collect()
+        };
 
-        // Template-specific fields: brother_24mm (message) and homebox-qr (id, message).
-        async fn print_resp(
-            app: &axum::Router,
-            template: &str,
-            printer: &str,
-        ) -> axum::response::Response {
-            let data = match template {
-                "brother_24mm" => json!({ "message": "Hi" }),
-                "homebox-qr" => json!({ "id": "A1", "message": "Hi" }),
-                _ => json!({ "message": "Hi" }),
-            };
-            let payload = json!({
-                "template": template,
-                "mode": "print",
-                "printer": printer,
-                "labels": [{ "data": data }]
-            });
-            app.clone()
-                .oneshot(json_req("POST", "/api/batch", payload.to_string()))
-                .await
-                .expect("req")
-        }
-
-        // 1. brother_24mm (media_width 24) + loaded 12mm -> mismatch -> 409 Conflict
-        mk(&app, "wrong", "media=12").await;
-        let r = print_resp(&app, "brother_24mm", "wrong").await;
-        assert_eq!(r.status(), StatusCode::CONFLICT);
-        assert_eq!(json_response(r).await["error"]["code"], "Conflict");
-
-        // 2. brother_24mm + loaded 24mm -> match -> 200
-        mk(&app, "match", "media=24").await;
+        let tape24 = print("tape24").await;
         assert_eq!(
-            print_resp(&app, "brother_24mm", "match").await.status(),
-            StatusCode::OK
+            (
+                tape24["total"].clone(),
+                tape24["sent"].clone(),
+                tape24["jobs"].clone()
+            ),
+            (json!(2), json!(1), json!(2))
+        );
+        assert_eq!(
+            indices(&tape24),
+            vec![json!(1)],
+            "only the long label's length differs"
         );
 
-        // 3. loaded width unknown -> gate inert -> 200
-        mk(&app, "unknown", "").await;
+        let tape12 = print("tape12").await;
         assert_eq!(
-            print_resp(&app, "brother_24mm", "unknown").await.status(),
-            StatusCode::OK
+            tape12["sent"], 0,
+            "the printer refuses both jobs; no 409 before sending"
         );
-
-        // 4. homebox-qr (no media_width) + loaded 12mm -> gate inert -> 200
-        // Seed the vars.qr_base_url variable that homebox-qr requires.
-        let seed = app
-            .clone()
-            .oneshot(json_req(
-                "PUT",
-                "/api/variables/qr_base_url",
-                json!({ "value": "https://lab.example/items" }).to_string(),
-            ))
-            .await
-            .expect("seed var");
-        assert_eq!(seed.status(), StatusCode::OK);
-        mk(&app, "nomw", "media=12").await;
-        assert_eq!(
-            print_resp(&app, "homebox-qr", "nomw").await.status(),
-            StatusCode::OK
-        );
+        assert_eq!(indices(&tape12), vec![json!(0), json!(1)]);
     }
 
     use std::cell::RefCell;
@@ -7446,7 +7121,7 @@ layout:
             ("POST", "/api/auth/password"),
             ("POST", "/api/users"),
             ("POST", "/api/tokens"),
-            ("POST", "/api/batch"),
+            ("POST", "/api/render"),
             ("POST", "/api/print"),
             ("POST", "/api/render/label"),
         ];
@@ -7580,7 +7255,7 @@ layout:
         let req = Request::builder()
             .method("POST")
             .uri("/api/print")
-            .body(Body::from(r#"{"template":"brother_12mm","copies":1}"#))
+            .body(Body::from(r#"{"template":"brother_12mm","labels":[]}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -7593,7 +7268,7 @@ layout:
             .method("POST")
             .uri("/api/print")
             .header("content-type", "text/plain")
-            .body(Body::from(r#"{"template":"brother_12mm","copies":1}"#))
+            .body(Body::from(r#"{"template":"brother_12mm","labels":[]}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -7607,7 +7282,7 @@ layout:
             .uri("/api/print")
             .header("content-type", "application/problem+json")
             .body(Body::from(
-                r#"{"template":"non_existent_template","printer":"some-printer","data":{},"copies":1}"#,
+                r#"{"template":"non_existent_template","printer":"some-printer","labels":[{"data":{}}]}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -7617,31 +7292,9 @@ layout:
     }
 
     #[tokio::test]
-    async fn oversized_body_post_print_returns_413() {
-        let app = build_app();
-        // DefaultBodyLimit on print is 64 KiB (65536 bytes)
-        let large_string = "a".repeat(70 * 1024);
-        let payload = serde_json::json!({
-            "template": "brother_12mm",
-            "copies": 1,
-            "data": { "key": large_string }
-        });
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/print")
-            .header("content-type", "application/json")
-            .body(Body::from(payload.to_string()))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "PayloadTooLarge");
-    }
-
-    #[tokio::test]
     async fn three_already_enveloped_endpoints_have_error_envelope() {
         let endpoints = [
-            ("POST", "/api/batch"),
+            ("POST", "/api/render"),
             ("POST", "/api/print"),
             ("POST", "/api/render/label"),
         ];
@@ -8499,7 +8152,6 @@ layout:
         // Batch with one invalid item fails the batch with 422 BatchInvalid
         let batch_payload = json!({
             "template": "batch_list_tpl",
-            "mode": "download",
             "labels": [
                 { "data": { "tags": ["Valid1", "Valid2"] } },
                 { "data": { "tags": "invalid-string" } }
@@ -8507,7 +8159,7 @@ layout:
         });
         let res = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", batch_payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", batch_payload.to_string()))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10006,7 +9658,6 @@ layout:
         let app = build_app();
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "download",
             "labels": [
                 { "data": { "code": "QR1", "message": "one", "bad0": "x" } },
                 { "data": { "code": "QR2", "message": "two" } },
@@ -10014,7 +9665,7 @@ layout:
             ]
         });
         let res = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10048,7 +9699,6 @@ layout:
 
         let payload3 = json!({
             "template": "avery5163_asset_tag",
-            "mode": "download",
             "labels": [
                 { "data": bad_sheet_data0 },
                 { "data": valid_sheet_data },
@@ -10057,7 +9707,7 @@ layout:
         });
         let res3 = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload3.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload3.to_string()))
             .await
             .unwrap();
         assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10078,12 +9728,11 @@ layout:
         labels11.push(json!({ "data": bad_sheet_data0 }));
         let payload11 = json!({
             "template": "avery5163_asset_tag",
-            "mode": "download",
             "labels": labels11
         });
         let res11 = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", payload11.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload11.to_string()))
             .await
             .unwrap();
         assert_eq!(res11.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10096,58 +9745,33 @@ layout:
     }
 
     #[tokio::test]
-    async fn issue_324_4_6_print_reports_per_copy() {
+    async fn print_reports_failures_per_label() {
         let app = build_app();
         // homebox-qr reads {vars.qr_base_url}; unset, every request is a template fault.
         set_variable(&app, "qr_base_url", "https://example.com/").await;
-        create_fake_printer(&app, "test-prn-copies", false).await;
+        create_fake_printer(&app, "test-prn", false).await;
 
-        // copies: 3 -> 3 failure entries at 0, 1, 2
-        let payload_copies3 = json!({
+        let label = json!({ "data": { "id": "1", "message": "msg", "undeclared_key": "val" } });
+        let payload = json!({
             "template": "homebox-qr",
-            "printer": "test-prn-copies",
-            "copies": 3,
-            "data": { "id": "1", "message": "msg", "undeclared_key": "val" }
+            "printer": "test-prn",
+            "labels": [label.clone(), label.clone(), label]
         });
-        let res3 = app
+        let res = app
             .clone()
-            .oneshot(json_req("POST", "/api/print", payload_copies3.to_string()))
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .unwrap();
-        assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body3 = json_response(res3).await;
-        assert_eq!(body3["error"]["code"], "BatchInvalid");
-        let failures3 = body3["error"]["details"]["failures"].as_array().unwrap();
-        assert_eq!(failures3.len(), 3);
-        assert_eq!(failures3[0]["index"], 0);
-        assert_eq!(failures3[0]["code"], "InvalidRequest");
-        assert_eq!(failures3[0]["details"]["reason"], "data_key_unknown");
-        assert_eq!(failures3[1]["index"], 1);
-        assert_eq!(failures3[1]["code"], "InvalidRequest");
-        assert_eq!(failures3[1]["details"]["reason"], "data_key_unknown");
-        assert_eq!(failures3[2]["index"], 2);
-        assert_eq!(failures3[2]["code"], "InvalidRequest");
-        assert_eq!(failures3[2]["details"]["reason"], "data_key_unknown");
-
-        // copies omitted -> exactly 1 entry at index 0
-        let payload_copies1 = json!({
-            "template": "homebox-qr",
-            "printer": "test-prn-copies",
-            "data": { "id": "1", "message": "msg", "undeclared_key": "val" }
-        });
-        let res1 = app
-            .clone()
-            .oneshot(json_req("POST", "/api/print", payload_copies1.to_string()))
-            .await
-            .unwrap();
-        assert_eq!(res1.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body1 = json_response(res1).await;
-        assert_eq!(body1["error"]["code"], "BatchInvalid");
-        let failures1 = body1["error"]["details"]["failures"].as_array().unwrap();
-        assert_eq!(failures1.len(), 1);
-        assert_eq!(failures1[0]["index"], 0);
-        assert_eq!(failures1[0]["code"], "InvalidRequest");
-        assert_eq!(failures1[0]["details"]["reason"], "data_key_unknown");
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 3);
+        for (i, failure) in failures.iter().enumerate() {
+            assert_eq!(failure["index"], i);
+            assert_eq!(failure["code"], "InvalidRequest");
+            assert_eq!(failure["details"]["reason"], "data_key_unknown");
+        }
 
         // No print job dispatched: recent-templates remains empty
         let recents = app
@@ -10226,181 +9850,15 @@ layout:
         }
         let payload = json!({
             "template": "homebox-qr",
-            "mode": "download",
             "labels": labels
         });
         let res = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let body = json_response(res).await;
         assert_eq!(body["error"]["code"], "PayloadTooLarge");
-    }
-
-    #[tokio::test]
-    async fn issue_324_5_1_to_5_6_csv_import_tests() {
-        let app = build_app();
-        create_fake_printer(&app, "csv-prn", false).await;
-
-        // 5.1 POST /api/import/csv with unrecognized data column -> 400 csv_data_column_unknown
-        let csv_bad_col = "id,message,sku_legacy\nITEM-1,Asset,X-1\n";
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=homebox-qr")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_bad_col.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "csv_data_column_unknown"
-        );
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("'sku_legacy'"));
-        assert!(msg.contains("'homebox-qr'"));
-
-        // 5.2 Same with mode=print and valid printer is same 400
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=homebox-qr&mode=print&printer=csv-prn")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_bad_col.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "csv_data_column_unknown"
-        );
-        // No print job dispatched: recent-templates remains empty
-        let recents = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/recent-templates")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(recents.status(), StatusCode::OK);
-        assert_eq!(json_response(recents).await, json!([]));
-
-        // 5.3 Two unrecognized columns with several rows -> one failure naming both in ascending order
-        let csv_multi_col = "id,message,zeta,alpha\n1,m1,z1,a1\n2,m2,z2,a2\n3,m3,z3,a3\n";
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=homebox-qr")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_multi_col.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "csv_data_column_unknown"
-        );
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("'alpha', 'zeta'"));
-
-        // 5.4 Precedence tests
-        // a) Unrecognized column + unparsable row -> csv_row_invalid
-        let csv_bad_row = "id,message,bad_col\n1,hello\n";
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=homebox-qr")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_bad_row.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "csv_row_invalid");
-
-        // b) Unrecognized column + no data rows -> csv_empty
-        let csv_empty_rows = "id,message,bad_col\n";
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=homebox-qr")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_empty_rows.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "csv_empty");
-
-        // c) Column option.size naming no declared parameter fails as csv_data_column_unknown
-        let csv_both_cols = "id,message,bad_data,option.bad_opt\n1,m,d,o\n";
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=homebox-qr")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_both_cols.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "csv_data_column_unknown"
-        );
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("'bad_data', 'option.bad_opt'"));
-
-        // 5.5 File exceeding label cap + unrecognized data column reports csv_data_column_unknown
-        let mut large_csv = String::from("id,message,bad_col\n");
-        for i in 0..505 {
-            large_csv.push_str(&format!("{i},msg,val\n"));
-        }
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=homebox-qr")
-            .header("content-type", "text/csv")
-            .body(Body::from(large_csv))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "csv_data_column_unknown"
-        );
-
-        // 5.6 File with option. columns fails with 400 csv_data_column_unknown
-        let csv_option_cols = "id,url,name,tags,description,option.orientation,option.outline\n1,https://example.com,Item1,tags1,desc1,horizontal,yes\n2,https://example.com,Item2,tags2,desc2,horizontal,yes\n";
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=avery5163_asset_tag")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_option_cols.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "csv_data_column_unknown"
-        );
-
-        // 5.7 File naming only declared params still imports
-        let csv_valid = "id,url,name,tags,description,orientation,outline\n1,https://example.com,Item1,tags1,desc1,horizontal,yes\n2,https://example.com,Item2,tags2,desc2,horizontal,yes\n";
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/import/csv?template=avery5163_asset_tag")
-            .header("content-type", "text/csv")
-            .body(Body::from(csv_valid.to_string()))
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -10410,14 +9868,13 @@ layout:
         set_variable(&app, "qr_base_url", "https://example.com/").await;
         let payload = json!({
             "template": "homebox-qr",
-            "mode": "download",
             "labels": [
                 { "data": { "id": "1", "message": "one", "bad0": "x" } },
                 { "data": { "id": "2" } } // omits required "message"
             ]
         });
         let res = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10441,7 +9898,6 @@ layout:
         // brother_24mm_qr reads `code` and `message`, neither with a default.
         let payload = json!({
             "template": "brother_24mm_qr",
-            "mode": "download",
             "labels": [
                 { "data": { "code": "A", "message": "hello", "bad_key": "x" } },
                 { "data": { "code": "B", "message": "fine" } },
@@ -10449,7 +9905,7 @@ layout:
             ]
         });
         let res = app
-            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", payload.to_string()))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10502,17 +9958,16 @@ layout:
     #[tokio::test]
     async fn issue_337_batch_option_envelope_key_rejected() {
         let app = build_app();
-        // POST /api/batch
+        // POST /api/render
         let batch_payload = json!({
             "template": "shelf",
-            "mode": "download",
             "labels": [
                 { "data": { "title": "Bolts" }, "option": { "x": "1" } }
             ]
         });
         let res_batch = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", batch_payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", batch_payload.to_string()))
             .await
             .expect("request");
         assert_eq!(res_batch.status(), StatusCode::BAD_REQUEST);
@@ -10558,17 +10013,16 @@ layout:
             "expected render error to name dataa, got: {err_render}"
         );
 
-        // 2. POST /api/batch
+        // 2. POST /api/render
         let batch_payload = json!({
             "template": "shelf",
-            "mode": "download",
             "labels": [
                 { "dataa": { "title": "Bolts" } }
             ]
         });
         let res_batch = app
             .clone()
-            .oneshot(json_req("POST", "/api/batch", batch_payload.to_string()))
+            .oneshot(json_req("POST", "/api/render", batch_payload.to_string()))
             .await
             .expect("request");
         assert_eq!(res_batch.status(), StatusCode::BAD_REQUEST);
@@ -10772,10 +10226,9 @@ mod auth_http_tests {
     }
 
     #[tokio::test]
-    async fn print_webhook_requires_auth() {
+    async fn print_requires_auth() {
         let app = test_app();
-        let payload =
-            serde_json::json!({"template":"brother_24mm_qr","printer":"ok-printer","data":{}});
+        let payload = serde_json::json!({"template":"brother_24mm_qr","printer":"ok-printer","labels":[{"data":{}}]});
         let resp = app
             .clone()
             .oneshot(req_post_json("/api/print", &payload.to_string()))
@@ -11566,7 +11019,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/print",
-                r#"{"template":"brother_24mm_qr","printer":"ok-printer","data":{"message":"x","code":"y"},"copies":1}"#,
+                r#"{"template":"brother_24mm_qr","printer":"ok-printer","labels":[{"data":{"message":"x","code":"y"}}]}"#,
             ))
             .await
             .unwrap();
@@ -11759,13 +11212,13 @@ mod auth_http_tests {
             .oneshot(req_bearer(
                 "POST",
                 "/api/print",
-                r#"{"template":"brother_24mm_qr","printer":"tp","data":{"message":"x","code":"y"},"copies":1}"#,
+                r#"{"template":"brother_24mm_qr","printer":"tp","labels":[{"data":{"message":"x","code":"y"}}]}"#,
                 &secret,
             ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(body_json(res).await["succeeded"], 1);
+        assert_eq!(body_json(res).await["sent"], 1);
         let res = app
             .clone()
             .oneshot(req_get_cookie("/api/recent-templates", &cookie))
@@ -12459,16 +11912,15 @@ layout:
             "error message '{msg_stroke}' must name the failing parameter 'stroke_color'"
         );
 
-        // 4. POST /api/batch with 2 labels (second bad background color) returns 422 BatchInvalid with failure at index 1
+        // 4. POST /api/render with 2 labels (second bad background color) returns 422 BatchInvalid with failure at index 1
         let req3 = req_post_json(
-            "/api/batch",
+            "/api/render",
             &serde_json::json!({
                 "template": "dyn_shape_color",
                 "labels": [
                     { "data": { "bg_color": "red", "stroke_color": "black" } },
                     { "data": { "bg_color": "octarine", "stroke_color": "black" } }
-                ],
-                "mode": "download"
+                ]
             })
             .to_string(),
         );
@@ -12691,10 +12143,9 @@ layout:
 
         // 1. Multi-slot sheet PDF rendering with painted container and text in every slot
         let req_sheet = req_post_json(
-            "/api/batch",
+            "/api/render",
             &serde_json::json!({
                 "template": "sheet_color",
-                "mode": "download",
                 "labels": [
                     { "data": { "bg": "red", "txt_col": "yellow" } },
                     { "data": { "bg": "navy", "txt_col": "white" } }
@@ -13361,13 +12812,12 @@ layout:
 
         // 6.3 Batch endpoint: failure returns 422 BatchInvalid with failure details
         let req_batch = req_post_json(
-            "/api/batch",
+            "/api/render",
             &serde_json::json!({
                 "template": "bad_content_circle",
                 "labels": [
                     { "data": {} }
-                ],
-                "mode": "download"
+                ]
             })
             .to_string(),
         );
@@ -14131,15 +13581,14 @@ layout:
         // refuse whole request with 422 BatchInvalid, exactly 1 failures entry at index 1
         // with code InvalidRequest and reason line_spacing_param_invalid naming layout path and pitch.
         let req1 = req_post_json(
-            "/api/batch",
+            "/api/render",
             &serde_json::json!({
                 "template": "tpl_pitch_batch",
                 "labels": [
                     { "data": { "pitch": 1.2 } },
                     { "data": { "pitch": 0 } },
                     { "data": { "pitch": 1.5 } }
-                ],
-                "mode": "download"
+                ]
             })
             .to_string(),
         );
@@ -14164,14 +13613,13 @@ layout:
         // Task 7.2: 2-label batch whose second label omits pitch with no default ->
         // 422 BatchInvalid, failure at index 1 with reason missing_field.
         let req2 = req_post_json(
-            "/api/batch",
+            "/api/render",
             &serde_json::json!({
                 "template": "tpl_pitch_batch",
                 "labels": [
                     { "data": { "pitch": 1.2 } },
                     { "data": {} }
-                ],
-                "mode": "download"
+                ]
             })
             .to_string(),
         );
@@ -14500,19 +13948,18 @@ layout:
 
         let (app, _state) = test_app_with_custom_templates(vec![("issue_235_batch", repro_yaml)]);
 
-        // POST /api/batch with two labels: max_width: 40 then max_width: 5
+        // POST /api/render with two labels: max_width: 40 then max_width: 5
         // assert status 422, JSON content-type, error.code BatchInvalid, and
         // error.details.failures holding exactly one entry at index 1 with code InvalidRequest, reason width_bounds_inverted.
         // Against unchanged tree, fails with 500 (panic envelope).
         let req = req_post_json(
-            "/api/batch",
+            "/api/render",
             &serde_json::json!({
                 "template": "issue_235_batch",
                 "labels": [
                     { "data": { "max_width": 40 } },
                     { "data": { "max_width": 5 } }
-                ],
-                "mode": "download"
+                ]
             })
             .to_string(),
         );
@@ -14923,15 +14370,8 @@ mod parameters_http_tests {
     async fn a_template_fault_answers_the_whole_request_before_any_label() {
         let single_yaml = single(URL_PARAMS, &text("fixed"));
         let sheet_yaml = sheet(URL_PARAMS, &text("fixed"));
-        let csv_yaml = single(
-            &(URL_PARAMS.to_string() + "  - name: qty\n    type: integer\n"),
-            &text("fixed"),
-        );
-        let (app, _state, _dir) = app_with(&[
-            ("url_single", &single_yaml),
-            ("url_sheet", &sheet_yaml),
-            ("url_csv", &csv_yaml),
-        ]);
+        let (app, _state, _dir) =
+            app_with(&[("url_single", &single_yaml), ("url_sheet", &sheet_yaml)]);
         let printer = json!({ "id": "p1", "name": "p1", "uri": "ipp://fake.test/" }).to_string();
         let (status, _) = send(&app, "POST", "/api/printers", "application/json", printer).await;
         assert_eq!(status, StatusCode::CREATED);
@@ -14941,25 +14381,25 @@ mod parameters_http_tests {
         let cases = [
             (
                 "single batch",
-                "/api/batch",
-                format!(r#"{{"template": "url_single", "labels": {three}, "mode": "download"}}"#),
+                "/api/render",
+                format!(r#"{{"template": "url_single", "labels": {three}}}"#),
             ),
             (
                 "sheet batch",
-                "/api/batch",
-                format!(r#"{{"template": "url_sheet", "labels": {three}, "mode": "download"}}"#),
+                "/api/render",
+                format!(r#"{{"template": "url_sheet", "labels": {three}}}"#),
             ),
             (
                 "print",
                 "/api/print",
-                r#"{"template": "url_single", "printer": "p1", "data": {"url": "https://given/"}}"#
+                r#"{"template": "url_single", "printer": "p1", "labels": [{"data": {"url": "https://given/"}}]}"#
                     .to_string(),
             ),
             (
                 "batch with an undeclared key",
-                "/api/batch",
+                "/api/render",
                 format!(
-                    r#"{{"template": "url_single", "labels": [{{"data": {{"url": "https://given/", "nope": 1}}}}, {label}], "mode": "download"}}"#
+                    r#"{{"template": "url_single", "labels": [{{"data": {{"url": "https://given/", "nope": 1}}}}, {label}]}}"#
                 ),
             ),
         ];
@@ -14968,17 +14408,6 @@ mod parameters_http_tests {
             let (status, body) = send_json(&app, "POST", uri, &body).await;
             misses.reference_unresolved(status, &body, "vars.base", case);
         }
-
-        let (status, body) = send(
-            &app,
-            "POST",
-            "/api/import/csv?template=url_csv",
-            "text/csv",
-            "url,qty\nhttps://a/,not-an-integer\n".to_string(),
-        )
-        .await;
-        let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-        misses.reference_unresolved(status, &body, "vars.base", "import csv");
 
         let (status, body) = get_json(&app, "/api/templates/url_single/thumbnail").await;
         misses.reference_unresolved(status, &body, "vars.base", "thumbnail");

@@ -1973,7 +1973,6 @@ dependencies = [
  "axum-extra",
  "base64",
  "chrono",
- "csv",
  "hex",
  "http-body-util",
  "image",

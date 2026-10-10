@@ -1035,17 +1035,30 @@ pub struct RenderLabelRequest {
     pub data: HashMap<String, Value>,
 }
 
+/// `POST /render`: labels for one template to a file.
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct BatchRequest {
+#[serde(deny_unknown_fields)]
+pub struct RenderRequest {
     pub template: String,
     pub labels: Vec<LabelInput>,
-    pub mode: String,
-    #[serde(default)]
-    pub printer: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub start_slot: Option<u32>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
     pub format: Option<String>,
-    #[serde(default)]
-    pub start_slot: u32,
+}
+
+/// `POST /print`: labels for one template to a printer.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PrintRequest {
+    pub template: String,
+    pub labels: Vec<LabelInput>,
+    #[serde(default, deserialize_with = "non_null")]
+    #[schema(nullable = false)]
+    pub start_slot: Option<u32>,
+    pub printer: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1057,7 +1070,7 @@ pub struct BatchRowError {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BatchSummary {
     pub total: usize,
-    pub succeeded: usize,
+    pub sent: usize,
     pub failed: Vec<BatchRowError>,
     pub jobs: usize,
 }
@@ -1066,20 +1079,6 @@ pub struct BatchSummary {
 #[serde(deny_unknown_fields)]
 pub struct LabelInput {
     pub data: HashMap<String, Value>,
-}
-
-fn default_print_copies() -> u32 {
-    1
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PrintRequest {
-    pub template: String,
-    pub printer: String,
-    pub data: HashMap<String, serde_json::Value>,
-    #[serde(default = "default_print_copies")]
-    pub copies: u32,
 }
 
 /// Deserialize a present key as `Some`. Paired with `#[serde(default)]`, an absent key stays `None`

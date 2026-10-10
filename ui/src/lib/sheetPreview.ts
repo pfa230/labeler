@@ -39,11 +39,10 @@ export function useSheetPreview(
       try {
         const body = {
           template: input.templateId,
-          mode: "download",
           labels: input.labels,
           ...(input.startSlot ? { start_slot: input.startSlot } : {}),
         };
-        const res = await fetch("/api/batch", {
+        const res = await fetch("/api/render", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),

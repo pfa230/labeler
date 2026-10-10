@@ -41,7 +41,7 @@ const sheet: TemplateDetail = {
 };
 
 const printers = [{ id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false }];
-const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
+const summary = { total: 1, sent: 1, failed: [], jobs: 1 };
 
 function stubFetch(printersList: unknown[] = printers, defaultPrinterId: string | null = null) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -71,10 +71,10 @@ function stubFetch(printersList: unknown[] = printers, defaultPrinterId: string 
         headers: { "content-type": "application/json" },
       });
     }
-    if (url.startsWith("/api/batch")) {
-      return new Response(JSON.stringify(summary), {
+    if (url === "/api/render") {
+      return new Response(new Blob(["PK"]), {
         status: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="t.zip"' },
       });
     }
     throw new Error(`unexpected fetch: ${url}`);
@@ -95,7 +95,7 @@ function renderForm(detail: TemplateDetail) {
 
 let fetchMock: ReturnType<typeof stubFetch>;
 const matches = (u: unknown, path: string) =>
-  path === "/api/print" ? String(u) === "/api/print" : String(u).startsWith(path);
+  path === "/api/print" || path === "/api/render" ? String(u) === path : String(u).startsWith(path);
 const lastCall = (path: string) => [...fetchMock.mock.calls].reverse().find(([u]) => matches(u, path));
 const countCalls = (path: string) => fetchMock.mock.calls.filter(([u]) => matches(u, path)).length;
 
@@ -116,7 +116,7 @@ describe("PrintForm copies", () => {
     vi.restoreAllMocks();
   });
 
-  it("routes a tape Print to /api/print with the chosen copies", async () => {
+  it("routes a tape Print to /api/print with the label repeated `copies` times", async () => {
     renderForm(tape);
     await fillAndSelectPrinter();
 
@@ -128,14 +128,13 @@ describe("PrintForm copies", () => {
 
     await waitFor(() => expect(countCalls("/api/print")).toBe(1));
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    expect(body.copies).toBe(3);
-    expect(body.printer).toBe("p1");
-    expect(body.data).toEqual({ message: "hello" });
-    expect(body.fields).toBeUndefined();
-    expect(countCalls("/api/batch")).toBe(0);
+    const label = { data: { message: "hello" } };
+    expect(body).toEqual({ template: tape.id, printer: "p1", labels: [label, label, label] });
+    expect(countCalls("/api/render")).toBe(0);
+    expect(await screen.findByText("Sent 1 labels to Label Printer")).toBeInTheDocument();
   });
 
-  it("routes a sheet Print to /api/batch with the label repeated `copies` times", async () => {
+  it("routes a sheet Print to /api/print with the label repeated `copies` times", async () => {
     renderForm(sheet);
     await fillAndSelectPrinter();
 
@@ -145,11 +144,64 @@ describe("PrintForm copies", () => {
     await waitFor(() => expect(print).not.toBeDisabled());
     fireEvent.click(print);
 
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    expect(body.mode).toBe("print");
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     expect(body.labels.length).toBe(2);
-    expect(countCalls("/api/print")).toBe(0);
+    expect(body.mode).toBeUndefined();
+  });
+
+  it("downloads a single template through /api/render with `copies` labels in the chosen format", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    renderForm(tape);
+    const message = (await screen.findByLabelText("message")) as HTMLInputElement;
+    fireEvent.change(message, { target: { value: "hello" } });
+    fireEvent.change(screen.getByLabelText("copies"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("download format"), { target: { value: "pdf" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    const label = { data: { message: "hello" } };
+    expect(body).toEqual({ template: tape.id, labels: [label, label], format: "pdf" });
+  });
+
+  it("shows a refused label's own error after a Download", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/render") {
+        const failure = { index: 0, code: "UnsupportedLayoutItem", message: "Missing required field 'message'" };
+        const body = { error: { code: "BatchInvalid", message: "one or more labels in the batch are invalid", details: { failures: [failure] } } };
+        return new Response(JSON.stringify(body), { status: 422, headers: { "content-type": "application/json" } });
+      }
+      return stubFetch()(input);
+    });
+    renderForm(tape);
+    await screen.findByLabelText("message");
+    fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+
+    expect((await screen.findAllByText("Missing required field 'message'")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("one or more labels in the batch are invalid")).toBeNull();
+  });
+
+  it("shows every label the printer refused", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/print") {
+        const refused = { total: 3, sent: 1, failed: [{ index: 0, error: "refused" }, { index: 2, error: "unreachable" }], jobs: 3 };
+        return new Response(JSON.stringify(refused), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return stubFetch()(input);
+    });
+    renderForm(tape);
+    await fillAndSelectPrinter();
+    const print = screen.getByRole("button", { name: /^print$/i });
+    await waitFor(() => expect(print).not.toBeDisabled());
+    fireEvent.click(print);
+
+    const toast = await screen.findByText(/^Sent 1 of 3 labels to Label Printer/);
+    expect(toast.textContent).toContain("label 1: refused");
+    expect(toast.textContent).toContain("label 3: unreachable");
   });
 
   it("clamps the copies stepper to [1, 100]", async () => {
@@ -319,7 +371,7 @@ describe("PrintForm deferring to a declared default", () => {
     await waitFor(() => expect(countCalls("/api/print")).toBe(before + 1));
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     expect(body.fields).toBeUndefined();
-    return body.data as Record<string, unknown>;
+    return body.labels[0].data as Record<string, unknown>;
   };
 
   const withParams = (params: Param[]): TemplateDetail => ({ ...tape, id: "def_tpl", params });
@@ -676,8 +728,7 @@ describe("PrintForm empty template", () => {
     fireEvent.click(print);
     await waitFor(() => expect(countCalls("/api/print")).toBe(1));
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    expect(body.data).toEqual({});
-    expect(Object.prototype.hasOwnProperty.call(body, "data")).toBe(true);
+    expect(body.labels).toEqual([{ data: {} }]);
     expect(body.fields).toBeUndefined();
   });
 });
@@ -743,13 +794,13 @@ describe("issue-413: two-state checkbox", () => {
     fireEvent.click(print);
     await waitFor(() => expect(countCalls("/api/print")).toBe(1));
     const untouched = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    expect(untouched.data).toEqual({ plain: false, off: false, on: true, tokened: true });
+    expect(untouched.labels[0].data).toEqual({ plain: false, off: false, on: true, tokened: true });
 
     fireEvent.click(box("plain"));
     fireEvent.click(box("on"));
     fireEvent.click(print);
     await waitFor(() => expect(countCalls("/api/print")).toBe(2));
     const toggled = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    expect(toggled.data).toEqual({ plain: true, off: false, on: false, tokened: true });
+    expect(toggled.labels[0].data).toEqual({ plain: true, off: false, on: false, tokened: true });
   });
 });

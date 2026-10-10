@@ -36,11 +36,11 @@ export function useLivePreview(input: PreviewInput, enabled: boolean, debounceMs
       setSt({ key, loading: true });
       try {
         const single = input.format === "single";
-        const path = single ? "/api/render/label" : "/api/batch";
+        const path = single ? "/api/render/label" : "/api/render";
         const label = { data: input.data };
         const body = single
           ? { template: input.templateId, data: input.data }
-          : { template: input.templateId, mode: "download", labels: [label],
+          : { template: input.templateId, labels: [label],
               ...(input.startSlot ? { start_slot: input.startSlot } : {}) };
         const res = await fetch(path, {
           method: "POST", headers: { "content-type": "application/json" },

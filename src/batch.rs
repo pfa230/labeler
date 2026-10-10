@@ -1,13 +1,13 @@
 //! Unified batch rendering. Renders a list of resolved labels into either a download blob
 //! (ZIP for single templates, PDF for sheet) or a set of print artifacts. Pure/sync; the async print
-//! dispatch lives in the `/batch` handler.
+//! dispatch lives in `api::run_batch`, behind `/print`.
 
 use std::io::Write as _;
 
 use crate::errors::{AppError, BatchFailure};
 use crate::models::{LabelInput, TemplateFormat};
 use crate::reason::Reason;
-use crate::render::{render_sheet_pages, render_single_label_image, render_single_label_pdf};
+use crate::render::{render_sheet_pages, render_single_label_as, RenderedSingle, SingleKind};
 use crate::templates::TemplateDefinition;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,11 +23,13 @@ pub struct BatchEnv<'a> {
     pub render_opts: crate::render::ImageRenderOptions,
 }
 
-/// One print job's bytes plus the label indices it covers (single: one label; sheet: all labels).
+/// One print job's bytes plus the label indices it covers (single: one label; sheet: all labels),
+/// and for a single label its resolved width in millimetres.
 #[derive(Debug)]
 pub struct PrintUnit {
     pub bytes: Vec<u8>,
     pub indices: Vec<usize>,
+    pub width_mm: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -74,9 +76,8 @@ fn render_single_batch(
     format: Option<&str>,
     env: &BatchEnv,
 ) -> Result<RenderedBatch, AppError> {
-    let fmt = format.unwrap_or("png");
-    let ext: &'static str = match fmt {
-        "" | "png" => "png",
+    let ext: &'static str = match format.unwrap_or("png") {
+        "png" => "png",
         "pdf" => "pdf",
         other => {
             return Err(AppError::invalid_request(
@@ -86,24 +87,20 @@ fn render_single_batch(
         }
     };
 
-    let mut artifacts: Vec<Vec<u8>> = Vec::with_capacity(labels.len());
+    let kind = if ext == "pdf" {
+        SingleKind::Pdf
+    } else {
+        SingleKind::Png
+    };
+    let mut artifacts: Vec<RenderedSingle> = Vec::with_capacity(labels.len());
     let mut failures: Vec<BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
-        if let Err(err) = crate::render::validate_label_data_keys(template, &lbl.data) {
-            failures.push(BatchFailure::new(idx, err));
-            artifacts.push(Vec::new());
-            continue;
-        }
-        let res = match ext {
-            "pdf" => render_single_label_pdf(template, &lbl.data, env.render),
-            _ => render_single_label_image(template, &lbl.data, env.render, env.render_opts),
-        };
+        let res = crate::render::validate_label_data_keys(template, &lbl.data).and_then(|()| {
+            render_single_label_as(template, &lbl.data, env.render, kind, env.render_opts)
+        });
         match res {
-            Ok(bytes) => artifacts.push(bytes),
-            Err(err) => {
-                failures.push(BatchFailure::new(idx, err));
-                artifacts.push(Vec::new());
-            }
+            Ok(label) => artifacts.push(label),
+            Err(err) => failures.push(BatchFailure::new(idx, err)),
         }
     }
     if !failures.is_empty() {
@@ -115,9 +112,10 @@ fn render_single_batch(
             units: artifacts
                 .into_iter()
                 .enumerate()
-                .map(|(i, bytes)| PrintUnit {
-                    bytes,
+                .map(|(i, label)| PrintUnit {
+                    bytes: label.bytes,
                     indices: vec![i],
+                    width_mm: Some(label.width_mm),
                 })
                 .collect(),
         }),
@@ -127,11 +125,11 @@ fn render_single_batch(
             let mut zip = zip::ZipWriter::new(&mut cursor);
             let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
-            for (i, bytes) in artifacts.iter().enumerate() {
+            for (i, label) in artifacts.iter().enumerate() {
                 let name = format!("{:0width$}.{ext}", i + 1, width = width);
                 zip.start_file(name, opts)
                     .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
-                zip.write_all(bytes)
+                zip.write_all(&label.bytes)
                     .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
             }
             zip.finish()
@@ -163,6 +161,7 @@ fn render_sheet_batch(
             units: vec![PrintUnit {
                 bytes: pdf,
                 indices: (0..labels.len()).collect(),
+                width_mm: None,
             }],
         }),
     }
@@ -298,6 +297,72 @@ mod tests {
             }
             _ => panic!("expected print"),
         }
+    }
+
+    /// Print units for `labels` of the registry's `id` template, which must read no variables.
+    fn print_units(id: &str, labels: &[LabelInput]) -> Vec<PrintUnit> {
+        let registry = crate::templates::load_all_for_tests().0;
+        let template = registry.get(id).expect("fixture template");
+        let (settings, formats) = (BTreeMap::new(), BTreeMap::new());
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now: chrono::Local::now(),
+        };
+        let render = crate::render::resolve_environment(template, &settings, &datetime).unwrap();
+        let env = BatchEnv {
+            render: &render,
+            render_opts: crate::render::ImageRenderOptions::default(),
+        };
+        match render_batch(
+            template,
+            labels,
+            BatchMode::Print,
+            Some("png"),
+            0,
+            &env,
+            500,
+        )
+        .unwrap()
+        {
+            RenderedBatch::Print { units } => units,
+            _ => panic!("expected print"),
+        }
+    }
+
+    #[test]
+    fn single_print_units_carry_each_labels_width() {
+        let label = |message: &str| LabelInput {
+            data: HashMap::from([
+                ("message".to_string(), json!(message)),
+                ("code".to_string(), json!("Q")),
+            ]),
+        };
+        let units = print_units(
+            "brother_24mm_qr",
+            &[label("a"), label("a much longer message on the tape")],
+        );
+        let widths: Vec<f64> = units
+            .iter()
+            .map(|u| u.width_mm.expect("single width"))
+            .collect();
+        assert!(widths[1] > widths[0], "{widths:?}");
+    }
+
+    #[test]
+    fn a_sheet_print_unit_carries_no_width() {
+        let label = LabelInput {
+            data: HashMap::from([
+                ("id".to_string(), json!("A1")),
+                ("url".to_string(), json!("https://example.com/A1")),
+                ("name".to_string(), json!("Grinder")),
+                ("tags".to_string(), json!("Power tools")),
+                ("description".to_string(), json!("Angle grinder")),
+            ]),
+        };
+        let units = print_units("avery5163_asset_tag", &[label.clone(), label]);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].indices, vec![0, 1]);
+        assert_eq!(units[0].width_mm, None);
     }
 
     #[test]

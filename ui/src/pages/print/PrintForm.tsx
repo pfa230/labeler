@@ -3,10 +3,10 @@ import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
 import { pruneDataForSubmit, setOwnKey, seedDefaultValue } from "../../lib/labelInputs";
-import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
+import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../../api/client";
 import { usePrinters, useSettings } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
-import type { BatchSummary, Param, ParamValue, TemplateDetail } from "../../api/types";
+import type { Param, ParamValue, PrintSummary, TemplateDetail } from "../../api/types";
 import { PreviewPane } from "../../components/PreviewPane";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
@@ -75,10 +75,9 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   }, [printers, defaultPrinterId]);
   const effectivePrinter = value.printer === undefined ? preselect : value.printer || undefined;
 
-  const showSummary = (summary: BatchSummary) => {
-    const { succeeded, total, failed } = summary;
-    const detailMsg = failed.length ? ` — ${failed[0].error}` : "";
-    push({ kind: failed.length ? "error" : "ok", message: `Printed ${succeeded}/${total}${detailMsg}` });
+  const showSummary = (summary: PrintSummary, printer: string) => {
+    const name = printers?.find((p) => p.id === printer)?.name ?? printer;
+    push({ kind: summary.failed.length ? "error" : "ok", message: sentMessage(summary, name) });
   };
 
   const isSheet = detail.format.type === "sheet";
@@ -91,30 +90,32 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     isLg || previewOpen,
   );
 
+  // A refused batch carries each label's own error in its failures; show those, not the outer message.
+  const reportError = (err: unknown, fallback: string) => {
+    if (err instanceof ApiError && err.code === "BatchInvalid") {
+      const failures = (err.details as BatchFailures)?.failures ?? [];
+      const message = failures.map((f) => f.message).join("; ") || err.message;
+      setFormError(message);
+      push({ kind: "error", message });
+    } else {
+      push({ kind: "error", message: err instanceof Error ? err.message : fallback });
+    }
+  };
+
   const onDownload = async () => {
     setFormError(null);
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     setBusy(true);
     try {
-      if (isSheet) {
-        const r = await submitBatch({
-          template: detail.id,
-          labels: [label],
-          mode: "download",
-          ...(startSlot ? { start_slot: startSlot } : {}),
-        });
-        if (r.kind === "download") saveBlob(r.blob, r.filename ?? `${detail.id}.pdf`);
-      } else {
-        const { blob, filename } = await fetchBlob(`/render/label?format=${fmt}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ template: detail.id, data: submittedData }),
-        });
-        saveBlob(blob, filename ?? `${detail.id}.${fmt}`);
-      }
+      const labels = Array.from({ length: clampCopies(copies) }, () => label);
+      const { blob, filename } = await renderBatch(
+        isSheet
+          ? { template: detail.id, labels, ...(startSlot ? { start_slot: startSlot } : {}) }
+          : { template: detail.id, labels, format: fmt },
+      );
+      saveBlob(blob, filename ?? `${detail.id}.${isSheet ? "pdf" : "zip"}`);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Download failed";
-      push({ kind: "error", message });
+      reportError(err, "Download failed");
     } finally {
       setBusy(false);
     }
@@ -128,35 +129,15 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     if (!printer) return;
     setBusy(true);
     try {
-      const n = clampCopies(copies);
-      if (isSheet) {
-        const r = await submitBatch({
-          template: detail.id,
-          labels: Array.from({ length: n }, () => label),
-          mode: "print",
-          printer,
-          ...(startSlot ? { start_slot: startSlot } : {}),
-        });
-        if (r.kind === "summary") showSummary(r.summary);
-      } else {
-        const summary = await printLabel({
-          template: detail.id,
-          printer,
-          data: submittedData,
-          copies: n,
-        });
-        showSummary(summary);
-      }
+      const summary = await printBatch({
+        template: detail.id,
+        printer,
+        labels: Array.from({ length: clampCopies(copies) }, () => label),
+        ...(startSlot ? { start_slot: startSlot } : {}),
+      });
+      showSummary(summary, printer);
     } catch (err) {
-      if (err instanceof ApiError && err.code === "BatchInvalid") {
-        const failures = (err.details as BatchFailures)?.failures ?? [];
-        const message = failures.map((f) => f.message).join("; ") || err.message;
-        setFormError(message);
-        push({ kind: "error", message });
-      } else {
-        const message = err instanceof Error ? err.message : "Print failed";
-        push({ kind: "error", message });
-      }
+      reportError(err, "Print failed");
     } finally {
       setBusy(false);
     }

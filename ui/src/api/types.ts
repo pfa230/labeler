@@ -65,7 +65,7 @@ export interface TemplateDetail {
   variables: string[];
 }
 
-export interface BatchSummary { total: number; succeeded: number; failed: { index: number; error: string }[]; jobs: number }
+export interface PrintSummary { total: number; sent: number; failed: { index: number; error: string }[]; jobs: number }
 export interface RenderProfile { color_mode?: "color" | "bilevel"; resolution?: number }
 
 export interface Printer {

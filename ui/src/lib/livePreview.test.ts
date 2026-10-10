@@ -41,16 +41,16 @@ describe("useLivePreview", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("posts /api/batch for a sheet and sends data-only label", async () => {
+  it("posts /api/render for a sheet and sends data-only label", async () => {
     const sheet: PreviewInput = { templateId: "s", format: "sheet", data: { x: "1" } };
     const { result } = renderHook(() => useLivePreview(sheet, true, 0));
     await waitFor(() => expect(result.current.url).toBeDefined());
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("/api/batch");
+    expect(url).toBe("/api/render");
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.labels[0]).toEqual({ data: { x: "1" } });
     expect(body.labels[0].option).toBeUndefined();
-    expect(body.mode).toBe("download");
+    expect(Object.keys(body).sort()).toEqual(["labels", "template"]);
   });
 
   it("revokes cached object URLs on unmount", async () => {

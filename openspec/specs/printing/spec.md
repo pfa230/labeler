@@ -90,12 +90,17 @@ A `single` template with resolved colour mode `bilevel` SHALL be sent as the 1-b
 
 ### Requirement: Media size
 
-Every job for a template that declares `media_width` SHALL carry IPP `media-col` whose `media-size` `x-dimension` is `media_width` in hundredths of a millimetre (1 in = 25.4 mm), rounded to the nearest integer. The printer judges whether its loaded media fits; a job it refuses fails like any other.
+Every job for a template that declares `media_width` SHALL carry IPP `media-col` whose `media-size` has `x-dimension` equal to `media_width` and `y-dimension` equal to the label's resolved `width`, the length along the feed, each in hundredths of a millimetre (1 in = 25.4 mm), rounded to the nearest integer. A job for a template without `media_width` SHALL carry no `media-col`. The printer judges whether its loaded media fits; a job it refuses fails like any other.
 
 #### Scenario: Tape width sent with the job
 
-- **WHEN** a template declares `media_width: 24` mm and prints
-- **THEN** each job carries `media-col` with `media-size` `x-dimension` `2400`
+- **WHEN** a template declares `media_width: 24` mm and a label resolves to a `width` of 62.5 mm
+- **THEN** that label's job carries `media-col` with `media-size` `x-dimension` `2400` and `y-dimension` `6250`
+
+#### Scenario: Content-sized labels send their own lengths
+
+- **WHEN** two labels of one content-sized template that declares `media_width` resolve to widths of 40 mm and 80 mm
+- **THEN** their jobs carry `y-dimension` `4000` and `8000` respectively
 
 ### Requirement: Job log
 

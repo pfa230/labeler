@@ -6,7 +6,7 @@
 
 use arc_swap::ArcSwap;
 use axum::{
-    extract::{DefaultBodyLimit, FromRequestParts, Query, State},
+    extract::{FromRequestParts, Query, State},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Router,
@@ -27,9 +27,9 @@ use crate::{
     extract::{Json, Path},
     fs_safe::{self, PublishResult},
     models::{
-        BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, NewPrinter,
-        PrintRequest, Printer, PrinterConnection, PrinterUpdate, ReloadResponse,
-        RenderLabelRequest, TemplateDetail, TemplateList, VariableValue,
+        BatchRowError, BatchSummary, ErrorResponse, HealthResponse, NewPrinter, PrintRequest,
+        Printer, PrinterConnection, PrinterUpdate, ReloadResponse, RenderLabelRequest,
+        RenderRequest, TemplateDetail, TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -47,21 +47,12 @@ use crate::{
 use rustix::fd::AsFd;
 
 const MAX_BATCH_LABELS: usize = 500;
-const MAX_PRINT_COPIES: u32 = 100;
 
 #[derive(serde::Deserialize)]
 pub struct RenderQuery {
     pub format: Option<String>,
     pub color_mode: Option<String>,
     pub resolution: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-pub struct ImportCsvQuery {
-    pub template: String,
-    pub mode: Option<String>,
-    pub printer: Option<String>,
-    pub format: Option<String>,
 }
 
 pub struct AppState {
@@ -224,12 +215,8 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/settings/{key}", put(put_setting).delete(delete_setting))
         .route("/datetime-formats/preview", post(preview_datetime_format))
         .route("/render/label", post(render_label))
-        .route("/batch", post(batch))
-        .route(
-            "/print",
-            post(print_label).layer(DefaultBodyLimit::max(64 * 1024)),
-        )
-        .route("/import/csv", post(import_csv))
+        .route("/render", post(render_labels))
+        .route("/print", post(print_labels))
         .route("/favorites", get(list_favorites))
         .route(
             "/favorites/{template_id}",
@@ -1430,55 +1417,6 @@ pub async fn connection_materialize(
     Ok(Json(rows).into_response())
 }
 
-struct ParsedCsvRow {
-    data: std::collections::HashMap<String, serde_json::Value>,
-}
-
-fn parse_csv_rows(body: &str) -> Result<Vec<ParsedCsvRow>, AppError> {
-    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .trim(csv::Trim::All)
-        .from_reader(body.as_bytes());
-    let headers = reader
-        .headers()
-        .map_err(|err| {
-            AppError::invalid_request(
-                Reason::CsvHeaderInvalid,
-                format!("invalid CSV header: {err}"),
-            )
-        })?
-        .clone();
-    let mut seen = std::collections::HashSet::new();
-    for header in headers.iter() {
-        let header = header.trim();
-        if header.is_empty() || !seen.insert(header) {
-            return Err(AppError::invalid_request(
-                Reason::CsvHeaderInvalid,
-                "CSV header has empty or duplicate column names",
-            ));
-        }
-    }
-    let mut rows = Vec::new();
-    for record in reader.records() {
-        let record = record.map_err(|err| {
-            AppError::invalid_request(Reason::CsvRowInvalid, format!("invalid CSV row: {err}"))
-        })?;
-        let mut data = std::collections::HashMap::new();
-        for (key, val) in headers.iter().zip(record.iter()) {
-            data.insert(key.to_string(), serde_json::Value::String(val.to_string()));
-        }
-        rows.push(ParsedCsvRow { data });
-    }
-    if rows.is_empty() {
-        return Err(AppError::invalid_request(
-            Reason::CsvEmpty,
-            "CSV has no data rows",
-        ));
-    }
-    Ok(rows)
-}
-
 fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
     (
         axum::http::StatusCode::OK,
@@ -1494,50 +1432,38 @@ fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str)
         .into_response()
 }
 
-fn parse_batch_mode(mode: &str) -> Result<crate::batch::BatchMode, AppError> {
-    match mode {
-        "download" => Ok(crate::batch::BatchMode::Download),
-        "print" => Ok(crate::batch::BatchMode::Print),
-        other => Err(AppError::invalid_request(
-            Reason::ModeUnknown,
-            format!("unknown mode '{other}'; use download or print"),
-        )),
-    }
+/// Where a batch goes: a file for `/render`, a printer for `/print`.
+enum BatchTarget<'a> {
+    File { format: Option<&'a str> },
+    Printer { id: &'a str, actor: &'a str },
 }
 
-/// Print/download dispatch options for `run_batch`, resolved from the request and the caller's identity.
-struct BatchDispatch<'a> {
-    printer: Option<&'a str>,
-    format: Option<&'a str>,
-    start_slot: u32,
-    actor: &'a str,
-}
-
-/// Shared batch dispatch for `/batch` and `/import/csv`: validates constraints, then either renders a
-/// download blob or runs the print send loop and returns a `BatchSummary`.
+/// Shared by `/render` and `/print`: decides the request-level faults, then renders every label
+/// before anything is returned or sent (rendering, "All-or-nothing validation").
 async fn run_batch(
     state: &Arc<AppState>,
     template: &TemplateDefinition,
     labels: &[crate::models::LabelInput],
-    mode: crate::batch::BatchMode,
-    dispatch: BatchDispatch<'_>,
+    start_slot: Option<u32>,
+    target: BatchTarget<'_>,
 ) -> Result<Response, AppError> {
-    let BatchDispatch {
-        printer,
-        format,
-        start_slot,
-        actor,
-    } = dispatch;
     let is_single = matches!(
         template.format,
         crate::models::TemplateFormat::Single { .. }
     );
-    if start_slot > 0 && is_single {
+    if is_single && start_slot.is_some() {
         return Err(AppError::invalid_request(
             Reason::FieldNotApplicable,
             "start_slot applies only to sheet templates",
         ));
     }
+    if !is_single && matches!(target, BatchTarget::File { format: Some(_) }) {
+        return Err(AppError::invalid_request(
+            Reason::FieldNotApplicable,
+            "format applies only to single templates",
+        ));
+    }
+    let start_slot = start_slot.unwrap_or(0);
     let variables = state.store().all_variables().await?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
         .await
@@ -1547,8 +1473,8 @@ async fn run_batch(
         now: chrono::Local::now(),
     };
     let render_env = resolve_environment(template, &variables, &dt)?;
-    match mode {
-        crate::batch::BatchMode::Download => {
+    match target {
+        BatchTarget::File { format } => {
             let env = crate::batch::BatchEnv {
                 render: &render_env,
                 render_opts: crate::render::ImageRenderOptions::default(),
@@ -1556,7 +1482,7 @@ async fn run_batch(
             let rendered = crate::batch::render_batch(
                 template,
                 labels,
-                mode,
+                crate::batch::BatchMode::Download,
                 format,
                 start_slot,
                 &env,
@@ -1574,16 +1500,10 @@ async fn run_batch(
             };
             Ok(download_response(bytes, content_type, &filename))
         }
-        crate::batch::BatchMode::Print => {
-            if format.is_some() {
-                return Err(AppError::invalid_request(
-                    Reason::FieldNotApplicable,
-                    "format applies only to download; omit it when printing",
-                ));
-            }
-            let printer_id = printer.ok_or_else(|| {
-                AppError::invalid_request(Reason::PrinterRequired, "mode=print requires a printer")
-            })?;
+        BatchTarget::Printer {
+            id: printer_id,
+            actor,
+        } => {
             let connection = state
                 .store()
                 .get_printer_connection(printer_id)
@@ -1594,31 +1514,19 @@ async fn run_batch(
             let driver = crate::driver::driver_for(&connection)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
             let ovr = driver.configured_render_override();
-            let template_media_width = match &template.format {
-                crate::models::TemplateFormat::Single { media_width, .. } => *media_width,
+            let media_width_mm = match &template.format {
+                crate::models::TemplateFormat::Single {
+                    media_width: Some(w),
+                    ..
+                } => Some(crate::driver::media_width_mm(*w, &template.unit)),
                 _ => None,
             };
-            // Fetch caps when any override field is unset (needs negotiation) or a media check is pending.
-            let need_caps = ovr.color_mode.is_none()
-                || ovr.resolution_dpi.is_none()
-                || template_media_width.is_some();
-            let caps = if need_caps {
+            // Capabilities only feed negotiation (printing, "Render negotiation").
+            let caps = if ovr.color_mode.is_none() || ovr.resolution_dpi.is_none() {
                 driver.capabilities().await
             } else {
                 None
             };
-            // media preflight gate (fail-open): reject ONLY on a confident mismatch.
-            if let (Some(mw), Some(got)) = (
-                template_media_width,
-                caps.as_ref().and_then(|c| c.loaded_media_width_mm),
-            ) {
-                let want_mm = if template.unit == "in" { mw * 25.4 } else { mw };
-                if (want_mm - got).abs() > 1.0 {
-                    return Err(AppError::conflict(format!(
-                        "template requires {want_mm}mm media but {got}mm is loaded"
-                    )));
-                }
-            }
             let render_opts = crate::driver::effective_render(&ovr, caps.as_ref());
             let artifact_format =
                 crate::driver::print_artifact_format(render_opts.color_mode, is_single);
@@ -1634,7 +1542,7 @@ async fn run_batch(
             let rendered = crate::batch::render_batch(
                 template,
                 labels,
-                mode,
+                crate::batch::BatchMode::Print,
                 Some(render_format),
                 start_slot,
                 &env,
@@ -1649,12 +1557,19 @@ async fn run_batch(
             let jobs = units.len();
             let mut failed = Vec::new();
             for unit in &units {
+                let media_size =
+                    media_width_mm
+                        .zip(unit.width_mm)
+                        .map(|(x, y)| crate::driver::MediaSize {
+                            x_dimension: crate::driver::hundredths_mm(x),
+                            y_dimension: crate::driver::hundredths_mm(y),
+                        });
                 match driver
                     .send(
                         &unit.bytes,
                         &crate::driver::PrintOptions {
-                            copies: 1,
                             artifact_format,
+                            media_size,
                         },
                     )
                     .await
@@ -1682,7 +1597,7 @@ async fn run_batch(
             }
             let summary = BatchSummary {
                 total,
-                succeeded: total - failed.len(),
+                sent: total - failed.len(),
                 failed,
                 jobs,
             };
@@ -1693,37 +1608,31 @@ async fn run_batch(
 
 #[utoipa::path(
     post,
-    path = "/batch",
-    request_body = BatchRequest,
+    path = "/render",
+    request_body = RenderRequest,
     responses(
-        (status = 200, description = "Download blob (zip/pdf) or print summary"),
+        (status = 200, description = "ZIP (single) or paginated PDF (sheet), as an attachment"),
         (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Template or printer not found", body = ErrorResponse),
-        (status = 409, description = "Media mismatch", body = ErrorResponse),
+        (status = 404, description = "Template not found", body = ErrorResponse),
         (status = 413, description = "Batch too large", body = ErrorResponse),
         (status = 422, description = "One or more labels invalid", body = ErrorResponse)
     )
 )]
-pub async fn batch(
+pub async fn render_labels(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
-    Json(req): Json<BatchRequest>,
+    Json(req): Json<RenderRequest>,
 ) -> Result<Response, AppError> {
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::not_found(NotFoundKind::Template, req.template.clone()))?;
-    let mode = parse_batch_mode(&req.mode)?;
     run_batch(
         &state,
         template,
         &req.labels,
-        mode,
-        BatchDispatch {
-            printer: req.printer.as_deref(),
+        req.start_slot,
+        BatchTarget::File {
             format: req.format.as_deref(),
-            start_slot: req.start_slot,
-            actor: &principal.actor_id(),
         },
     )
     .await
@@ -1737,36 +1646,26 @@ pub async fn batch(
         (status = 200, description = "Print summary", body = BatchSummary),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
-        (status = 409, description = "Media mismatch", body = ErrorResponse),
-        (status = 413, description = "Request body too large", body = ErrorResponse)
+        (status = 413, description = "Batch too large", body = ErrorResponse),
+        (status = 422, description = "One or more labels invalid", body = ErrorResponse)
     )
 )]
-pub async fn print_label(
+pub async fn print_labels(
     State(state): State<Arc<AppState>>,
     axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
     Json(req): Json<PrintRequest>,
 ) -> Result<Response, AppError> {
-    if !(1..=MAX_PRINT_COPIES).contains(&req.copies) {
-        return Err(AppError::invalid_request(
-            Reason::CopiesInvalid,
-            format!("copies must be between 1 and {MAX_PRINT_COPIES}"),
-        ));
-    }
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::not_found(NotFoundKind::Template, req.template.clone()))?;
-    let label = crate::models::LabelInput { data: req.data };
-    let labels = vec![label; req.copies as usize];
     run_batch(
         &state,
         template,
-        &labels,
-        crate::batch::BatchMode::Print,
-        BatchDispatch {
-            printer: Some(&req.printer),
-            format: None,
-            start_slot: 0,
+        &req.labels,
+        req.start_slot,
+        BatchTarget::Printer {
+            id: &req.printer,
             actor: &principal.actor_id(),
         },
     )
@@ -1895,80 +1794,6 @@ pub async fn render_label(
         bytes,
     )
         .into_response())
-}
-
-#[utoipa::path(
-    post,
-    path = "/import/csv",
-    params(
-        ("template" = String, Query, description = "Template id"),
-        ("mode" = Option<String>, Query, description = "download (default) or print"),
-        ("printer" = Option<String>, Query, description = "Printer id (required when mode=print)"),
-        ("format" = Option<String>, Query, description = "Download format: png (default) or pdf")
-    ),
-    request_body(content = String, description = "CSV (header row + one row per label)", content_type = "text/csv"),
-    responses(
-        (status = 200, description = "Download blob (zip/pdf) or print summary (BatchSummary)"),
-        (status = 400, description = "Invalid CSV or request", body = ErrorResponse),
-        (status = 404, description = "Template or printer not found", body = ErrorResponse),
-        (status = 413, description = "Batch too large", body = ErrorResponse),
-        (status = 422, description = "One or more rows invalid (batch is atomic)", body = ErrorResponse)
-    )
-)]
-pub async fn import_csv(
-    State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
-    Query(params): Query<ImportCsvQuery>,
-    body: String,
-) -> Result<Response, AppError> {
-    let registry = state.templates.load_full();
-    let template = registry
-        .get(&params.template)
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, params.template.clone()))?;
-    let mode = parse_batch_mode(params.mode.as_deref().unwrap_or("download"))?;
-    let parsed_rows = parse_csv_rows(&body)?;
-    if let Some(first_row) = parsed_rows.first() {
-        let unknown =
-            crate::render::unknown_param_names(template, first_row.data.keys().map(|k| k.as_str()));
-        if !unknown.is_empty() {
-            let cols_str = unknown
-                .iter()
-                .map(|c| format!("'{c}'"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let noun = if unknown.len() == 1 {
-                "column"
-            } else {
-                "columns"
-            };
-            let verb = if unknown.len() == 1 {
-                "is not a declared parameter"
-            } else {
-                "are not declared parameters"
-            };
-            return Err(AppError::invalid_request(
-                Reason::CsvDataColumnUnknown,
-                format!("CSV {noun} {cols_str} {verb} of template '{}'", template.id),
-            ));
-        }
-    }
-    let labels: Vec<crate::models::LabelInput> = parsed_rows
-        .into_iter()
-        .map(|row| crate::models::LabelInput { data: row.data })
-        .collect();
-    run_batch(
-        &state,
-        template,
-        &labels,
-        mode,
-        BatchDispatch {
-            printer: params.printer.as_deref(),
-            format: params.format.as_deref(),
-            start_slot: 0,
-            actor: &principal.actor_id(),
-        },
-    )
-    .await
 }
 
 #[utoipa::path(get, path = "/favorites", tag = "favorites",

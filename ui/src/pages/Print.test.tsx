@@ -38,7 +38,7 @@ const printers = [
   { id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false },
   { id: "p2", name: "Backup Printer", uri: "ipp://p2/q", insecure: false },
 ];
-const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
+const summary = { total: 1, sent: 1, failed: [], jobs: 1 };
 
 function stubFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -75,9 +75,11 @@ function stubFetch() {
       void init;
       return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
     }
-    if (url.startsWith("/api/batch")) {
-      void init;
-      return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
+    if (url === "/api/render") {
+      return new Response(new Blob(["PK"]), {
+        status: 200,
+        headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="t1.zip"' },
+      });
     }
     throw new Error(`unexpected fetch: ${url}`);
   });
@@ -128,8 +130,6 @@ function renderPage(initialPath = "/print") {
 }
 
 let fetchMock: ReturnType<typeof stubFetch>;
-const lastCall = (path: string) =>
-  [...fetchMock.mock.calls].reverse().find(([u]) => String(u).startsWith(path));
 const countCalls = (path: string) => fetchMock.mock.calls.filter(([u]) => String(u).startsWith(path)).length;
 
 describe("Print screen", () => {
@@ -190,27 +190,26 @@ describe("Print screen", () => {
 
     // Let the live preview settle so we can assert on the download delta.
     await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
-    const beforeRender = countCalls("/api/render/label");
     const beforeUrls = createUrl.mock.calls.length;
 
+    // A single template downloads through /api/render: one label per copy, in the chosen format.
+    const renderCall = () => [...fetchMock.mock.calls].reverse().find(([u]) => String(u) === "/api/render");
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/render/label")).toBe(beforeRender + 1));
-    expect(createUrl.mock.calls.length).toBe(beforeUrls + 1);
-    const lastRender = lastCall("/api/render/label")!;
-    expect((lastRender[1] as RequestInit).method).toBe("POST");
+    await waitFor(() => expect(renderCall()).toBeDefined());
+    await waitFor(() => expect(createUrl.mock.calls.length).toBe(beforeUrls + 1));
+    const renderBody = JSON.parse((renderCall()![1] as RequestInit).body as string);
+    expect(renderBody).toEqual({ template: "t1", labels: [{ data: { message: "hello" } }], format: "png" });
 
     // Select the printer → Print enables.
     fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p1" } });
     await waitFor(() => expect(print).not.toBeDisabled());
 
-    // t1 is a single/tape template, so Print routes to /print (not /batch).
     const printCall = () => [...fetchMock.mock.calls].reverse().find(([u]) => String(u) === "/api/print");
     fireEvent.click(print);
     await waitFor(() => expect(printCall()).toBeDefined());
     const printBody = JSON.parse((printCall()![1] as RequestInit).body as string);
-    expect(printBody.printer).toBe("p1");
-    expect(printBody.copies).toBe(1);
-    expect(await screen.findByText(/1\/1/)).toBeInTheDocument();
+    expect(printBody).toEqual({ template: "t1", printer: "p1", labels: [{ data: { message: "hello" } }] });
+    expect(await screen.findByText("Sent 1 labels to Label Printer")).toBeInTheDocument();
   });
 
   it("renders the form for a template from the URL param", async () => {

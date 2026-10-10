@@ -180,7 +180,7 @@ function stub(opts: StubOptions = {}) {
       if (opts.renderLabel) return opts.renderLabel();
       return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
     }
-    if (url === "/api/batch" && method === "POST") {
+    if (url === "/api/render" && method === "POST") {
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       if (opts.batch) return opts.batch(body);
       return new Response(new Blob(["%PDF"]), {
@@ -294,7 +294,9 @@ function renderConnect(client?: QueryClient, initialPath = "/connect") {
 }
 
 let fetchMock: ReturnType<typeof stub>;
-const countCalls = (path: string) => fetchMock.mock.calls.filter(([u]) => String(u).startsWith(path)).length;
+const matches = (u: unknown, path: string) =>
+  path === "/api/print" || path === "/api/render" ? String(u) === path : String(u).startsWith(path);
+const countCalls = (path: string) => fetchMock.mock.calls.filter(([u]) => matches(u, path)).length;
 
 async function browseSelectMaterialize() {
   await screen.findByRole("option", { name: "Home" });
@@ -1524,7 +1526,7 @@ describe("Connect: datetime parameters", () => {
       }
       if (url === "/api/printers") return json([]);
       if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      if (url === "/api/render" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
       throw new Error(`unexpected fetch: ${url} ${method}`);
     }) as ReturnType<typeof stub>;
     vi.stubGlobal("fetch", fetchMock);
@@ -1611,7 +1613,7 @@ describe("Connect: datetime parameters", () => {
       }
       if (url === "/api/printers") return json([]);
       if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url === "/api/batch" && method === "POST") {
+      if (url === "/api/render" && method === "POST") {
         submittedBatch = JSON.parse(String(init?.body));
         return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
       }
@@ -1664,7 +1666,7 @@ describe("issue-386: sheet preview", () => {
   };
 
   type BatchPayload = {
-    mode?: string;
+    mode?: string; // asserted absent: /api/render has no mode
     template?: string;
     start_slot?: number;
     labels?: Array<{ data: Record<string, unknown> }>;
@@ -1695,7 +1697,7 @@ describe("issue-386: sheet preview", () => {
     await screen.findByRole("grid", { name: /label rows/i });
   }
 
-  it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/batch preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
+  it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/render preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
     let capturedBatchBodies: BatchPayload[] = [];
     await selectSheetAndMaterialize({
       batch: (body) => {
@@ -1715,7 +1717,7 @@ describe("issue-386: sheet preview", () => {
 
     await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
     const previewBody = capturedBatchBodies[0];
-    expect(previewBody.mode).toBe("download");
+    expect(previewBody.mode).toBeUndefined();
     expect(previewBody.template).toBe("sheet-tpl");
     expect(previewBody.start_slot).toBe(1);
     expect(previewBody.labels).toEqual([
@@ -1808,7 +1810,7 @@ describe("issue-386: sheet preview", () => {
     await screen.findByRole("grid", { name: /label rows/i });
   }
 
-  it("5.3 Sheet template with one row holding an unparseable datetime: no /api/batch request, no <object>, pane reads Fix row N to preview the sheet.; fixing the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
+  it("5.3 Sheet template with one row holding an unparseable datetime: no /api/render request, no <object>, pane reads Fix row N to preview the sheet.; fixing the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
     const capturedBatchBodies: BatchPayload[] = [];
     await selectDatedSheet(["", "not a date"], {
       batch: (body) => {
@@ -1851,7 +1853,7 @@ describe("issue-386: sheet preview", () => {
     expect(screen.queryByText(/Preview failed/)).toBeNull();
   });
 
-  it("5.5 Sheet template with 2 rows and copies set to 300: no /api/batch request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
+  it("5.5 Sheet template with 2 rows and copies set to 300: no /api/render request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
     let capturedBatchBodies: BatchPayload[] = [];
     await selectSheetAndMaterialize({
       batch: (body) => {
@@ -2009,8 +2011,8 @@ describe("issue-413: Connect reads the published parameter list", () => {
     const download = screen.getByRole("button", { name: /^download$/i });
     await waitFor(() => expect(download).toBeEnabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const batchCall = fetchMock.mock.calls.find(([u]) => String(u) === "/api/batch")!;
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const batchCall = fetchMock.mock.calls.find(([u]) => String(u) === "/api/render")!;
     expect(JSON.parse(String((batchCall[1] as RequestInit).body)).labels).toEqual([
       { data: { name: "Drill", code: "", flag: false, on: true } },
       { data: { name: "Hammer", code: "", flag: false, on: true } },

@@ -6,7 +6,7 @@ set -euo pipefail
 HOST=${HOST:-http://localhost:8080}
 OUT=${OUT:-avery-sheet.pdf}
 
-# avery5163 is the starter sheet template: POST /api/batch in download mode lays the labels
+# avery5163 is the starter sheet template: POST /api/render lays the labels
 # into slots and returns one paginated PDF. This script renders three filled slots.
 #
 # The multi-variant layout (with orientation and outline options) now lives in
@@ -17,12 +17,11 @@ OUT=${OUT:-avery-sheet.pdf}
 #     | curl -fsS -X POST "$HOST/api/templates" \
 #         -H "Authorization: Bearer ${LABELER_API_TOKEN:?}" \
 #         -H 'content-type: text/yaml' --data-binary @-
-curl -sS -X POST "$HOST/api/batch" \
+curl -sS -X POST "$HOST/api/render" \
   -H 'content-type: application/json' \
   -H "Authorization: Bearer ${LABELER_API_TOKEN:?set LABELER_API_TOKEN}" \
   -d '{
     "template":"avery5163",
-    "mode":"download",
     "labels":[
       { "data": { "message": "BOX.073 — Floor Grinder" } },
       { "data": { "message": "BOX.074 — Angle grinder, dust shroud" } },

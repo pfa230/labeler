@@ -630,26 +630,55 @@ pub fn render_single_label(
     render_single_label_image(template, data, &env, ImageRenderOptions::default())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleKind {
+    Png,
+    Pdf,
+}
+
+/// One rendered `single` label and its resolved width (the page's), in millimetres.
+pub struct RenderedSingle {
+    pub bytes: Vec<u8>,
+    pub width_mm: f64,
+}
+
+pub fn render_single_label_as(
+    template: &TemplateContent,
+    data: &HashMap<String, JsonValue>,
+    env: &RenderEnv,
+    kind: SingleKind,
+    opts: ImageRenderOptions,
+) -> Result<RenderedSingle, AppError> {
+    let doc = compile_single_doc(template, data, env)?;
+    let page = doc
+        .pages()
+        .first()
+        .ok_or_else(|| AppError::internal("typst did not produce any pages"))?;
+    let width_mm = page.frame.width().to_mm();
+    let bytes = match kind {
+        SingleKind::Png => {
+            let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
+            let mut pixmap = typst_render::render(page, &render_options(dpi as f32 / 72.0));
+            if opts.color_mode == ColorMode::BiLevel {
+                binarize_rgba(pixmap.data_mut());
+            }
+            pixmap
+                .encode_png()
+                .map_err(|err| AppError::internal(format!("failed to encode png: {err}")))?
+        }
+        SingleKind::Pdf => typst_pdf::pdf(&doc, &Default::default())
+            .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))?,
+    };
+    Ok(RenderedSingle { bytes, width_mm })
+}
+
 pub fn render_single_label_image(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     env: &RenderEnv,
     opts: ImageRenderOptions,
 ) -> Result<Vec<u8>, AppError> {
-    let doc = compile_single_doc(template, data, env)?;
-    let page = doc
-        .pages()
-        .first()
-        .ok_or_else(|| AppError::internal("typst did not produce any pages"))?;
-
-    let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
-    let mut pixmap = typst_render::render(page, &render_options(dpi as f32 / 72.0));
-    if opts.color_mode == ColorMode::BiLevel {
-        binarize_rgba(pixmap.data_mut());
-    }
-    pixmap
-        .encode_png()
-        .map_err(|err| AppError::internal(format!("failed to encode png: {err}")))
+    render_single_label_as(template, data, env, SingleKind::Png, opts).map(|label| label.bytes)
 }
 
 pub fn render_single_label_pdf(
@@ -657,9 +686,8 @@ pub fn render_single_label_pdf(
     data: &HashMap<String, JsonValue>,
     env: &RenderEnv,
 ) -> Result<Vec<u8>, AppError> {
-    let doc = compile_single_doc(template, data, env)?;
-    typst_pdf::pdf(&doc, &Default::default())
-        .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))
+    render_single_label_as(template, data, env, SingleKind::Pdf, Default::default())
+        .map(|label| label.bytes)
 }
 
 pub fn render_sheet_pages(
@@ -7731,6 +7759,69 @@ layout:
             "tape width {}px must be in (min: {min_px}, max: {expected_px})",
             img.width()
         );
+    }
+
+    fn width_template(unit: &str, width: &str, height: f32) -> TemplateContent {
+        parse_and_validate(&format!(
+            r#"
+name: Width
+unit: {unit}
+dpi: 200
+params:
+  - name: message
+    type: string
+format:
+  type: single
+  height: {height}
+  width: {width}
+layout:
+  - type: text
+    value: "{{message}}"
+    at: [0, 0]
+    size: [content, {height}]
+    font_size: 8
+"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rendered_single_label_reports_its_resolved_width() {
+        let settings = BTreeMap::new();
+        let dt = resolver();
+        let data = |message: &str| HashMap::from([("message".to_string(), json!(message))]);
+        let render = |template: &TemplateContent, message: &str, kind: super::SingleKind| {
+            let env = super::resolve_environment(template, &settings, &dt).unwrap();
+            super::render_single_label_as(template, &data(message), &env, kind, Default::default())
+                .unwrap()
+        };
+
+        let fixed = width_template("mm", "62.5", 18.0);
+        for kind in [super::SingleKind::Png, super::SingleKind::Pdf] {
+            let label = render(&fixed, "Hi", kind);
+            assert_eq!((label.width_mm * 100.0).round() as i64, 6250, "{kind:?}");
+        }
+        // An inch template reports millimetres: 2 in = 50.8 mm.
+        let inches = width_template("in", "2", 0.7);
+        assert_eq!(
+            (render(&inches, "Hi", super::SingleKind::Pdf).width_mm * 100.0).round() as i64,
+            5080
+        );
+
+        // Content-sized: each reported width matches the PNG actually encoded, within pixel rounding.
+        let fitted = width_template("mm", "{ min: 5, max: 200 }", 18.0);
+        let mut widths = Vec::new();
+        for message in ["Hi", "A much longer message on the tape"] {
+            let label = render(&fitted, message, super::SingleKind::Png);
+            let png_px = image::load_from_memory(&label.bytes).unwrap().width();
+            let expected_px = label.width_mm / 25.4 * f64::from(fitted.dpi);
+            assert!(
+                (f64::from(png_px) - expected_px).abs() <= 1.0,
+                "{message}: {png_px}px vs {expected_px}"
+            );
+            widths.push(label.width_mm);
+        }
+        assert!(widths[1] > widths[0], "{widths:?}");
     }
 
     #[test]

@@ -19,11 +19,11 @@ const detail = {
 };
 const list = { templates: [{ id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format }] };
 const printers = [{ id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false }];
-const summary = { total: 2, succeeded: 2, failed: [], jobs: 1 };
+const summary = { total: 2, sent: 2, failed: [], jobs: 1 };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-// Optional `batch` override lets a test return a custom /api/batch response (failures, 422, etc.).
+// Optional `batch` override lets a test return a custom /api/render or /api/print response (failures, 422, etc.).
 // Optional `renderLabel` override lets a test control the /api/render/label response.
 function stubFetch(
   batch?: (body: Record<string, unknown>) => Response,
@@ -38,11 +38,10 @@ function stubFetch(
       if (renderLabel) return renderLabel();
       return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
     }
-    if (url.startsWith("/api/batch")) {
+    if (url === "/api/render" || url === "/api/print") {
       const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, unknown>;
       if (batch) return batch(body);
-      // download returns a binary blob; print returns the JSON summary (submitBatch discriminates on content-type).
-      if (body.mode === "download") {
+      if (url === "/api/render") {
         return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
       }
       return json(summary);
@@ -65,8 +64,10 @@ function renderPage() {
 }
 
 let fetchMock: ReturnType<typeof stubFetch>;
-const lastCall = (path: string) => [...fetchMock.mock.calls].reverse().find(([u]) => String(u).startsWith(path));
-const countCalls = (path: string) => fetchMock.mock.calls.filter(([u]) => String(u).startsWith(path)).length;
+const matches = (u: unknown, path: string) =>
+  path === "/api/print" || path === "/api/render" ? String(u) === path : String(u).startsWith(path);
+const lastCall = (path: string) => [...fetchMock.mock.calls].reverse().find(([u]) => matches(u, path));
+const countCalls = (path: string) => fetchMock.mock.calls.filter(([u]) => matches(u, path)).length;
 
 async function loadTemplateAndCsv() {
   const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
@@ -129,13 +130,13 @@ describe("CSV Import screen", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
     expect(body.template).toBe("t1");
-    expect(body.mode).toBe("download");
+    expect(body.mode).toBeUndefined();
     expect(body.labels).toHaveLength(2);
     expect(body.labels[0]).toEqual({ data: { sku: "1", color: "red" } });
-    // submitBatch read a binary blob and saved it via an object URL.
+    // renderBatch read a binary blob and saved it via an object URL.
     await waitFor(() => expect(createUrl).toHaveBeenCalled());
     expect(body.start_slot).toBeUndefined(); // single template: start_slot omitted
   });
@@ -152,8 +153,8 @@ describe("CSV Import screen", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
     expect(body.labels[0]).toEqual({ data: { sku: "1" } });
   });
 
@@ -184,18 +185,18 @@ describe("CSV Import screen", () => {
     await loadTemplateAndCsv();
     fireEvent.change(screen.getByLabelText(/printer/i), { target: { value: "p1" } });
     fireEvent.click(await screen.findByRole("button", { name: /^print$/i }));
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     expect(body.template).toBe("t1");
-    expect(body.mode).toBe("print");
+    expect(body.mode).toBeUndefined();
     expect(body.printer).toBe("p1");
-    expect(await screen.findByText(/printed 2\/2/i)).toBeInTheDocument();
+    expect(await screen.findByText("Sent 2 labels to Label Printer")).toBeInTheDocument();
     // both rows are annotated ok in the grid (regression guard for successful-row annotations)
     expect(await screen.findAllByText("ok")).toHaveLength(2);
   });
 
   it("maps a print failure to the right source row via copy expansion", async () => {
-    fetchMock = stubFetch(() => json({ total: 4, succeeded: 3, failed: [{ index: 3, error: "boom" }], jobs: 1 }));
+    fetchMock = stubFetch(() => json({ total: 4, sent: 3, failed: [{ index: 3, error: "boom" }], jobs: 1 }));
     vi.stubGlobal("fetch", fetchMock);
     renderPage();
     await loadTemplateAndCsv();
@@ -239,7 +240,7 @@ describe("CSV Import screen", () => {
     expect(await screen.findByText(/parse error/i)).toBeInTheDocument();
     // No grid or Run buttons render, so nothing can be posted.
     expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
-    expect(countCalls("/api/batch")).toBe(0);
+    expect(countCalls("/api/render")).toBe(0);
   });
 
   it("loads a CSV with no template, then shows options + actions once a template is chosen", async () => {
@@ -287,8 +288,8 @@ describe("CSV Import screen", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
     expect(body.labels[0]).toEqual({ data: { sku: "9", color: "blue" } });
   });
 
@@ -303,8 +304,8 @@ describe("CSV Import screen", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
     expect(body.labels[0]).toEqual({ data: { sku: "1" } });
   });
 
@@ -403,7 +404,7 @@ describe("CSV Import screen", () => {
       if (url.startsWith("/api/render/label")) {
         return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
       }
-      if (url.startsWith("/api/batch")) {
+      if (url.startsWith("/api/render")) {
         return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -438,8 +439,8 @@ describe("CSV Import screen", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
     expect(body.labels[0]).toEqual({ data: { sku: "1", message: "first line\nsecond line\nthird line" } });
   });
 });
@@ -458,7 +459,7 @@ describe("CSV Import screen: datetime parameters", () => {
   const dtList = { templates: [{ ...list.templates[0], format: dtDetail.format }] };
 
   function stubDatetimeFetch() {
-    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    return vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       const tDetail = {
         ...dtDetail,
@@ -472,12 +473,9 @@ describe("CSV Import screen: datetime parameters", () => {
       if (url.startsWith("/api/printers")) return json(printers);
       if (url.startsWith("/api/render/label"))
         return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) {
-        const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, unknown>;
-        if (body.mode === "download")
-          return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-        return json(summary);
-      }
+      if (url === "/api/render")
+        return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      if (url === "/api/print") return json(summary);
       throw new Error(`unexpected fetch: ${url}`);
     });
   }
@@ -512,8 +510,8 @@ describe("CSV Import screen: datetime parameters", () => {
     await waitFor(() => expect(download).not.toBeDisabled());
 
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
     expect(body.labels[0].data.printed_on).toBeUndefined();
   });
 
@@ -530,7 +528,7 @@ describe("CSV Import screen: datetime parameters", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).toBeDisabled());
     fireEvent.click(download);
-    expect(countCalls("/api/batch")).toBe(0);
+    expect(countCalls("/api/render")).toBe(0);
   });
 
   it("flags a datetime cell that is well-shaped but not a real date", async () => {
@@ -549,7 +547,7 @@ describe("CSV Import screen: datetime parameters", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).toBeDisabled());
     fireEvent.click(download);
-    expect(countCalls("/api/batch")).toBe(0);
+    expect(countCalls("/api/render")).toBe(0);
   });
 
   it("skips list parameters when building grid columns and does not break import", async () => {
@@ -568,7 +566,7 @@ describe("CSV Import screen: datetime parameters", () => {
       if (url.startsWith("/api/templates")) return json(list);
       if (url.startsWith("/api/printers")) return json(printers);
       if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) {
+      if (url.startsWith("/api/render")) {
         return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -594,8 +592,8 @@ describe("CSV Import screen: datetime parameters", () => {
     const download = await screen.findByRole("button", { name: /download/i });
     expect(download).toBeEnabled();
     fireEvent.click(download);
-    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/batch"))).toBe(true));
-    const batchCall = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/batch"))!;
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === "/api/render")).toBe(true));
+    const batchCall = fetchMock.mock.calls.find(([u]) => String(u) === "/api/render")!;
     const body = JSON.parse((batchCall[1] as RequestInit).body as string);
     // A list column carried as a CSV string must not reach the batch body (pruneDataForSubmit guard).
     expect(body.labels).toHaveLength(1);
@@ -626,7 +624,7 @@ describe("issue-386: sheet preview", () => {
   ];
 
   type BatchPayload = {
-    mode?: string;
+    mode?: string; // asserted absent: /api/render has no mode
     template?: string;
     start_slot?: number;
     labels?: Array<{ data: Record<string, unknown> }>;
@@ -662,7 +660,7 @@ describe("issue-386: sheet preview", () => {
         return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
       }
 
-      if (url.startsWith("/api/batch") && method === "POST") {
+      if (url.startsWith("/api/render") && method === "POST") {
         const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, unknown>;
         if (opts?.batch) return opts.batch(body);
         return new Response(new Blob(["%PDF"]), {
@@ -700,7 +698,7 @@ describe("issue-386: sheet preview", () => {
     vi.restoreAllMocks();
   });
 
-  it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/batch preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
+  it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/render preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
     let capturedBatchBodies: BatchPayload[] = [];
     await loadSheetAndCsv("sku\n1\n2\n", {
       batch: (body) => {
@@ -720,7 +718,7 @@ describe("issue-386: sheet preview", () => {
 
     await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
     const previewBody = capturedBatchBodies[0];
-    expect(previewBody.mode).toBe("download");
+    expect(previewBody.mode).toBeUndefined();
     expect(previewBody.template).toBe("sheet-tpl");
     expect(previewBody.start_slot).toBe(1);
     expect(previewBody.labels).toEqual([
@@ -806,7 +804,7 @@ describe("issue-386: sheet preview", () => {
     ],
   };
 
-  it("5.3 Sheet template with one row holding an unparseable datetime: no /api/batch request, no <object>, pane reads Fix row N to preview the sheet.; fixing the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
+  it("5.3 Sheet template with one row holding an unparseable datetime: no /api/render request, no <object>, pane reads Fix row N to preview the sheet.; fixing the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
     const capturedBatchBodies: BatchPayload[] = [];
     await loadSheetAndCsv("sku,printed_on\n1,\n2,not a date\n", {
       templateDetails: { "sheet-tpl": datedSheet },
@@ -852,7 +850,7 @@ describe("issue-386: sheet preview", () => {
     expect(screen.queryByText(/Preview failed/)).toBeNull();
   });
 
-  it("5.5 Sheet template with 2 rows and copies set to 300: no /api/batch request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
+  it("5.5 Sheet template with 2 rows and copies set to 300: no /api/render request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
     let capturedBatchBodies: BatchPayload[] = [];
     await loadSheetAndCsv("sku\n1\n2\n", {
       batch: (body) => {
@@ -994,7 +992,7 @@ describe("issue-413: Import reads the published parameter list", () => {
       if (url.startsWith("/api/templates")) return json(list);
       if (url.startsWith("/api/printers")) return json(printers);
       if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url.startsWith("/api/batch")) {
+      if (url.startsWith("/api/render")) {
         void init;
         return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
       }
@@ -1033,7 +1031,7 @@ describe("issue-413: Import reads the published parameter list", () => {
     const download = screen.getByRole("button", { name: /^download$/i });
     await waitFor(() => expect(download).toBeEnabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes("/inputs"))).toEqual([]);
   });
 
@@ -1055,8 +1053,8 @@ describe("issue-413: Import reads the published parameter list", () => {
     const download = screen.getByRole("button", { name: /^download$/i });
     await waitFor(() => expect(download).toBeEnabled());
     fireEvent.click(download);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
     expect(body.labels).toEqual([
       { data: first },
       { data: { title: "second", flag: "yes", on: true } },

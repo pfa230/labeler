@@ -1,4 +1,5 @@
-import type { ApiErrorBody } from "./types";
+import type { ApiErrorBody, PrintSummary } from "./types";
+import type { ResolvedLabel } from "../lib/labelGrid";
 
 const BASE = "/api";
 
@@ -76,35 +77,25 @@ export async function fetchBlob(path: string, init?: RequestInit): Promise<{ blo
   return { blob: await res.blob(), filename: filenameFrom(res) };
 }
 
-// /api/batch: a 2xx is EITHER a binary download (zip/pdf) OR a JSON print summary, depending on `mode`.
-// Discriminate on content-type after confirming res.ok; errors are still the JSON contract.
-import type { BatchSummary } from "./types";
-export type BatchResult =
-  | { kind: "download"; blob: Blob; filename?: string }
-  | { kind: "summary"; summary: BatchSummary };
+export interface RenderBody { template: string; labels: ResolvedLabel[]; start_slot?: number; format?: "png" | "pdf" }
+export interface PrintBody { template: string; labels: ResolvedLabel[]; start_slot?: number; printer: string }
 
-export async function printLabel(body: {
-  template: string;
-  printer: string;
-  data: Record<string, unknown>;
-  copies: number;
-}): Promise<BatchSummary> {
-  return sendJson<BatchSummary>("POST", "/print", body);
-}
-
-export async function submitBatch(body: unknown): Promise<BatchResult> {
-  const res = await fetch(`${BASE}/batch`, {
+// /api/render: a 2xx is always the file (ZIP for single, PDF for sheet); failure is the JSON error contract.
+export function renderBatch(body: RenderBody): Promise<{ blob: Blob; filename?: string }> {
+  return fetchBlob("/render", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    on401(res.status);
-    throw await toError(res);
-  }
-  const ct = res.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
-    return { kind: "summary", summary: (await res.json()) as BatchSummary };
-  }
-  return { kind: "download", blob: await res.blob(), filename: filenameFrom(res) };
+}
+
+export function printBatch(body: PrintBody): Promise<PrintSummary> {
+  return sendJson<PrintSummary>("POST", "/print", body);
+}
+
+// ui "What a screen submits": report how many labels were sent and each failed label with its error.
+export function sentMessage({ sent, total, failed }: PrintSummary, printer: string): string {
+  const count = failed.length ? `${sent} of ${total}` : `${sent}`;
+  const errors = failed.map((f) => `label ${f.index + 1}: ${f.error}`).join("; ");
+  return `Sent ${count} labels to ${printer}${errors ? ` — ${errors}` : ""}`;
 }
 
 // Trigger a browser download. Revoke the object URL on a delay, immediate revoke after click()

@@ -16,7 +16,7 @@ import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { useSheetPreview } from "../lib/sheetPreview";
 import { getOwnKey, pruneDataForSubmit } from "../lib/labelInputs";
-import { ApiError, saveBlob, submitBatch } from "../api/client";
+import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../api/client";
 import { useToast } from "../app/toast-context";
 import type { TemplateDetail } from "../api/types";
 
@@ -264,7 +264,8 @@ function Composer({
     if (snapshot.length === 0) return;
     if (snapshot.some(rowInvalid)) { setFormError("Fix the highlighted rows before running."); return; }
     if (expandedCount(snapshot.length, copies) > MAX_BATCH_LABELS) { setFormError(`Too many labels (over the ${MAX_BATCH_LABELS} limit).`); return; }
-    if (mode === "print" && !printer) { setFormError("Select a printer to print."); return; }
+    const printTo = mode === "print" ? printer : undefined;
+    if (mode === "print" && !printTo) { setFormError("Select a printer to print."); return; }
     setBusy(true);
     commitRows(rowsRef.current.map((r) => ({ ...r, annotation: undefined })));
     const submittedIds = rowsRef.current.map((r) => r.id);
@@ -272,16 +273,14 @@ function Composer({
     const idForExpandedIndex = (index: number): string | undefined => submittedIds[sourceRowForExpandedIndex(index, submittedCopies)];
     try {
       const labels = resolveLabels(rowsRef.current, submittedCopies, dataFor);
-      const r = await submitBatch({
-        template: detail.id, labels, mode,
-        ...(mode === "print" ? { printer } : {}),
-        ...(isSheet && startSlot ? { start_slot: startSlot } : {}),
-      });
-      if (r.kind === "download") {
-        saveBlob(r.blob, r.filename ?? `${detail.id}.${isSheet ? "pdf" : "zip"}`);
+      const slot = isSheet && startSlot ? { start_slot: startSlot } : {};
+      if (!printTo) {
+        const { blob, filename } = await renderBatch({ template: detail.id, labels, ...slot });
+        saveBlob(blob, filename ?? `${detail.id}.${isSheet ? "pdf" : "zip"}`);
         push({ kind: "ok", message: `Downloaded ${labels.length} labels` });
       } else {
-        const { succeeded, total: t, failed } = r.summary;
+        const summary = await printBatch({ template: detail.id, labels, printer: printTo, ...slot });
+        const { failed } = summary;
         const failById = new Map<string, string>();
         for (const f of failed) { const id = idForExpandedIndex(f.index); if (id) failById.set(id, failById.has(id) ? `${failById.get(id)}; ${f.error}` : f.error); }
         const submitted = new Set(submittedIds);
@@ -289,7 +288,8 @@ function Composer({
           submitted.has(row.id)
             ? { ...row, annotation: failById.has(row.id) ? { status: "failed", message: failById.get(row.id) } : { status: "ok" } }
             : row));
-        push({ kind: failed.length ? "error" : "ok", message: `Printed ${succeeded}/${t}` });
+        const name = printers.find((p) => p.id === printTo)?.name ?? printTo;
+        push({ kind: failed.length ? "error" : "ok", message: sentMessage(summary, name) });
       }
     } catch (err) {
       if (err instanceof ApiError && err.code === "BatchInvalid") {

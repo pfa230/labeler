@@ -139,7 +139,7 @@ describe("useSheetPreview", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/batch",
+      "/api/render",
       expect.objectContaining({
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -148,7 +148,6 @@ describe("useSheetPreview", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body).toEqual({
       template: "t1",
-      mode: "download",
       labels: [{ data: { sku: "1" } }, { data: { sku: "2" } }],
       start_slot: 4,
     });

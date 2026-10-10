@@ -499,7 +499,7 @@ describe("issue-413: template page", () => {
   }
 
   const renderCalls = (fn: ReturnType<typeof stubPublished>) =>
-    fn.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/render") || u.includes("/batch"));
+    fn.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/render"));
 
   it("A21: renders the thumbnail <img> and sends no render request", async () => {
     const fn = stubPublished(published);

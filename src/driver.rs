@@ -34,19 +34,69 @@ fn ipp_document_format(f: ArtifactFormat) -> &'static str {
     }
 }
 
+/// IPP `media-col` `media-size`, in hundredths of a millimetre (printing, "Media size").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaSize {
+    pub x_dimension: i32,
+    pub y_dimension: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct PrintOptions {
-    pub copies: u32,
     pub artifact_format: ArtifactFormat,
+    /// Present for a template declaring `media_width`.
+    pub media_size: Option<MediaSize>,
 }
 
 impl Default for PrintOptions {
     fn default() -> Self {
         Self {
-            copies: 1,
             artifact_format: ArtifactFormat::Pdf,
+            media_size: None,
         }
     }
+}
+
+/// A length in millimetres as hundredths of a millimetre, rounded to the nearest integer.
+pub fn hundredths_mm(length_mm: f64) -> i32 {
+    (length_mm * 100.0).round() as i32
+}
+
+/// A template's `media_width`, given in its `unit`, in millimetres.
+pub fn media_width_mm(media_width: f32, unit: &str) -> f64 {
+    if unit == "in" {
+        f64::from(media_width) * 25.4
+    } else {
+        f64::from(media_width)
+    }
+}
+
+/// The IPP `Print-Job` request for one job: titled `labeler`, typed by the artifact, and carrying
+/// `media-col` when the template declares a media width.
+pub fn print_job_request(
+    uri: ipp::prelude::Uri,
+    artifact: &[u8],
+    opts: &PrintOptions,
+) -> Result<ipp::prelude::IppRequestResponse, PrintError> {
+    use ipp::prelude::*;
+    use std::collections::BTreeMap;
+    let payload = IppPayload::new(std::io::Cursor::new(artifact.to_vec()));
+    let mut builder = IppOperationBuilder::print_job(uri, payload)
+        .document_format(ipp_document_format(opts.artifact_format))
+        .job_title("labeler");
+    if let Some(m) = opts.media_size {
+        let name = |s: &str| -> ipp::value::IppName { s.try_into().expect("static IPP name") };
+        let size = IppValue::Collection(BTreeMap::from([
+            (name("x-dimension"), IppValue::Integer(m.x_dimension)),
+            (name("y-dimension"), IppValue::Integer(m.y_dimension)),
+        ]));
+        let col = IppValue::Collection(BTreeMap::from([(name("media-size"), size)]));
+        builder = builder.attribute(IppAttribute::new(name("media-col"), col));
+    }
+    builder
+        .build()
+        .map(Into::into)
+        .map_err(|err| PrintError::Transport(err.to_string()))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -257,15 +307,10 @@ impl PrinterDriver for CupsDriver {
         let uri: Uri = self.uri.parse().map_err(|err| {
             PrintError::Transport(format!("invalid printer uri '{}': {err}", self.uri))
         })?;
-        let payload = ipp::payload::IppPayload::new(std::io::Cursor::new(artifact.to_vec()));
-        let operation = IppOperationBuilder::print_job(uri.clone(), payload)
-            .document_format(ipp_document_format(opts.artifact_format))
-            .job_title("labeler")
-            .build()
-            .map_err(|err| PrintError::Transport(err.to_string()))?;
+        let request = print_job_request(uri.clone(), artifact, opts)?;
         let response = self
             .build_client(uri, None)
-            .send(operation)
+            .send(request)
             .await
             .map_err(|err| PrintError::Transport(err.to_string()))?;
         if response.header().status_code().is_success() {
@@ -458,6 +503,10 @@ struct FakeDriver {
     /// so a test can observe the stored secret reaching dispatch.
     expected_password: Option<String>,
     password: Option<String>,
+    /// `send` fails unless the job's `media-size` matches each knob present (`media_x`, `media_y`),
+    /// like a printer refusing media it does not have.
+    expected_media_x: Option<i32>,
+    expected_media_y: Option<i32>,
 }
 
 #[cfg(test)]
@@ -490,6 +539,8 @@ impl FakeDriver {
             probe_unreachable: knob("probe") == Some("unreachable"),
             expected_password: knob("password").map(str::to_string),
             password: connection.password.clone(),
+            expected_media_x: knob("media_x").map(|v| v.parse().expect("numeric fake knob")),
+            expected_media_y: knob("media_y").map(|v| v.parse().expect("numeric fake knob")),
         })
     }
 
@@ -515,12 +566,25 @@ impl PrinterDriver for FakeDriver {
         }
     }
 
-    async fn send(&self, artifact: &[u8], _opts: &PrintOptions) -> Result<(), PrintError> {
+    async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError> {
         if self.fail {
             return Err(PrintError::Transport("fake failure".to_string()));
         }
         if self.password != self.expected_password {
             return Err(PrintError::Transport("fake: wrong password".to_string()));
+        }
+        let sent = opts.media_size;
+        if self
+            .expected_media_x
+            .is_some_and(|x| sent.map(|m| m.x_dimension) != Some(x))
+            || self
+                .expected_media_y
+                .is_some_and(|y| sent.map(|m| m.y_dimension) != Some(y))
+        {
+            return Err(PrintError::Transport(format!(
+                "fake: media-size {sent:?}, expected x {:?} y {:?}",
+                self.expected_media_x, self.expected_media_y
+            )));
         }
         // Mirror the print path's per-field precedence (override else negotiated else default).
         let effective = effective_render(
@@ -888,6 +952,55 @@ mod tests {
         // capabilities() provided default mirrors probe(): Ok -> Some, Unreachable -> None.
         assert!(d.capabilities().await.is_none());
         assert!(d2.capabilities().await.is_some());
+    }
+
+    #[test]
+    fn lengths_become_hundredths_of_a_millimetre() {
+        assert_eq!(hundredths_mm(media_width_mm(24.0, "mm")), 2400);
+        assert_eq!(hundredths_mm(media_width_mm(0.47, "in")), 1194); // 1193.8: rounded, not truncated
+        assert_eq!(hundredths_mm(62.499_99), 6250);
+    }
+
+    fn media_col(opts: &PrintOptions) -> Option<ipp::prelude::IppValue> {
+        use ipp::prelude::*;
+        let uri: Uri = "ipp://printer.test/ipp/print".parse().unwrap();
+        let req = print_job_request(uri, b"%PDF", opts).expect("request");
+        let value = req
+            .attributes()
+            .groups_of(DelimiterTag::JobAttributes)
+            .find_map(|g| g.attributes().get("media-col").map(|a| a.value().clone()));
+        value
+    }
+
+    #[test]
+    fn a_job_carries_media_col_only_when_the_template_has_a_media_width() {
+        use ipp::prelude::IppValue;
+        let with = PrintOptions {
+            artifact_format: ArtifactFormat::Pdf,
+            media_size: Some(MediaSize {
+                x_dimension: 2400,
+                y_dimension: 6250,
+            }),
+        };
+        let Some(IppValue::Collection(col)) = media_col(&with) else {
+            panic!("media-col missing or not a collection");
+        };
+        let Some(IppValue::Collection(size)) = col.get("media-size") else {
+            panic!("media-size missing");
+        };
+        assert_eq!(size.get("x-dimension"), Some(&IppValue::Integer(2400)));
+        assert_eq!(size.get("y-dimension"), Some(&IppValue::Integer(6250)));
+        assert_eq!(
+            size.len(),
+            2,
+            "media-size carries exactly the two dimensions"
+        );
+
+        let without = PrintOptions {
+            artifact_format: ArtifactFormat::Pdf,
+            media_size: None,
+        };
+        assert!(media_col(&without).is_none());
     }
 
     #[tokio::test]
