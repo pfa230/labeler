@@ -909,12 +909,14 @@ layout:
     flow: { direction: row }
     items:
       - type: container
+        size: [fill, fill]
         items:
           - type: text
             value: "First"
             size: [20, 10]
             font_size: 8
       - type: container
+        size: [fill, fill]
         items:
           - type: text
             value: "Second"

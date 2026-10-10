@@ -41,9 +41,6 @@ impl Anchor {
 pub enum ExtentSource {
     /// An authored extent with known magnitude (number, parameter value, or constant-`to`).
     Author(f32),
-    /// A shrinking `to` (at sign-negative with inset a, to non-negative with value to_val).
-    /// Permitted only on a resolved axis. Evaluates on frame F to `to_val + a - F`.
-    ShrinkingTo { to_val: f32, inset_a: f32 },
     /// Content extent: intrinsic size of the item.
     Content,
     /// Frame extent: stretches to the available frame extent.
@@ -68,10 +65,6 @@ pub struct AxisSpec {
 }
 
 impl AxisSpec {
-    pub fn is_shrinking_to(&self) -> bool {
-        matches!(self.source, ExtentSource::ShrinkingTo { .. })
-    }
-
     pub fn cap_binds(&self) -> bool {
         matches!(self.source, ExtentSource::Content | ExtentSource::Frame)
     }
@@ -146,13 +139,10 @@ pub fn source_of(
                 (true, true) => (ExtentSource::Author(a - b), true),
                 // at non-negative, to sign-negative (slope +1, stretches with frame)
                 (false, true) => (ExtentSource::Frame, false),
-                // at sign-negative, to non-negative (slope -1, shrinks as frame grows)
-                (true, false) => (
-                    ExtentSource::ShrinkingTo {
-                        to_val: to_raw,
-                        inset_a: a,
-                    },
-                    false,
+                // `convert.rs` refuses an edge-relative `at` paired with a non-negative `to` at
+                // template load, so this pairing never reaches the classifier.
+                (true, false) => unreachable!(
+                    "invariant violation: an edge-relative at with a non-negative to is refused at load"
                 ),
             };
 
@@ -176,18 +166,16 @@ pub fn available(frame: f32, axis_spec: &AxisSpec) -> f32 {
     }
 }
 
-/// Resolve the item's concrete extent from its classified axis, concrete frame, available extent,
-/// optional cap, and optional intrinsic size.
+/// Resolve the item's concrete extent from its classified axis, available extent, optional cap,
+/// and optional intrinsic size.
 pub fn resolve(
     axis_spec: &AxisSpec,
-    frame: f32,
     available: f32,
     cap: Option<f32>,
     intrinsic: Option<f32>,
 ) -> f32 {
     match axis_spec.source {
         ExtentSource::Author(val) => val,
-        ExtentSource::ShrinkingTo { to_val, inset_a } => to_val + inset_a - frame,
         ExtentSource::Content => {
             let mut ext = intrinsic.unwrap_or(0.0).min(available);
             if let Some(c) = cap {
@@ -208,14 +196,12 @@ pub fn resolve(
 /// The claim an item makes for reporting upward into its parent frame requirement.
 pub fn claim(
     axis_spec: &AxisSpec,
-    frame: f32,
     available: f32,
     cap: Option<f32>,
     intrinsic: Option<f32>,
 ) -> f32 {
     match axis_spec.source {
         ExtentSource::Author(val) => val,
-        ExtentSource::ShrinkingTo { to_val, inset_a } => to_val + inset_a - frame,
         ExtentSource::Content | ExtentSource::Frame => {
             let mut ext = intrinsic.unwrap_or(0.0).min(available).max(0.0);
             if let Some(c) = cap {
@@ -231,8 +217,6 @@ pub fn requirement(axis_spec: &AxisSpec, claim: f32) -> f32 {
     match (axis_spec.anchor, axis_spec.source) {
         (Anchor::Plain(at), ExtentSource::Author(_)) => at + claim,
         (Anchor::EdgeRelative(a), ExtentSource::Author(_)) => a,
-        (Anchor::EdgeRelative(a), ExtentSource::ShrinkingTo { to_val, .. }) => a.max(to_val),
-        (Anchor::Plain(_), ExtentSource::ShrinkingTo { .. }) => unreachable!(),
         (Anchor::Plain(at), ExtentSource::Content) => at + claim,
         (Anchor::EdgeRelative(a), ExtentSource::Content) => a,
         (Anchor::Plain(at), ExtentSource::Frame) => at + claim + axis_spec.inset,
@@ -266,7 +250,7 @@ pub fn container_inner_axes_resolved(
     for axis in 0..2 {
         let spec = source_of(placement, axis, geometry_values);
         let axis_res = match spec.source {
-            ExtentSource::Author(_) | ExtentSource::ShrinkingTo { .. } => true,
+            ExtentSource::Author(_) => true,
             ExtentSource::Content => false,
             ExtentSource::Frame => {
                 if spec.anchor.is_edge_relative() {
@@ -292,7 +276,7 @@ pub fn container_inner_axes_resolved(
 /// This is the one place that substitution is spelled.
 pub fn resolve_unmeasured(axis_spec: &AxisSpec, frame: f32, cap: Option<f32>) -> f32 {
     let avail = available(frame, axis_spec);
-    resolve(axis_spec, frame, avail, cap, Some(avail))
+    resolve(axis_spec, avail, cap, Some(avail))
 }
 
 /// The tolerance every bounds comparison uses, so load and render agree on the edge cases.
@@ -427,7 +411,6 @@ pub fn place(
     let w = match intrinsic[0] {
         Some(measured) => resolve(
             &spec_0,
-            frame.0,
             available(frame.0, &spec_0),
             placement.max_w,
             Some(measured),
@@ -437,7 +420,6 @@ pub fn place(
     let h = match intrinsic[1] {
         Some(measured) => resolve(
             &spec_1,
-            frame.1,
             available(frame.1, &spec_1),
             placement.max_h,
             Some(measured),
@@ -492,7 +474,6 @@ pub fn resolve_packed(
     let w = match intrinsic[0] {
         Some(measured) => resolve(
             &spec_0,
-            inner.0,
             available(inner.0, &spec_0),
             placement.max_w,
             Some(measured),
@@ -502,7 +483,6 @@ pub fn resolve_packed(
     let h = match intrinsic[1] {
         Some(measured) => resolve(
             &spec_1,
-            inner.1,
             available(inner.1, &spec_1),
             placement.max_h,
             Some(measured),
@@ -800,7 +780,7 @@ pub fn axis_requirement(
 ) -> f32 {
     let spec = source_of(placement, axis, geometry_values);
     let avail = available(frame_extent, &spec);
-    let claimed = claim(&spec, frame_extent, avail, cap(placement, axis), intrinsic);
+    let claimed = claim(&spec, avail, cap(placement, axis), intrinsic);
     requirement(&spec, claimed)
 }
 
@@ -819,10 +799,11 @@ mod tests {
         }
     }
 
-    /// The `to` orientation split is the subtlest rule here and two drafts got it wrong, so all four
-    /// corner sign combinations are classified and resolved in one place.
+    /// The `to` orientation split is the subtlest rule here and two drafts got it wrong, so the three
+    /// corner sign combinations load admits are classified and resolved in one place. The fourth, an
+    /// edge-relative `at` with a plain `to`, is refused at load.
     #[test]
-    fn source_of_classifies_the_four_to_corner_combinations() {
+    fn source_of_classifies_the_admitted_to_corner_combinations() {
         let geo = HashMap::new();
         let frame = 100.0;
 
@@ -833,10 +814,7 @@ mod tests {
         assert_eq!(spec.inset, 0.0);
         assert!(spec.written_as_to);
         assert!(spec.fixed_by_template);
-        assert_eq!(
-            resolve(&spec, frame, available(frame, &spec), None, None),
-            30.0
-        );
+        assert_eq!(resolve(&spec, available(frame, &spec), None, None), 30.0);
 
         // Both corners edge-relative: the two frame terms cancel, so it is a constant too.
         let spec = source_of(&to_placement([-10.0, 0.0], [-2.0, 10.0]), 0, &geo);
@@ -844,10 +822,7 @@ mod tests {
         assert_eq!(spec.anchor, Anchor::EdgeRelative(10.0));
         assert_eq!(spec.inset, 2.0);
         assert!(spec.fixed_by_template);
-        assert_eq!(
-            resolve(&spec, frame, available(frame, &spec), None, None),
-            8.0
-        );
+        assert_eq!(resolve(&spec, available(frame, &spec), None, None), 8.0);
         assert_eq!(requirement(&spec, 8.0), 10.0);
 
         // Plain `at`, edge-relative `to`: one frame term survives, so it stretches.
@@ -856,28 +831,8 @@ mod tests {
         assert_eq!(spec.inset, 2.0);
         assert!(!spec.fixed_by_template);
         assert_eq!(available(frame, &spec), 88.0);
-        assert_eq!(
-            resolve(&spec, frame, available(frame, &spec), None, None),
-            88.0
-        );
+        assert_eq!(resolve(&spec, available(frame, &spec), None, None), 88.0);
         assert_eq!(requirement(&spec, 88.0), 100.0);
-
-        // Edge-relative `at`, plain `to`: the extent shrinks as the frame grows.
-        let spec = source_of(&to_placement([-10.0, 0.0], [40.0, 10.0]), 0, &geo);
-        assert_eq!(
-            spec.source,
-            ExtentSource::ShrinkingTo {
-                to_val: 40.0,
-                inset_a: 10.0
-            }
-        );
-        assert!(spec.is_shrinking_to());
-        assert!(!spec.fixed_by_template);
-        assert_eq!(
-            resolve(&spec, 45.0, available(45.0, &spec), None, None),
-            5.0
-        );
-        assert_eq!(requirement(&spec, 5.0), 40.0);
     }
 
     #[test]
@@ -922,12 +877,7 @@ mod tests {
         assert_eq!(spec.source, ExtentSource::Author(12.0));
         assert!(!spec.fixed_by_template);
 
-        // 5. Shrinking to (sign-negative at, non-negative to): ShrinkingTo, NOT fixed by template
-        let spec = source_of(&to_placement([-10.0, 0.0], [40.0, 10.0]), 0, &geo);
-        assert!(spec.is_shrinking_to());
-        assert!(!spec.fixed_by_template);
-
-        // 6. Content extent: Content source, NOT fixed by template
+        // 5. Content extent: Content source, NOT fixed by template
         let spec = source_of(
             &Placement::sized(
                 Position([0.0, 0.0]),
@@ -939,7 +889,7 @@ mod tests {
         assert_eq!(spec.source, ExtentSource::Content);
         assert!(!spec.fixed_by_template);
 
-        // 7. Fill extent: Frame source, NOT fixed by template
+        // 6. Fill extent: Frame source, NOT fixed by template
         let spec = source_of(
             &Placement::sized(
                 Position([0.0, 0.0]),
@@ -951,37 +901,37 @@ mod tests {
         assert_eq!(spec.source, ExtentSource::Frame);
         assert!(!spec.fixed_by_template);
 
-        // 8. Stretching to (non-negative at, sign-negative to): Frame source, NOT fixed by template
+        // 7. Stretching to (non-negative at, sign-negative to): Frame source, NOT fixed by template
         let spec = source_of(&to_placement([10.0, 0.0], [-2.0, 10.0]), 0, &geo);
         assert_eq!(spec.source, ExtentSource::Frame);
         assert!(!spec.fixed_by_template);
     }
 
-    /// A cap binds a chosen extent and is inert on one the author wrote, whichever way it was
-    /// spelled.
+    /// A cap binds a chosen extent and is inert on one the author wrote.
     #[test]
     fn a_cap_binds_only_a_chosen_extent() {
         let geo = HashMap::new();
-        let stretching = source_of(&to_placement([0.0, 0.0], [-0.0, 10.0]), 0, &geo);
-        assert!(stretching.cap_binds());
+        let fill = source_of(
+            &Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fill(), SizeValue::fixed(10.0)]),
+            ),
+            0,
+            &geo,
+        );
+        assert!(fill.cap_binds());
         assert_eq!(
-            resolve(&stretching, 100.0, 100.0, Some(30.0), None),
+            resolve(&fill, 100.0, Some(30.0), None),
             30.0,
-            "a stretching `to` is capped"
+            "a fill extent is capped"
         );
 
-        let shrinking = source_of(&to_placement([-10.0, 0.0], [40.0, 10.0]), 0, &geo);
-        assert!(!shrinking.cap_binds());
+        let authored = source_of(&to_placement([0.0, 0.0], [40.0, 10.0]), 0, &geo);
+        assert!(!authored.cap_binds());
         assert_eq!(
-            resolve(
-                &shrinking,
-                45.0,
-                available(45.0, &shrinking),
-                Some(2.0),
-                None
-            ),
-            5.0,
-            "a cap is inert on an authored shrinking `to`"
+            resolve(&authored, 100.0, Some(2.0), None),
+            40.0,
+            "a cap is inert on an authored extent"
         );
     }
 

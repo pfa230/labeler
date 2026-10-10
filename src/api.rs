@@ -796,7 +796,9 @@ pub struct ResolvedSetting {
 
 /// Request body for `PUT /settings/{key}`: the new value, validated per setting.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SettingValue {
+    #[serde(deserialize_with = "crate::models::non_null_value")]
     pub value: serde_json::Value,
 }
 
@@ -907,6 +909,7 @@ pub async fn delete_setting(
 
 /// Request body for `POST /datetime-formats/preview`.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DatetimePreviewRequest {
     pub pattern: String,
 }
@@ -1080,11 +1083,11 @@ pub struct ConnectionCreate {
     pub connector: String,
     pub name: String,
     pub base_url: String,
-    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[serde(default, deserialize_with = "crate::models::non_null")]
     #[schema(nullable = false)]
     pub public_url: Option<String>,
     // Required; optional here only so an omitted one is refused as `credential_required`.
-    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[serde(default, deserialize_with = "crate::models::non_null")]
     #[schema(nullable = false, required = true)]
     pub credential: Option<String>,
 }
@@ -1094,10 +1097,10 @@ pub struct ConnectionCreate {
 pub struct ConnectionUpdate {
     pub name: String,
     pub base_url: String,
-    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[serde(default, deserialize_with = "crate::models::non_null")]
     #[schema(nullable = false)]
     pub public_url: Option<String>,
-    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[serde(default, deserialize_with = "crate::models::non_null")]
     #[schema(nullable = false)]
     pub credential: Option<String>,
 }
@@ -1867,6 +1870,7 @@ pub async fn recent_templates(
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Credentials {
     pub username: String,
     pub password: String,
@@ -2204,6 +2208,7 @@ pub async fn delete_user_h(
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PasswordChange {
     pub current_password: String,
     pub new_password: String,
@@ -2265,6 +2270,7 @@ pub async fn change_password(
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TokenCreate {
     pub name: String,
 }

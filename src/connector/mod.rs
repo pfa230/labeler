@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use crate::egress::Egress;
-use crate::models::deserialize_some;
+use crate::models::non_null;
 use crate::store::Connection;
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -177,13 +177,13 @@ pub struct BrowseRequest {
     pub resource: String,
     #[serde(default)]
     pub filters: BTreeMap<String, FilterValue>,
-    #[serde(default, deserialize_with = "deserialize_some")]
+    #[serde(default, deserialize_with = "non_null")]
     #[schema(nullable = false)]
     pub parent: Option<BrowseParent>,
-    #[serde(default, deserialize_with = "deserialize_some")]
+    #[serde(default, deserialize_with = "non_null")]
     #[schema(value_type = u32, minimum = 1, nullable = false)]
     pub page: Option<NonZeroU32>,
-    #[serde(default, deserialize_with = "deserialize_some")]
+    #[serde(default, deserialize_with = "non_null")]
     #[schema(value_type = u32, minimum = 1, nullable = false)]
     pub page_size: Option<NonZeroU32>,
 }

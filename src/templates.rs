@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     path::{Path as FsPath, PathBuf},
 };
 use thiserror::Error;
@@ -7,8 +7,8 @@ use thiserror::Error;
 use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow, FontSize,
-    Layout, LayoutItem, ParamControl, ParamEntry, ParamSpec, ParamType, Placement, Point, Shape,
-    Size, SizeValue, Stroke, TemplateDetail, TemplateFormat, TemplateSummary,
+    Layout, LayoutItem, ParamControl, ParamEntry, ParamSpec, ParamType, Placement, Point, Size,
+    SizeValue, TemplateDetail, TemplateFormat, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -74,13 +74,13 @@ impl TemplateContent {
                     LayoutItem::Text { value, .. } | LayoutItem::Qr { value, .. } => {
                         out.push((format!("{path}.value"), value));
                     }
-                    LayoutItem::Image { src: Some(src), .. } => {
+                    LayoutItem::Image { src, .. } => {
                         out.push((format!("{path}.src"), src));
                     }
                     LayoutItem::Container { items, .. } => {
                         walk(items, &format!("{path}.items"), out);
                     }
-                    LayoutItem::Image { src: None, .. } | LayoutItem::Line { .. } => {}
+                    LayoutItem::Line { .. } => {}
                 }
             }
         }
@@ -92,6 +92,29 @@ impl TemplateContent {
                 out.push((format!("params.{name}.default"), text));
             }
         }
+        out
+    }
+
+    /// The parameters some `font_weight` references, inactive branches and `repeat:` subtrees
+    /// included: each is held to the weight rule wherever its value comes from.
+    pub fn weight_params(&self) -> std::collections::BTreeSet<&str> {
+        fn walk<'a>(items: &'a [LayoutItem], out: &mut std::collections::BTreeSet<&'a str>) {
+            for item in items {
+                match item {
+                    LayoutItem::Text {
+                        font_weight: Some(DynamicValue::Ref(name)),
+                        ..
+                    } => {
+                        out.insert(name);
+                    }
+                    LayoutItem::Container { items, .. } => walk(items, out),
+                    _ => {}
+                }
+            }
+        }
+        let Layout::Items(items) = &self.layout;
+        let mut out = std::collections::BTreeSet::new();
+        walk(items, &mut out);
         out
     }
 
@@ -113,7 +136,7 @@ impl TemplateContent {
     pub fn param_control(&self, name: &str, spec: &ParamSpec) -> ParamControl {
         fn is_whole_src(items: &[LayoutItem], token: &str) -> bool {
             items.iter().any(|item| match item {
-                LayoutItem::Image { src: Some(src), .. } => src == token,
+                LayoutItem::Image { src, .. } => src == token,
                 LayoutItem::Container { items, .. } => is_whole_src(items, token),
                 _ => false,
             })
@@ -130,7 +153,7 @@ impl TemplateContent {
                 }
             }
             ParamType::Integer => ParamControl::Integer,
-            ParamType::Number | ParamType::Length => ParamControl::Number,
+            ParamType::Number => ParamControl::Number,
             ParamType::Boolean => ParamControl::Checkbox,
             ParamType::Enum { .. } => ParamControl::Select,
             ParamType::Datetime { time: true } => ParamControl::Datetime,
@@ -161,7 +184,7 @@ impl TemplateContent {
                     }
                 }
                 ParamType::List => serde_json::json!([name]),
-                ParamType::Integer | ParamType::Number | ParamType::Length => {
+                ParamType::Integer | ParamType::Number => {
                     // An integer clamps into the whole numbers its bounds admit, which coercion
                     // compares against the same way.
                     let whole = spec.param_type == ParamType::Integer;
@@ -390,21 +413,23 @@ impl TemplateContent {
             validate_param_name(name)?;
             validate_param_spec(name, spec)?;
             if let Some(s) = spec.tokened_default() {
-                crate::interpolation::validate_default_syntax(s).map_err(|e| {
-                    format!("invalid interpolation syntax in default of parameter '{name}': {e}")
-                })?;
                 for scanned in crate::interpolation::scan_tokens(s) {
                     if let Ok(tok) = crate::interpolation::parse(scanned.raw) {
                         if matches!(tok.source, crate::interpolation::Source::Bare(_)) {
                             return Err(format!(
-                                "bare token '{}' is not allowed in a default; only namespaced tokens ({{vars.…}}, {{sys.…}}) are supported",
+                                "params.{name}.default: bare token '{}' is not allowed in a default; only namespaced tokens ({{vars.…}}, {{sys.…}}) are supported",
                                 scanned.raw
                             ));
                         }
                     }
                 }
                 let empty_repeated = std::collections::BTreeSet::new();
-                validate_interpolated_string(s, &self.params, &empty_repeated)?;
+                validate_interpolated_string(
+                    &format!("params.{name}.default"),
+                    s,
+                    &self.params,
+                    &empty_repeated,
+                )?;
             }
         }
         Ok(())
@@ -413,35 +438,19 @@ impl TemplateContent {
     pub fn validate_references(&self) -> Result<(), String> {
         match &self.format {
             TemplateFormat::Single { width, height, .. } => {
-                for (dim_name, dim) in [("width", width), ("height", height)] {
-                    match dim {
-                        DynamicDimension::Fixed(DynamicValue::Ref(r)) => {
-                            check_param_ref(
-                                &self.params,
-                                r,
-                                &format!("format {dim_name}"),
-                                &["length", "number", "integer"],
-                            )?;
-                        }
-                        DynamicDimension::Dynamic { min, max } => {
-                            if let Some(DynamicValue::Ref(r)) = min {
-                                check_param_ref(
-                                    &self.params,
-                                    r,
-                                    &format!("format {dim_name}.min"),
-                                    &["length", "number", "integer"],
-                                )?;
-                            }
-                            if let Some(DynamicValue::Ref(r)) = max {
-                                check_param_ref(
-                                    &self.params,
-                                    r,
-                                    &format!("format {dim_name}.max"),
-                                    &["length", "number", "integer"],
-                                )?;
-                            }
-                        }
-                        _ => {}
+                let width_refs = match width {
+                    DynamicDimension::Fixed(value) => vec![("format.width", Some(value))],
+                    DynamicDimension::Dynamic { min, max } => vec![
+                        ("format.width.min", min.as_ref()),
+                        ("format.width.max", max.as_ref()),
+                    ],
+                };
+                for (path, value) in width_refs
+                    .into_iter()
+                    .chain([("format.height", Some(height))])
+                {
+                    if let Some(DynamicValue::Ref(r)) = value {
+                        check_param_ref(&self.params, r, path, &["number", "integer"])?;
                     }
                 }
             }
@@ -526,8 +535,8 @@ impl TemplateContent {
                     _ => 0.0,
                 };
                 let h = match height {
-                    DynamicDimension::Fixed(DynamicValue::Literal(v)) => *v,
-                    _ => 0.0,
+                    DynamicValue::Literal(v) => *v,
+                    DynamicValue::Ref(_) => 0.0,
                 };
                 let is_dynamic = matches!(width, DynamicDimension::Dynamic { .. });
                 (Some((w, h)), [!is_dynamic, true])
@@ -540,7 +549,6 @@ impl TemplateContent {
             axes_resolved,
             &geometry_values,
         )?;
-        validate_circle_containers(&self.layout, &geometry_values)?;
 
         if let TemplateFormat::Single {
             media_width: Some(mw),
@@ -587,7 +595,11 @@ impl TemplateContent {
             }
             TemplateFormat::Single { width, height, .. } => {
                 validate_dimension("width", width)?;
-                validate_dimension("height", height)?;
+                if let DynamicValue::Literal(height) = height {
+                    if *height <= 0.0 {
+                        return Err("height must be greater than 0".to_string());
+                    }
+                }
             }
         }
 
@@ -635,14 +647,13 @@ fn validate_param_spec(name: &str, spec: &ParamSpec) -> Result<(), String> {
 fn check_param_ref(
     params: &indexmap::IndexMap<String, ParamSpec>,
     name: &str,
-    context: &str,
+    path: &str,
     allowed_types: &[&str],
 ) -> Result<(), String> {
     let spec = params
         .get(name)
-        .ok_or_else(|| format!("undeclared parameter '{name}' referenced in {context}"))?;
+        .ok_or_else(|| format!("{path}: undeclared parameter '{name}'"))?;
     let matches_type = match &spec.param_type {
-        ParamType::Length => allowed_types.contains(&"length"),
         ParamType::Number => allowed_types.contains(&"number"),
         ParamType::Integer => allowed_types.contains(&"integer"),
         ParamType::String { .. } => allowed_types.contains(&"string"),
@@ -653,14 +664,12 @@ fn check_param_ref(
     };
     if !matches_type {
         return Err(format!(
-            "parameter '{name}' of type {:?} cannot be used in {context}",
+            "{path}: parameter '{name}' of type {:?} cannot be used here",
             spec.param_type
         ));
     }
     if spec.default.is_none() {
-        return Err(format!(
-            "parameter '{name}' referenced in {context} must declare a default"
-        ));
+        return Err(format!("{path}: parameter '{name}' must declare a default"));
     }
     Ok(())
 }
@@ -673,18 +682,19 @@ fn validate_when_references(
 ) -> Result<(), String> {
     if let Some(when) = when {
         for (name, val) in when {
-            let spec = params.get(name).ok_or_else(|| {
-                format!("undeclared parameter '{name}' referenced in when condition")
-            })?;
+            let key_path = format!("{path}.when.{name}");
+            let spec = params
+                .get(name)
+                .ok_or_else(|| format!("{key_path}: undeclared parameter '{name}'"))?;
             if matches!(spec.param_type, ParamType::List) && !repeated_names.contains(name) {
                 return Err(format!(
-                    "when condition at {path} references list parameter '{name}'; list parameters cannot be used in when conditions"
+                    "{key_path}: references list parameter '{name}'; list parameters cannot be used in when conditions"
                 ));
             }
             if let ParamType::Enum { values } = &spec.param_type {
                 if !values.iter().any(|v| v == val) {
                     return Err(format!(
-                        "when condition for '{name}' references '{val}' which is not in enum values"
+                        "{key_path}: '{val}' is not in the enum values of '{name}'"
                     ));
                 }
             }
@@ -693,47 +703,26 @@ fn validate_when_references(
     Ok(())
 }
 
+/// Judge the interpolated string `s` read at `path` (`interpolation`): its literal braces, each
+/// token's syntax, and what each token may name. Every refusal is prefixed with `path`.
 fn validate_interpolated_string(
+    path: &str,
     s: &str,
     params: &indexmap::IndexMap<String, ParamSpec>,
     repeated_names: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
+    check_interpolated_string(s, params, repeated_names).map_err(|err| format!("{path}: {err}"))
+}
+
+fn check_interpolated_string(
+    s: &str,
+    params: &indexmap::IndexMap<String, ParamSpec>,
+    repeated_names: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    crate::interpolation::validate_braces(s)
+        .map_err(|err| format!("template contains '{s}': {err}"))?;
     for scanned in crate::interpolation::scan_tokens(s) {
-        let token = match crate::interpolation::parse(scanned.raw) {
-            Ok(tok) => tok,
-            Err(crate::interpolation::TokenError::UnknownSource {
-                token: tok_str,
-                source,
-            }) => {
-                if let Some(spec) = params.get(&source) {
-                    if matches!(spec.param_type, crate::models::ParamType::Datetime { .. }) {
-                        let inner = scanned
-                            .raw
-                            .strip_prefix('{')
-                            .unwrap_or(scanned.raw)
-                            .strip_suffix('}')
-                            .unwrap_or(scanned.raw);
-                        if let Some(key) = inner.strip_prefix(&format!("{source}.")) {
-                            if !key.is_empty()
-                                && !key.contains('.')
-                                && !key.contains(':')
-                                && crate::interpolation::is_valid_ident(key)
-                            {
-                                return Err(format!(
-                                    "template contains '{tok_str}': unknown source '{source}'; use '{{{source}:{key}}}' instead"
-                                ));
-                            }
-                        }
-                    }
-                }
-                return Err(crate::interpolation::TokenError::UnknownSource {
-                    token: tok_str,
-                    source,
-                }
-                .to_string());
-            }
-            Err(e) => return Err(e.to_string()),
-        };
+        let token = crate::interpolation::parse(scanned.raw).map_err(|err| err.to_string())?;
         if let crate::interpolation::Source::Bare(name) = &token.source {
             if !params.contains_key(*name) {
                 return Err(format!(
@@ -822,144 +811,41 @@ fn validate_item_references(
     path: &str,
     repeated_names: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
-    match item {
-        LayoutItem::Text {
-            value,
-            placement,
-            font_weight,
-            color,
-            line_spacing,
-            when,
-            ..
-        } => {
-            validate_when_references(when.as_ref(), params, path, repeated_names)?;
-            validate_interpolated_string(value, params, repeated_names)?;
-            if let Some(DynamicValue::Ref(ref_name)) = font_weight {
-                check_param_ref(params, ref_name, "font_weight", &["integer"])?;
-            }
-            if let Some(DynamicValue::Ref(ref_name)) = color {
-                check_param_ref(params, ref_name, "color", &["string", "enum"])?;
-            }
-            if let Some(DynamicValue::Ref(ref_name)) = line_spacing {
+    validate_when_references(item.when(), params, path, repeated_names)?;
+    if let Some(Extent::Size(size)) = item.placement().map(|placement| &placement.extent) {
+        for (axis, sv) in size.0.iter().enumerate() {
+            if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
                 check_param_ref(
                     params,
                     ref_name,
-                    &format!("{path}.line_spacing"),
+                    &format!("{path}.size[{axis}]"),
                     &["number", "integer"],
                 )?;
             }
-            if let Extent::Size(size) = &placement.extent {
-                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
-                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
-                        check_param_ref(
-                            params,
-                            ref_name,
-                            &format!("text {axis}"),
-                            &["length", "number", "integer"],
-                        )?;
-                    }
-                }
-            }
         }
-        LayoutItem::Qr {
-            value,
-            placement,
-            when,
-            ..
+    }
+    match item {
+        LayoutItem::Text {
+            value, font_weight, ..
         } => {
-            validate_when_references(when.as_ref(), params, path, repeated_names)?;
-            validate_interpolated_string(value, params, repeated_names)?;
-            if let Extent::Size(size) = &placement.extent {
-                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
-                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
-                        check_param_ref(
-                            params,
-                            ref_name,
-                            &format!("qr {axis}"),
-                            &["length", "number", "integer"],
-                        )?;
-                    }
-                }
+            validate_interpolated_string(&format!("{path}.value"), value, params, repeated_names)?;
+            if let Some(DynamicValue::Ref(ref_name)) = font_weight {
+                check_param_ref(
+                    params,
+                    ref_name,
+                    &format!("{path}.font_weight"),
+                    &["integer"],
+                )?;
             }
         }
-        LayoutItem::Image {
-            name,
-            src,
-            placement,
-            when,
-            ..
-        } => {
-            validate_when_references(when.as_ref(), params, path, repeated_names)?;
-            if let Some(n) = name {
-                if n.is_empty()
-                    || !n
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                {
-                    return Err(format!(
-                        "image name '{n}' contains invalid characters; must match ^[a-zA-Z0-9_-]+$"
-                    ));
-                }
-                check_param_ref(params, n, "image name", &["string"])?;
-            }
-            if let Some(s) = src {
-                validate_interpolated_string(s, params, repeated_names)?;
-            }
-            if let Extent::Size(size) = &placement.extent {
-                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
-                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
-                        check_param_ref(
-                            params,
-                            ref_name,
-                            &format!("image {axis}"),
-                            &["length", "number", "integer"],
-                        )?;
-                    }
-                }
-            }
+        LayoutItem::Qr { value, .. } => {
+            validate_interpolated_string(&format!("{path}.value"), value, params, repeated_names)?;
         }
-        LayoutItem::Line { stroke, when, .. } => {
-            validate_when_references(when.as_ref(), params, path, repeated_names)?;
-            if let Some(Stroke {
-                color: DynamicValue::Ref(ref_name),
-                ..
-            }) = stroke
-            {
-                check_param_ref(params, ref_name, "stroke.color", &["string", "enum"])?;
-            }
+        LayoutItem::Image { src, .. } => {
+            validate_interpolated_string(&format!("{path}.src"), src, params, repeated_names)?;
         }
-        LayoutItem::Container {
-            placement,
-            when,
-            stroke,
-            background,
-            repeat,
-            items,
-            ..
-        } => {
-            validate_when_references(when.as_ref(), params, path, repeated_names)?;
-            if let Some(Stroke {
-                color: DynamicValue::Ref(ref_name),
-                ..
-            }) = stroke
-            {
-                check_param_ref(params, ref_name, "stroke.color", &["string", "enum"])?;
-            }
-            if let Some(DynamicValue::Ref(ref_name)) = background {
-                check_param_ref(params, ref_name, "background", &["string", "enum"])?;
-            }
-            if let Extent::Size(size) = &placement.extent {
-                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
-                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
-                        check_param_ref(
-                            params,
-                            ref_name,
-                            &format!("container {axis}"),
-                            &["length", "number", "integer"],
-                        )?;
-                    }
-                }
-            }
+        LayoutItem::Line { .. } => {}
+        LayoutItem::Container { repeat, items, .. } => {
             let mut child_repeated = repeated_names.clone();
             if let Some(r) = repeat {
                 child_repeated.insert(r.clone());
@@ -1006,18 +892,6 @@ fn resolve_f32_default(params: &indexmap::IndexMap<String, ParamSpec>, name: &st
     }
 }
 
-fn resolve_u16_default(params: &indexmap::IndexMap<String, ParamSpec>, name: &str) -> u16 {
-    if let Some(spec) = params.get(name) {
-        match &spec.default {
-            Some(crate::models::ParamValue::Integer(i)) => *i as u16,
-            Some(crate::models::ParamValue::Float(f)) => *f as u16,
-            _ => 400,
-        }
-    } else {
-        400
-    }
-}
-
 fn instantiate_format_defaults(
     format: &TemplateFormat,
     params: &indexmap::IndexMap<String, ParamSpec>,
@@ -1056,7 +930,10 @@ fn instantiate_format_defaults(
             };
             TemplateFormat::Single {
                 width: inst_dim(width),
-                height: inst_dim(height),
+                height: DynamicValue::Literal(match height {
+                    DynamicValue::Literal(v) => *v,
+                    DynamicValue::Ref(r) => resolve_f32_default(params, r),
+                }),
                 media_width: *media_width,
             }
         }
@@ -1118,43 +995,39 @@ fn instantiate_item_defaults(
             alignment,
             overflow,
             when,
-        } => {
-            let fw = font_weight.as_ref().map(|w| match w {
-                DynamicValue::Literal(v) => DynamicValue::Literal(*v),
-                DynamicValue::Ref(r) => DynamicValue::Literal(resolve_u16_default(params, r)),
-            });
-            LayoutItem::Text {
-                value: value.clone(),
-                placement: inst_placement(placement),
-                font_size: font_size.clone(),
-                font_weight: fw,
-                color: color.clone(),
-                wrap: *wrap,
-                line_spacing: line_spacing.clone(),
-                alignment: alignment.clone(),
-                overflow: *overflow,
-                when: when.clone(),
-            }
-        }
+        } => LayoutItem::Text {
+            value: value.clone(),
+            placement: inst_placement(placement),
+            font_size: font_size.clone(),
+            font_weight: font_weight.clone(),
+            color: color.clone(),
+            wrap: *wrap,
+            line_spacing: *line_spacing,
+            alignment: alignment.clone(),
+            overflow: *overflow,
+            when: when.clone(),
+        },
         LayoutItem::Qr {
             value,
             placement,
-            params: qr_params,
+            error_correction,
+            module_size,
+            quiet_zone,
             when,
         } => LayoutItem::Qr {
             value: value.clone(),
             placement: inst_placement(placement),
-            params: qr_params.clone(),
+            error_correction: *error_correction,
+            module_size: *module_size,
+            quiet_zone: *quiet_zone,
             when: when.clone(),
         },
         LayoutItem::Image {
-            name,
             src,
             placement,
             fit,
             when,
         } => LayoutItem::Image {
-            name: name.clone(),
             src: src.clone(),
             placement: inst_placement(placement),
             fit: *fit,
@@ -1240,98 +1113,50 @@ fn validate_layout(
     geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     match layout {
-        Layout::Items(items) => validate_layout_items(items, frame, axes_resolved, geometry_values),
+        Layout::Items(items) => {
+            validate_layout_items(items, "layout", frame, axes_resolved, geometry_values)
+        }
     }
 }
 
+/// Validates `items`, the sequence at `path_prefix`; every refusal is prefixed with the path to
+/// the offending key.
 fn validate_layout_items(
     items: &[LayoutItem],
+    path_prefix: &str,
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
     geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
-    let mut seen_names = HashSet::new();
-    for item in items {
-        if let Some(name) = layout_item_name(item) {
-            if name.trim().is_empty() {
-                return Err("layout item name must not be empty".to_string());
-            }
-            if !seen_names.insert(name.to_string()) {
-                return Err(format!("duplicate layout item name '{}'", name));
-            }
-        }
-        validate_layout_item(item, frame, axes_resolved, geometry_values)?;
+    for (idx, item) in items.iter().enumerate() {
+        validate_layout_item(
+            item,
+            &format!("{path_prefix}[{idx}]"),
+            frame,
+            axes_resolved,
+            geometry_values,
+        )?;
     }
     Ok(())
-}
-
-fn validate_circle_containers(
-    layout: &Layout,
-    geometry_values: &HashMap<String, f32>,
-) -> Result<(), String> {
-    let Layout::Items(items) = layout;
-    for item in items {
-        validate_circle_item(item, geometry_values)?;
-    }
-    Ok(())
-}
-
-fn validate_circle_item(
-    item: &LayoutItem,
-    geometry_values: &HashMap<String, f32>,
-) -> Result<(), String> {
-    if let LayoutItem::Container {
-        placement,
-        shape,
-        items,
-        ..
-    } = item
-    {
-        let spec_0 = resolver::source_of(placement, 0, geometry_values);
-        let spec_1 = resolver::source_of(placement, 1, geometry_values);
-        if matches!(shape, Shape::Circle) && spec_0.fixed_by_template && spec_1.fixed_by_template {
-            let w = resolver::resolve(&spec_0, 0.0, 0.0, placement.max_w, None);
-            let h = resolver::resolve(&spec_1, 0.0, 0.0, placement.max_h, None);
-            if (w - h).abs() > resolver::BOUNDS_EPSILON {
-                return Err("circle container size must be square".to_string());
-            }
-        }
-        for child in items {
-            validate_circle_item(child, geometry_values)?;
-        }
-    }
-    Ok(())
-}
-
-fn layout_item_name(item: &LayoutItem) -> Option<&str> {
-    match item {
-        LayoutItem::Image { name, .. } => name.as_deref(),
-        LayoutItem::Text { .. }
-        | LayoutItem::Qr { .. }
-        | LayoutItem::Line { .. }
-        | LayoutItem::Container { .. } => None,
-    }
 }
 
 fn validate_layout_item(
     item: &LayoutItem,
+    path: &str,
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
     geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
+    let at_key = |key: &str, msg: &str| format!("{path}.{key}: {msg}");
+    validate_when(item.when()).map_err(|msg| at_key("when", &msg))?;
     match item {
-        LayoutItem::Line {
-            at,
-            to,
-            stroke,
-            when,
-        } => {
-            validate_when(when.as_ref())?;
+        LayoutItem::Line { at, to, stroke, .. } => {
             const LINE_EPSILON: f32 = 1.0e-4;
-            if let Some(stroke) = stroke {
-                if !stroke.thickness.is_finite() || stroke.thickness < 0.0001 {
-                    return Err("stroke thickness must be finite and >= 0.0001".to_string());
-                }
+            if !stroke.thickness.is_finite() || stroke.thickness < 0.0001 {
+                return Err(at_key(
+                    "stroke.thickness",
+                    "stroke thickness must be finite and >= 0.0001",
+                ));
             }
             let (start, end) = match frame {
                 Some((fw, fh)) => (
@@ -1353,15 +1178,16 @@ fn validate_layout_item(
             let same_x = x_comparable && (start.x - end.x).abs() < LINE_EPSILON;
             let same_y = y_comparable && (start.y - end.y).abs() < LINE_EPSILON;
             if same_x && same_y {
-                return Err("line start and end must differ".to_string());
+                return Err(format!("{path}: line start and end must differ"));
             }
             if let Some((fw, fh)) = frame {
-                for point in [start, end] {
-                    if point.x < -LINE_EPSILON || point.y < -LINE_EPSILON {
-                        return Err("line must fit within layout bounds".to_string());
-                    }
-                    if point.x > fw + LINE_EPSILON || point.y > fh + LINE_EPSILON {
-                        return Err("line must fit within layout bounds".to_string());
+                for (key, point) in [("at", start), ("to", end)] {
+                    if point.x < -LINE_EPSILON
+                        || point.y < -LINE_EPSILON
+                        || point.x > fw + LINE_EPSILON
+                        || point.y > fh + LINE_EPSILON
+                    {
+                        return Err(at_key(key, "line must fit within layout bounds"));
                     }
                 }
             }
@@ -1371,56 +1197,47 @@ fn validate_layout_item(
             placement,
             font_size,
             font_weight,
-            line_spacing,
-            when,
             ..
         } => {
             if value.trim().is_empty() {
-                return Err("text value must not be empty".to_string());
+                return Err(at_key("value", "text value must not be empty"));
             }
-            validate_when(when.as_ref())?;
-            validate_font_weight(font_weight.as_ref())?;
-            validate_line_spacing(line_spacing.as_ref())?;
-            validate_font_size(font_size)?;
-            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
+            validate_font_weight(font_weight.as_ref())
+                .map_err(|msg| at_key("font_weight", &msg))?;
+            validate_font_size(font_size).map_err(|msg| at_key("font_size", &msg))?;
+            validate_placement(placement, path, false, frame, geometry_values)?;
         }
         LayoutItem::Qr {
             placement,
-            params,
-            when,
+            module_size,
+            quiet_zone,
             ..
         } => {
-            validate_when(when.as_ref())?;
-            if let Some(params) = params {
-                if let Some(module_size) = params.module_size {
-                    if module_size <= 0.0 {
-                        return Err("qr module_size must be greater than 0".to_string());
-                    }
-                }
-                if let Some(quiet_zone) = params.quiet_zone {
-                    if quiet_zone < 0.0 {
-                        return Err("qr quiet_zone must be >= 0".to_string());
-                    }
-                }
+            if module_size.is_some_and(|module_size| module_size <= 0.0) {
+                return Err(at_key(
+                    "module_size",
+                    "qr module_size must be greater than 0",
+                ));
+            }
+            if *quiet_zone < 0.0 {
+                return Err(at_key("quiet_zone", "qr quiet_zone must be >= 0"));
             }
             let spec_0 = resolver::source_of(placement, 0, geometry_values);
             let spec_1 = resolver::source_of(placement, 1, geometry_values);
-            if (spec_0.demands_intrinsic() || spec_1.demands_intrinsic())
-                && params.as_ref().and_then(|p| p.module_size).is_none()
-            {
-                return Err("qr content or fill extent requires module_size".to_string());
+            if (spec_0.demands_intrinsic() || spec_1.demands_intrinsic()) && module_size.is_none() {
+                return Err(at_key(
+                    "module_size",
+                    "qr content or fill extent requires module_size",
+                ));
             }
-            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
+            validate_placement(placement, path, false, frame, geometry_values)?;
         }
-        LayoutItem::Image {
-            placement, when, ..
-        } => {
-            validate_when(when.as_ref())?;
-            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
+        LayoutItem::Image { placement, .. } => {
+            validate_placement(placement, path, false, frame, geometry_values)?;
         }
         LayoutItem::Container {
             placement,
-            when,
+            when: _,
             shape: _,
             stroke,
             background: _,
@@ -1430,23 +1247,28 @@ fn validate_layout_item(
             repeat: _,
             items,
         } => {
-            validate_when(when.as_ref())?;
             if let Some(s) = stroke {
                 if !s.thickness.is_finite() || s.thickness < 0.0001 {
-                    return Err("stroke thickness must be finite and >= 0.0001".to_string());
+                    return Err(at_key(
+                        "stroke.thickness",
+                        "stroke thickness must be finite and >= 0.0001",
+                    ));
                 }
             }
             if let Some(r) = rounded {
                 if !r.is_finite() || *r < 0.0001 {
-                    return Err("rounded radius must be finite and >= 0.0001".to_string());
+                    return Err(at_key(
+                        "rounded",
+                        "rounded radius must be finite and >= 0.0001",
+                    ));
                 }
             }
             if let Some(fl) = flow {
                 if !fl.gap.is_finite() || fl.gap < 0.0 {
-                    return Err("flow gap must be >= 0".to_string());
+                    return Err(at_key("flow.gap", "flow gap must be >= 0"));
                 }
             }
-            validate_placement(placement, true, frame, axes_resolved, geometry_values)?;
+            validate_placement(placement, path, true, frame, geometry_values)?;
 
             // The frame validation runs against is the declared-default one, so the geometry the
             // children see is the resolver's, unmeasured, exactly as it is at render.
@@ -1462,12 +1284,18 @@ fn validate_layout_item(
                     FlowDirection::Column => 1,
                 };
                 if flow.wrap && !child_axes_resolved[primary_axis] {
-                    return Err("flow wrap requires a resolved primary axis".to_string());
+                    return Err(at_key(
+                        "flow.wrap",
+                        "flow wrap requires a resolved primary axis",
+                    ));
                 }
                 if matches!(flow.overflow, FlowOverflow::Trim)
                     && child_axes_resolved.iter().any(|resolved| !resolved)
                 {
-                    return Err("flow overflow trim requires both axes to be resolved".to_string());
+                    return Err(at_key(
+                        "flow.overflow",
+                        "flow overflow trim requires both axes to be resolved",
+                    ));
                 }
             }
 
@@ -1483,93 +1311,96 @@ fn validate_layout_item(
                     if geometry.inner.0 <= resolver::BOUNDS_EPSILON
                         || geometry.inner.1 <= resolver::BOUNDS_EPSILON
                     {
-                        return Err("container padding leaves no room for content".to_string());
+                        return Err(at_key(
+                            "padding",
+                            "container padding leaves no room for content",
+                        ));
                     }
                     Some(geometry.inner)
                 }
                 None => None,
             };
 
-            validate_layout_items(items, child_frame, child_axes_resolved, geometry_values)?;
+            validate_layout_items(
+                items,
+                &format!("{path}.items"),
+                child_frame,
+                child_axes_resolved,
+                geometry_values,
+            )?;
         }
     }
     Ok(())
 }
 
+/// Validates the placement of the item at `path`; every refusal is prefixed with the path to the
+/// offending key.
 fn validate_placement(
     placement: &Placement,
+    path: &str,
     is_container: bool,
     frame: Option<(f32, f32)>,
-    axes_resolved: [bool; 2],
     geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
-    validate_rotation(&placement.rotate, is_container)?;
+    validate_rotation(&placement.rotate, is_container)
+        .map_err(|msg| format!("{path}.rotate: {msg}"))?;
 
-    if let Some(max_w) = placement.max_w {
-        if max_w <= 0.0 {
-            return Err("max_w must be greater than 0".to_string());
-        }
-    }
-    if let Some(max_h) = placement.max_h {
-        if max_h <= 0.0 {
-            return Err("max_h must be greater than 0".to_string());
-        }
-    }
-
-    for (axis, &is_resolved) in axes_resolved.iter().enumerate() {
-        let spec = resolver::source_of(placement, axis, geometry_values);
-        if spec.is_shrinking_to() && !is_resolved {
-            return Err("extent shrinks as the label grows".to_string());
+    for (key, cap) in [("max_w", placement.max_w), ("max_h", placement.max_h)] {
+        if cap.is_some_and(|cap| cap <= 0.0) {
+            return Err(format!("{path}.{key}: {key} must be greater than 0"));
         }
     }
 
     // Every remaining rule about where a box lands is the resolver's, so load reports the same
     // refusals render does; only the words differ.
+    let located = |violation| violation_message(path, violation);
     match frame {
         Some(frame) => {
             if placement.at.is_none() {
                 resolver::resolve_packed(placement, frame, geometry_values, [None, None])
                     .map(|_| ())
-                    .map_err(violation_message)
+                    .map_err(located)
             } else {
                 resolver::place(placement, frame, geometry_values, [None, None])
                     .map(|_| ())
-                    .map_err(violation_message)
+                    .map_err(located)
             }
         }
-        None => resolver::precheck(placement, None, geometry_values).map_err(violation_message),
+        None => resolver::precheck(placement, None, geometry_values).map_err(located),
     }
 }
 
-/// How load words a resolver [`Violation`]. Load has no reason slugs, so the mapping is a table of
-/// messages and nothing else; the rule that produced the violation lives in the resolver.
-fn violation_message(violation: resolver::Violation) -> String {
+/// How load words a resolver [`Violation`] for the item at `path`, naming the key it faults where
+/// there is one. Load has no reason slugs, so the mapping is a table of messages and nothing else;
+/// the rule that produced the violation lives in the resolver.
+fn violation_message(path: &str, violation: resolver::Violation) -> String {
     let label = if violation.axis() == 0 {
         "width"
     } else {
         "height"
     };
-    let inverted = || "to must be above and to the right of at".to_string();
-    match violation {
+    let inverted = || (".to", "to must be above and to the right of at".to_string());
+    let (key, msg) = match violation {
         resolver::Violation::AnchorBeforeFrame { .. }
         | resolver::Violation::AnchorBeyondFrame { .. } => {
-            "at resolves outside the frame".to_string()
+            (".at", "at resolves outside the frame".to_string())
         }
         resolver::Violation::AuthoredExtentNotPositive { written_as_to, .. } => {
             if written_as_to {
                 inverted()
             } else {
-                format!("size {label} must be greater than 0")
+                (".size", format!("size {label} must be greater than 0"))
             }
         }
         resolver::Violation::ExtentInverted { .. } => inverted(),
         resolver::Violation::ExtentNegative { .. } => {
-            format!("size {label} must be greater than 0")
+            (".size", format!("size {label} must be greater than 0"))
         }
         resolver::Violation::ExtentBeyondFrame { .. } => {
-            "item does not fit within layout bounds".to_string()
+            ("", "item does not fit within layout bounds".to_string())
         }
-    }
+    };
+    format!("{path}{key}: {msg}")
 }
 
 fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), String> {
@@ -1603,22 +1434,11 @@ fn validate_when(when: Option<&std::collections::BTreeMap<String, String>>) -> R
 /// any route — including the many built directly in tests — is checked.
 fn validate_font_weight(font_weight: Option<&DynamicValue<u16>>) -> Result<(), String> {
     match font_weight {
-        Some(DynamicValue::Literal(weight))
-            if !(100..=900).contains(weight) || weight % 100 != 0 =>
-        {
+        Some(DynamicValue::Literal(weight)) if !crate::models::font_weight_ok((*weight).into()) => {
             Err(format!(
                 "font_weight must be a multiple of 100 between 100 and 900, got {weight}"
             ))
         }
-        _ => Ok(()),
-    }
-}
-
-fn validate_line_spacing(line_spacing: Option<&DynamicValue<f32>>) -> Result<(), String> {
-    match line_spacing {
-        Some(DynamicValue::Literal(spacing)) if !spacing.is_finite() || *spacing <= 0.0 => Err(
-            format!("line_spacing must be a finite number greater than 0, got {spacing}"),
-        ),
         _ => Ok(()),
     }
 }
@@ -1631,7 +1451,7 @@ fn validate_font_size(font_size: &FontSize) -> Result<(), String> {
             }
         }
         FontSize::Range { min, max } => {
-            if *min <= 0.0 || *max <= 0.0 {
+            if [min, max].iter().any(|bound| **bound <= 0.0) {
                 return Err("font_size min/max must be greater than 0".to_string());
             }
             if min > max {
@@ -1727,8 +1547,7 @@ mod tests {
     use crate::errors::TemplateError;
     use crate::models::{
         Alignment, Color, Dimension, DynamicDimension, DynamicValue, FontSize, Layout, LayoutItem,
-        ParamControl, ParamSpec, ParamType, Position, Shape, Size, SizeValue, Stroke,
-        TemplateFormat,
+        ParamControl, Position, Shape, Size, SizeValue, Stroke, TemplateFormat,
     };
     use indexmap::IndexMap;
     use serde_json::json;
@@ -1811,39 +1630,39 @@ mod tests {
         assert!(parse_and_validate(yaml_line_rnd).is_err());
 
         // Container stroke thickness 0.0001 accepted
-        let yaml_cont_ok = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.0001\n    items: []\n";
+        let yaml_cont_ok = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n      thickness: 0.0001\n    items: []\n";
         assert!(parse_and_validate(yaml_cont_ok).is_ok());
 
         // Container stroke thickness 0.00001 rejected
-        let yaml_cont_err = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.00001\n    items: []\n";
+        let yaml_cont_err = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n      thickness: 0.00001\n    items: []\n";
         assert!(parse_and_validate(yaml_cont_err).is_err());
 
         // Container stroke thickness nan rejected
-        let yaml_cont_nan = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: .nan\n    items: []\n";
+        let yaml_cont_nan = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n      thickness: .nan\n    items: []\n";
         assert!(parse_and_validate(yaml_cont_nan).is_err());
 
         // Container stroke thickness inf rejected
-        let yaml_cont_inf = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: .inf\n    items: []\n";
+        let yaml_cont_inf = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n      thickness: .inf\n    items: []\n";
         assert!(parse_and_validate(yaml_cont_inf).is_err());
 
         // Container rounded 0.0001 accepted
-        let yaml_rnd_ok = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0.0001\n    items: []\n";
+        let yaml_rnd_ok = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    rounded: 0.0001\n    items: []\n";
         assert!(parse_and_validate(yaml_rnd_ok).is_ok());
 
         // Container rounded 0.00001 rejected
-        let yaml_rnd_err = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0.00001\n    items: []\n";
+        let yaml_rnd_err = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    rounded: 0.00001\n    items: []\n";
         assert!(parse_and_validate(yaml_rnd_err).is_err());
 
         // Container rounded nan rejected
-        let yaml_rnd_nan = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: .nan\n    items: []\n";
+        let yaml_rnd_nan = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    rounded: .nan\n    items: []\n";
         assert!(parse_and_validate(yaml_rnd_nan).is_err());
 
         // Container rounded inf rejected
-        let yaml_rnd_inf = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: .inf\n    items: []\n";
+        let yaml_rnd_inf = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    rounded: .inf\n    items: []\n";
         assert!(parse_and_validate(yaml_rnd_inf).is_err());
 
         // Unknown keys inside stroke rejected
-        let yaml_stroke_unknown = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 1.0\n      width: 2.0\n    items: []\n";
+        let yaml_stroke_unknown = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n      thickness: 1.0\n      width: 2.0\n    items: []\n";
         assert!(parse_and_validate(yaml_stroke_unknown).is_err());
 
         // Shape attributes rejected on text
@@ -1867,13 +1686,13 @@ mod tests {
         assert!(parse_and_validate(yaml_qr_rnd).is_err());
 
         // Shape attributes rejected on image
-        let yaml_img_stroke = "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: logo\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 1.0\n";
+        let yaml_img_stroke = "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: logo\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    src: \"{logo}\"\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 1.0\n";
         assert!(parse_and_validate(yaml_img_stroke).is_err());
 
-        let yaml_img_bg = "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: logo\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    background: red\n";
+        let yaml_img_bg = "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: logo\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    src: \"{logo}\"\n    at: [0,0]\n    size: [10,10]\n    background: red\n";
         assert!(parse_and_validate(yaml_img_bg).is_err());
 
-        let yaml_img_rnd = "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: logo\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    rounded: 1.0\n";
+        let yaml_img_rnd = "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: logo\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    src: \"{logo}\"\n    at: [0,0]\n    size: [10,10]\n    rounded: 1.0\n";
         assert!(parse_and_validate(yaml_img_rnd).is_err());
     }
 
@@ -1887,7 +1706,7 @@ mod tests {
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(50.0).into(),
-                height: Dimension::Fixed(30.0).into(),
+                height: 30.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -1899,10 +1718,10 @@ mod tests {
             base_template(vec![LayoutItem::Line {
                 at: Position([0.0, 0.0]),
                 to: Position([10.0, 10.0]),
-                stroke: Some(Stroke {
+                stroke: Stroke {
                     thickness,
-                    color: DynamicValue::Literal(Color::black()),
-                }),
+                    color: Color::black(),
+                },
                 when: None,
             }])
         };
@@ -1913,15 +1732,6 @@ mod tests {
         assert!(line_with_stroke(-1.0).validate().is_err());
         assert!(line_with_stroke(f32::NAN).validate().is_err());
         assert!(line_with_stroke(f32::INFINITY).validate().is_err());
-
-        // Line with no stroke is valid
-        let line_no_stroke = base_template(vec![LayoutItem::Line {
-            at: Position([0.0, 0.0]),
-            to: Position([10.0, 10.0]),
-            stroke: None,
-            when: None,
-        }]);
-        assert!(line_no_stroke.validate().is_ok());
 
         // 2. Container stroke validation on model directly
         let container_with_stroke = |thickness: f32| {
@@ -1934,7 +1744,7 @@ mod tests {
                 shape: Shape::Rect,
                 stroke: Some(Stroke {
                     thickness,
-                    color: DynamicValue::Literal(Color::black()),
+                    color: Color::black(),
                 }),
                 background: None,
                 rounded: None,
@@ -1994,6 +1804,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     stroke:
       thickness: 0.2
@@ -2012,6 +1823,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     frame:
       thickness: 0.02
@@ -2033,6 +1845,7 @@ layout:
   - type: line
     at: [0, 0]
     to: [10, 10]
+    stroke: { thickness: 0.2 }
     thickness: 0.2
 "#;
         write_template(&dir, "bare_line_thickness.yaml", line_thickness_yaml);
@@ -2048,6 +1861,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     rounded: true
     items: []
@@ -2065,6 +1879,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     rounded: false
     items: []
@@ -2137,6 +1952,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     stroke:
       thickness: 0.2
@@ -2197,6 +2013,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     stroke:
       thickness: 0.2
@@ -2218,6 +2035,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     option:
       orientation: vertical
@@ -2245,189 +2063,6 @@ layout:
                 && broken_entry.error.contains("unknown field `option`"),
             "expected layout[0] and 'unknown field `option`' in error: {}",
             broken_entry.error
-        );
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn circle_container_load_time_squareness_and_quarantine() {
-        let dir = temp_dir("circle_container_load");
-
-        // 1. Non-square fixed size [14, 12] quarantines naming size
-        let non_square_yaml = r#"
-name: NonSquareCircle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 50
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: [14, 12]
-    items: []
-"#;
-        write_template(&dir, "non_square_circle.yaml", non_square_yaml);
-
-        // 2. size: [content, content] loads without quarantine
-        let content_circle_yaml = r#"
-name: ContentCircle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 30
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: [content, content]
-    items: []
-"#;
-        write_template(&dir, "content_circle.yaml", content_circle_yaml);
-
-        // 3. size: ["{w}", 12] loads without quarantine
-        let param_circle_yaml = r#"
-name: ParamCircle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 50
-params:
-  - name: w
-    type: length
-    default: 14
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: ["{w}", 12]
-    items: []
-"#;
-        write_template(&dir, "param_circle.yaml", param_circle_yaml);
-
-        // 4. Shrinking to loads without quarantine
-        let shrinking_circle_yaml = r#"
-name: ShrinkingCircle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 50
-layout:
-  - type: container
-    at: [-20, 0]
-    shape: circle
-    to: [40, 10]
-    items: []
-"#;
-        write_template(&dir, "shrinking_circle.yaml", shrinking_circle_yaml);
-
-        // 5. Circle fixed by template with non-square size is refused even with false when
-        let when_circle_yaml = r#"
-name: WhenCircle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 50
-params:
-  - name: badge
-    type: enum
-    values: [yes, no]
-    default: no
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: [14, 12]
-    when: { badge: yes }
-    items: []
-"#;
-        write_template(&dir, "when_circle.yaml", when_circle_yaml);
-
-        // 6. at: [0.2, 0.0] with to: [0.3, 0.1] loads (diff < 0.0001)
-        let tolerance_ok_yaml = r#"
-name: ToleranceOkCircle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 50
-layout:
-  - type: container
-    at: [0.2, 0.0]
-    shape: circle
-    to: [0.3, 0.1]
-    items: []
-"#;
-        write_template(&dir, "tolerance_ok_circle.yaml", tolerance_ok_yaml);
-
-        // 7. Difference of 0.001 is refused at load
-        let diff_001_yaml = r#"
-name: Diff001Circle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 50
-layout:
-  - type: container
-    at: [0.2, 0.0]
-    shape: circle
-    to: [0.301, 0.1]
-    items: []
-"#;
-        write_template(&dir, "diff_001_circle.yaml", diff_001_yaml);
-
-        let registry = TemplateRegistry::load_from_dir(&dir).unwrap();
-
-        // 4 templates must load successfully
-        assert!(registry.get("content_circle").is_some());
-        assert!(registry.get("param_circle").is_some());
-        assert!(registry.get("shrinking_circle").is_some());
-        assert!(registry.get("tolerance_ok_circle").is_some());
-
-        // 3 templates must be quarantined
-        let broken = registry.broken();
-        assert_eq!(broken.len(), 3);
-
-        let find_broken = |filename: &str| {
-            broken
-                .iter()
-                .find(|b| b.path == filename)
-                .unwrap_or_else(|| panic!("missing broken template {filename}"))
-        };
-
-        let non_square_broken = find_broken("non_square_circle.yaml");
-        assert!(
-            non_square_broken.error.contains("must be square"),
-            "expected 'must be square' in error: {}",
-            non_square_broken.error
-        );
-
-        let when_broken = find_broken("when_circle.yaml");
-        assert!(
-            when_broken.error.contains("must be square"),
-            "expected 'must be square' in error: {}",
-            when_broken.error
-        );
-
-        let diff_broken = find_broken("diff_001_circle.yaml");
-        assert!(
-            diff_broken.error.contains("must be square"),
-            "expected 'must be square' in error: {}",
-            diff_broken.error
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -2498,7 +2133,7 @@ layout:
         let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    padding: [60,0,60,0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("container padding leaves no room for content".to_string())
+            Err("layout[0].padding: container padding leaves no room for content".to_string())
         );
     }
 
@@ -2507,7 +2142,7 @@ layout:
         let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    padding: [0,50,0,50]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("container padding leaves no room for content".to_string())
+            Err("layout[0].padding: container padding leaves no room for content".to_string())
         );
     }
 
@@ -2517,7 +2152,7 @@ layout:
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("container padding leaves no room for content".to_string())
+            Err("layout[0].padding: container padding leaves no room for content".to_string())
         );
     }
 
@@ -2527,7 +2162,7 @@ layout:
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("container padding leaves no room for content".to_string())
+            Err("layout[0].padding: container padding leaves no room for content".to_string())
         );
     }
 
@@ -2536,7 +2171,10 @@ layout:
         let yaml = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [80, 40]\n    padding: [5, 5, 5, 5]\n    items:\n      - type: container\n        at: [0, 0]\n        size: [40, 20]\n        padding: [15, 0, 15, 0]\n        items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("container padding leaves no room for content".to_string())
+            Err(
+                "layout[0].items[0].padding: container padding leaves no room for content"
+                    .to_string()
+            )
         );
     }
 
@@ -2554,11 +2192,12 @@ layout:
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// A shrinking `to` on an unresolved axis is rejected.
+    /// An edge-relative `at` with a non-negative `to` is refused on a dynamic-width label too.
     #[test]
     fn validate_rejects_a_shrinking_to_on_an_unresolved_axis() {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    to: [10.0, 10.0]\n    font_size: 6\n";
-        assert!(parse_and_validate(yaml).is_err());
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("layout[0].to"), "unexpected message: {err}");
     }
 
     /// On a fixed frame everything resolves, so the same shape is fine.
@@ -2583,7 +2222,7 @@ layout:
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-0.0, 2.0]\n    size: [10.0, 6.0]\n    font_size: 6\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("item does not fit within layout bounds".to_string())
+            Err("layout[0]: item does not fit within layout bounds".to_string())
         );
     }
 
@@ -2594,7 +2233,7 @@ layout:
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 30 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [40.0, 6.0]\n    stroke:\n      thickness: 0.2\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("line must fit within layout bounds".to_string())
+            Err("layout[0].to: line must fit within layout bounds".to_string())
         );
     }
 
@@ -2608,19 +2247,19 @@ layout:
     }
 
     #[test]
-    fn auto_spelling_is_rejected_at_parse_with_helpful_migration_message() {
+    fn auto_spelling_is_refused_naming_size() {
         let yaml_container = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
         let err = parse_and_validate(yaml_container)
             .expect_err("auto on container height must be rejected");
         assert!(
-            err.contains("`auto` was renamed"),
+            err.contains("size") && err.contains("\"auto\"") && !err.contains("renamed"),
             "unexpected message: {err}"
         );
 
         let yaml_text = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: text\n    value: \"hello\"\n    at: [0.0, 0.0]\n    size: [auto, 10.0]\n    font_size: 10\n";
         let err = parse_and_validate(yaml_text).expect_err("auto on text width must be rejected");
         assert!(
-            err.contains("`auto` was renamed"),
+            err.contains("size") && err.contains("\"auto\"") && !err.contains("renamed"),
             "unexpected message: {err}"
         );
     }
@@ -2650,7 +2289,7 @@ layout:
         assert_eq!(available(100.0, &spec_fill_w), 90.0);
 
         // Claim on content respects intrinsic and cap
-        let cl = claim(&spec_w, 100.0, 90.0, Some(50.0), Some(30.0));
+        let cl = claim(&spec_w, 90.0, Some(50.0), Some(30.0));
         assert_eq!(cl, 30.0);
         let req = requirement(&spec_w, cl);
         assert_eq!(req, 40.0); // at (10) + claim (30)
@@ -2971,7 +2610,7 @@ layout: []
             dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(40.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -2993,72 +2632,6 @@ layout: []
         };
         let err = template.validate().expect_err("350 must not validate");
         assert!(err.contains("font_weight"), "unexpected message: {err}");
-    }
-
-    #[test]
-    fn validate_rejects_duplicate_field_names() {
-        let template = TemplateContent {
-            name: "dup".to_string(),
-            description: "dup".to_string(),
-            categories: Vec::new(),
-            unit: "mm".to_string(),
-            dpi: 300,
-            format: TemplateFormat::Single {
-                width: Dimension::Fixed(12.0).into(),
-                height: Dimension::Fixed(25.0).into(),
-                media_width: None,
-            },
-            params: IndexMap::from([
-                (
-                    "variant".to_string(),
-                    ParamSpec {
-                        param_type: ParamType::Enum {
-                            values: vec!["default".to_string()],
-                        },
-                        default: None,
-                        min: None,
-                        max: None,
-                        description: None,
-                        default_instant: None,
-                    },
-                ),
-                (
-                    "logo".to_string(),
-                    ParamSpec {
-                        param_type: ParamType::String { multiline: false },
-                        default: Some(crate::models::ParamValue::String(String::new())),
-                        min: None,
-                        max: None,
-                        description: None,
-                        default_instant: None,
-                    },
-                ),
-            ]),
-            layout: Layout::Items(vec![
-                LayoutItem::Image {
-                    name: Some("logo".to_string()),
-                    src: None,
-                    placement: crate::models::Placement::sized(
-                        Position([0.0, 0.0]),
-                        Size([SizeValue::fixed(1.0), SizeValue::fixed(1.0)]),
-                    ),
-                    fit: crate::models::Fit::Contain,
-                    when: None,
-                },
-                LayoutItem::Image {
-                    name: Some("logo".to_string()),
-                    src: None,
-                    placement: crate::models::Placement::sized(
-                        Position([0.0, 0.0]),
-                        Size([SizeValue::fixed(1.0), SizeValue::fixed(1.0)]),
-                    ),
-                    fit: crate::models::Fit::Contain,
-                    when: None,
-                },
-            ]),
-        };
-        let err = template.validate().expect_err("expected error");
-        assert!(err.contains("duplicate layout item name"));
     }
 
     #[test]
@@ -3091,7 +2664,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(10.0).into(),
+                height: 10.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3112,7 +2685,7 @@ layout:
             }]),
         };
         let err = template.validate().expect_err("expected error");
-        assert_eq!(err, "text value must not be empty");
+        assert_eq!(err, "layout[0].value: text value must not be empty");
     }
 
     #[test]
@@ -3125,7 +2698,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(10.0).into(),
+                height: 10.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3135,7 +2708,9 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
                 ),
-                params: None,
+                error_correction: crate::models::ErrorCorrection::M,
+                module_size: None,
+                quiet_zone: 0.0,
                 when: None,
             }]),
         };
@@ -3167,17 +2742,17 @@ layout:
             dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Line {
                 at: Position([1.0, 1.0]),
                 to: Position([1.0, 1.0]),
-                stroke: Some(Stroke {
+                stroke: Stroke {
                     thickness: 0.2,
-                    color: DynamicValue::Literal(Color::black()),
-                }),
+                    color: Color::black(),
+                },
                 when: None,
             }]),
         };
@@ -3194,17 +2769,17 @@ layout:
             dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Line {
                 at,
                 to,
-                stroke: Some(Stroke {
+                stroke: Stroke {
                     thickness: 0.2,
-                    color: DynamicValue::Literal(Color::black()),
-                }),
+                    color: Color::black(),
+                },
                 when: None,
             }]),
         }
@@ -3259,7 +2834,7 @@ layout:
                     min: Some(DynamicValue::Literal(10.0)),
                     max: None,
                 },
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3299,7 +2874,7 @@ layout:
                     min: Some(DynamicValue::Literal(10.0)),
                     max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3337,7 +2912,7 @@ layout:
                     min: Some(DynamicValue::Literal(10.0)),
                     max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3375,7 +2950,7 @@ layout:
                     min: Some(DynamicValue::Literal(10.0)),
                     max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3410,7 +2985,7 @@ layout:
             dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(50.0).into(),
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3445,7 +3020,7 @@ layout:
             dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(50.0).into(),
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: mw,
             },
             params: IndexMap::new(),
@@ -3474,7 +3049,7 @@ params:
     type: string
     description: "Main label text"
   - name: target_width
-    type: length
+    type: number
     default: 80
     min: 25
     max: 300
@@ -3574,7 +3149,6 @@ layout:
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
         assert!(err.contains("unknown source 'datetime'"));
-        assert!(err.contains("{sys.now:long_date}"));
 
         // Unknown system value
         let yaml = r#"
@@ -3613,7 +3187,10 @@ layout:
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
         assert!(err.contains("unknown system value 'now.long_date'"));
-        assert!(err.contains("{sys.now:long_date}"));
+        assert!(
+            !err.contains("{sys.now:long_date}"),
+            "carries a hint: {err}"
+        );
 
         // Format on string parameter
         let yaml = r#"
@@ -3678,25 +3255,7 @@ layout:
         let err = parse_and_validate(yaml).unwrap_err();
         assert!(err.contains("invalid format"));
 
-        // Image name invalid
-        let yaml = r#"
-name: T
-unit: mm
-dpi: 200
-format:
-  type: single
-  height: 12
-  width: 50
-layout:
-  - type: image
-    name: "bad image name"
-    at: [0, 0]
-    size: [10, 10]
-"#;
-        let err = parse_and_validate(yaml).unwrap_err();
-        assert!(err.contains("image name 'bad image name' contains invalid characters"));
-
-        // Dotted datetime parameter unknown source with suggested replacement
+        // Dotted datetime parameter: an unknown source, with no suggested replacement
         let yaml = r#"
 name: T
 unit: mm
@@ -3718,7 +3277,10 @@ layout:
         let err = parse_and_validate(yaml).unwrap_err();
         assert!(err.contains("{printed_on.short_date}"));
         assert!(err.contains("unknown source 'printed_on'"));
-        assert!(err.contains("{printed_on:short_date}"));
+        assert!(
+            !err.contains("{printed_on:short_date}"),
+            "carries a hint: {err}"
+        );
 
         // Image src with unknown source
         let yaml = r#"
@@ -3772,7 +3334,7 @@ unit: mm
 dpi: 200
 params:
   - name: declared_param
-    type: length
+    type: number
     default: 50
 format:
   type: single
@@ -3874,7 +3436,7 @@ unit: mm
 dpi: 200
 params:
   - name: box_w
-    type: length
+    type: number
     default: 10
 format:
   type: single
@@ -3894,7 +3456,7 @@ layout:
     fn a_tokened_geometry_default_is_validated_at_its_min() {
         let yaml = |min: u32| {
             format!(
-                "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: box_w\n    type: length\n    min: {min}\n    default: \"{{vars.box_w}}\"\nformat: {{ type: single, height: 18, width: 50 }}\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [\"{{box_w}}\", 10]\n    items: []\n"
+                "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: box_w\n    type: number\n    min: {min}\n    default: \"{{vars.box_w}}\"\nformat: {{ type: single, height: 18, width: 50 }}\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [\"{{box_w}}\", 10]\n    items: []\n"
             )
         };
         parse_and_validate(&yaml(12)).unwrap();
@@ -3951,7 +3513,7 @@ unit: mm
 dpi: 200
 params:
   - name: custom_w
-    type: length
+    type: number
     min: 100
     max: 50
 format:
@@ -3972,7 +3534,7 @@ unit: mm
 dpi: 200
 params:
   - name: box_w
-    type: length
+    type: number
     default: 60
 format:
   type: single
@@ -4079,7 +3641,7 @@ params:
   - name: subtitle
     type: string
   - name: length_param
-    type: length
+    type: number
     min: 15
     max: 50
   - name: style
@@ -4353,7 +3915,7 @@ layout:
         size: [10, 10]
         font_size: 8
 "#,
-                "layout[0].flow.direction",
+                "layout[0].flow: key must not be null",
             ),
             (
                 "null_flow",
@@ -4373,7 +3935,7 @@ layout:
         size: [10, 10]
         font_size: 8
 "#,
-                "layout[0].flow.direction",
+                "layout[0].flow: key must not be null",
             ),
             (
                 "unknown_direction",
@@ -4637,7 +4199,7 @@ layout:
     }
 
     #[test]
-    fn unmigrated_multiline_text_template_is_quarantined_with_rename_error() {
+    fn unmigrated_multiline_text_template_is_quarantined_naming_the_key() {
         for (i, multiline_spec) in [
             "multiline: true",
             "multiline: false",
@@ -4682,13 +4244,8 @@ layout:
                 "broken path must name the file"
             );
             assert!(
-                broken[0].error.contains("layout[0].multiline"),
-                "error must name the layout path: {}",
-                broken[0].error
-            );
-            assert!(
-                broken[0].error.contains("wrap"),
-                "error must name the rename to wrap: {}",
+                broken[0].error.contains("layout[0]") && broken[0].error.contains("multiline"),
+                "error must name the item and the key: {}",
                 broken[0].error
             );
 
@@ -4851,14 +4408,9 @@ layout:
             datetime: &dt_res,
             defaults: Default::default(),
         };
-        let ctx_enum = crate::render::RenderContext::new(
-            "mm",
-            200,
-            &resolved_enum.data,
-            &env_enum,
-            &images_enum,
-        )
-        .with_instants(&resolved_enum.instants);
+        let ctx_enum =
+            crate::render::RenderContext::new("mm", &resolved_enum.data, &env_enum, &images_enum)
+                .with_instants(&resolved_enum.instants);
         assert!(
             ctx_enum.is_item_active(&items_enum[0]),
             "enum container with no default takes its first value in the thumbnail"
@@ -4908,7 +4460,7 @@ layout:
             datetime: &dt_res,
             defaults: Default::default(),
         };
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
+        let ctx = crate::render::RenderContext::new("mm", &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(
             ctx.is_item_active(&items_bg[0]),
@@ -5227,7 +4779,7 @@ layout:
             datetime: &dt,
             defaults: Default::default(),
         };
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
+        let ctx = crate::render::RenderContext::new("mm", &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(ctx.is_item_active(&items[0]));
         let png =
@@ -5284,7 +4836,7 @@ layout:
             datetime: &dt,
             defaults: Default::default(),
         };
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
+        let ctx = crate::render::RenderContext::new("mm", &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(ctx.is_item_active(&items[0]));
         let png =
@@ -5421,7 +4973,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = crate::render::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -5627,7 +5179,7 @@ dpi: 200
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: image
-    name: "logo.png"
+    src: "logo.png"
     at: [0, 0]
     size: [20, 20]
     color: red
@@ -5703,229 +5255,6 @@ layout:
     }
 
     #[test]
-    fn reject_undeclared_or_bad_type_color_parameter_reference() {
-        // 1. Text color
-        let undeclared_yaml = r#"
-name: Undeclared Color Ref
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{missing}"
-"#;
-        let err = parse_and_validate(undeclared_yaml).unwrap_err();
-        assert!(err.to_string().contains("missing"), "got: {err}");
-
-        for bad_type in ["length", "number", "integer", "boolean", "datetime"] {
-            let yaml = format!(
-                r#"
-name: Bad Type Color Ref
-unit: mm
-dpi: 200
-params:
-  - name: color_param
-    type: {bad_type}
-format: {{ type: single, width: 50, height: 20 }}
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{{color_param}}"
-"#
-            );
-            let err = parse_and_validate(&yaml).unwrap_err();
-            let err_str = err.to_string().to_lowercase();
-            assert!(
-                err_str.contains("color_param"),
-                "expected error to name color_param for type {bad_type}, got: {err}"
-            );
-            assert!(
-                err_str.contains(bad_type),
-                "expected error to name type {bad_type}, got: {err}"
-            );
-        }
-
-        // string and enum are accepted on text color
-        let string_yaml = r#"
-name: String Color Ref
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-    default: red
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{brand}"
-"#;
-        assert!(parse_and_validate(string_yaml).is_ok());
-
-        let enum_yaml = r#"
-name: Enum Color Ref
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: enum
-    values: [red, blue]
-    default: red
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{brand}"
-"#;
-        assert!(parse_and_validate(enum_yaml).is_ok());
-
-        // 2. Container background
-        let undeclared_bg = r#"
-name: Undeclared Bg Ref
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 20]
-    background: "{missing}"
-    items: []
-"#;
-        let err = parse_and_validate(undeclared_bg).unwrap_err();
-        assert!(err.to_string().contains("missing"), "got: {err}");
-
-        for bad_type in ["length", "number", "integer", "boolean", "datetime"] {
-            let bad_yaml = format!(
-                r#"
-name: Bad Type Bg Ref
-unit: mm
-dpi: 200
-params:
-  - name: bg_param
-    type: {bad_type}
-format: {{ type: single, width: 50, height: 20 }}
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 20]
-    background: "{{bg_param}}"
-    items: []
-"#
-            );
-            let err = parse_and_validate(&bad_yaml).unwrap_err();
-            let err_str = err.to_string().to_lowercase();
-            assert!(
-                err_str.contains("bg_param"),
-                "expected error to name bg_param for type {bad_type}, got: {err}"
-            );
-            assert!(
-                err_str.contains(bad_type),
-                "expected error to name type {bad_type}, got: {err}"
-            );
-        }
-
-        let good_bg = r#"
-name: Good Bg Ref
-unit: mm
-dpi: 200
-params:
-  - name: bg_param
-    type: string
-    default: red
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 20]
-    background: "{bg_param}"
-    items: []
-"#;
-        assert!(parse_and_validate(good_bg).is_ok());
-
-        // 3. Line and container stroke.color
-        let undeclared_line_stroke = r#"
-name: Undeclared Line Stroke Ref
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: line
-    at: [0, 0]
-    to: [50, 20]
-    stroke:
-      thickness: 1
-      color: "{missing}"
-"#;
-        let err = parse_and_validate(undeclared_line_stroke).unwrap_err();
-        assert!(err.to_string().contains("missing"), "got: {err}");
-
-        for bad_type in ["length", "number", "integer", "boolean", "datetime"] {
-            let bad_line_yaml = format!(
-                r#"
-name: Bad Line Stroke Ref
-unit: mm
-dpi: 200
-params:
-  - name: border
-    type: {bad_type}
-format: {{ type: single, width: 50, height: 20 }}
-layout:
-  - type: line
-    at: [0, 0]
-    to: [50, 20]
-    stroke:
-      thickness: 1
-      color: "{{border}}"
-"#
-            );
-            let err = parse_and_validate(&bad_line_yaml).unwrap_err();
-            let err_str = err.to_string().to_lowercase();
-            assert!(
-                err_str.contains("border"),
-                "expected error to name border for type {bad_type}, got: {err}"
-            );
-            assert!(
-                err_str.contains(bad_type),
-                "expected error to name type {bad_type}, got: {err}"
-            );
-        }
-
-        let good_line_stroke = r#"
-name: Good Line Stroke Ref
-unit: mm
-dpi: 200
-params:
-  - name: border
-    type: enum
-    values: [red, green]
-    default: red
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: line
-    at: [0, 0]
-    to: [50, 20]
-    stroke:
-      thickness: 1
-      color: "{border}"
-"#;
-        assert!(parse_and_validate(good_line_stroke).is_ok());
-    }
-
-    #[test]
     fn whitespace_only_color_template_is_quarantined() {
         let dir = temp_dir("whitespace_only_color_template_is_quarantined");
         let bad_yaml = r#"
@@ -5981,7 +5310,7 @@ layout:
 "#;
         write_template(&dir, "when_list.yaml", when_list_yaml);
 
-        // 2. Image binding declared list
+        // 2. Image source reading a declared list
         let image_list_yaml = r#"
 name: ImageList
 unit: mm
@@ -5992,7 +5321,7 @@ params:
     type: list
 layout:
   - type: image
-    name: tags
+    src: "{tags}"
     at: [0, 0]
     size: [50, 20]
 "#;
@@ -6120,23 +5449,7 @@ layout:
 "#;
         write_template(&dir, "valid_list.yaml", valid_list_yaml);
 
-        // 10. Explicit null when: null loads cleanly as unconditional
-        let when_null_yaml = r#"
-name: WhenNull
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Unconditional"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    when: null
-"#;
-        write_template(&dir, "when_null.yaml", when_null_yaml);
-
-        // 11. Undeclared when: key keeps existing message without layout path
+        // 11. Undeclared when: key is refused naming its layout path
         let when_undeclared_yaml = r#"
 name: WhenUndeclared
 unit: mm
@@ -6247,10 +5560,9 @@ layout:
         write_template(&dir, "color_list.yaml", color_list_yaml);
 
         let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
-        assert_eq!(registry.len(), 3); // valid, valid_list, when_null
+        assert_eq!(registry.len(), 2); // valid, valid_list
         assert!(registry.get("valid").is_some());
         assert!(registry.get("valid_list").is_some());
-        assert!(registry.get("when_null").is_some());
 
         let broken = registry.broken();
         assert_eq!(broken.len(), 14);
@@ -6262,7 +5574,7 @@ layout:
         assert!(b_when.error.contains("tags") && b_when.error.contains("layout[0]"));
 
         let b_img = find_broken("image_list.yaml");
-        assert!(b_img.error.contains("tags") && b_img.error.contains("image name"));
+        assert!(b_img.error.contains("{tags}") && b_img.error.contains("layout[0].src"));
 
         let b_bare = find_broken("bare_list.yaml");
         assert!(b_bare.error.contains("{tags}"));
@@ -6288,7 +5600,7 @@ layout:
         let b_when_und = find_broken("when_undeclared.yaml");
         assert!(b_when_und
             .error
-            .contains("undeclared parameter 'undeclared_key' referenced in when condition"));
+            .contains("layout[0].when.undeclared_key: undeclared parameter 'undeclared_key'"));
 
         let b_when_empty = find_broken("when_empty.yaml");
         assert!(b_when_empty.error.contains("when must not be empty"));
@@ -6296,7 +5608,7 @@ layout:
         let b_when_blank_key = find_broken("when_blank_key.yaml");
         assert!(b_when_blank_key
             .error
-            .contains("undeclared parameter ' ' referenced in when condition"));
+            .contains("layout[0].when. : undeclared parameter ' '"));
 
         let b_when_blank_val = find_broken("when_blank_val.yaml");
         assert!(b_when_blank_val
@@ -6306,12 +5618,12 @@ layout:
         let b_dim_list = find_broken("dim_list.yaml");
         assert!(b_dim_list
             .error
-            .contains("parameter 'tags' of type List cannot be used in format width"));
+            .contains("format.width: parameter 'tags' of type List cannot be used here"));
 
         let b_color_list = find_broken("color_list.yaml");
         assert!(b_color_list
             .error
-            .contains("parameter 'tags' of type List cannot be used in color"));
+            .contains("color: unknown colour '{tags}'"));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -6333,7 +5645,10 @@ layout:
     font_size: 10
 "#;
         let err = parse_and_validate(yaml_text).unwrap_err();
-        assert_eq!(err, "template contains '{sku}': undeclared parameter 'sku'");
+        assert_eq!(
+            err,
+            "layout[0].value: template contains '{sku}': undeclared parameter 'sku'"
+        );
 
         // 2. qr value
         let yaml_qr = r#"
@@ -6348,7 +5663,10 @@ layout:
     size: [10, 10]
 "#;
         let err = parse_and_validate(yaml_qr).unwrap_err();
-        assert_eq!(err, "template contains '{sku}': undeclared parameter 'sku'");
+        assert_eq!(
+            err,
+            "layout[0].value: template contains '{sku}': undeclared parameter 'sku'"
+        );
 
         // 3. image src
         let yaml_img = r#"
@@ -6363,7 +5681,10 @@ layout:
     size: [10, 10]
 "#;
         let err = parse_and_validate(yaml_img).unwrap_err();
-        assert_eq!(err, "template contains '{sku}': undeclared parameter 'sku'");
+        assert_eq!(
+            err,
+            "layout[0].src: template contains '{sku}': undeclared parameter 'sku'"
+        );
     }
 
     // Issue 322: Task 1.4 - Unit-test what the rule does not touch
@@ -6399,7 +5720,7 @@ layout: []
         let err = parse_and_validate(yaml_default).unwrap_err();
         assert_eq!(
             err,
-            "bare token '{message}' is not allowed in a default; only namespaced tokens ({vars.…}, {sys.…}) are supported"
+            "params.declared.default: bare token '{message}' is not allowed in a default; only namespaced tokens ({vars.…}, {sys.…}) are supported"
         );
 
         // 3. template printing {datetime} loads when declared and is quarantined/rejected when not
@@ -6418,7 +5739,7 @@ layout:
         let err = parse_and_validate(yaml_dt_undeclared).unwrap_err();
         assert_eq!(
             err,
-            "template contains '{datetime}': undeclared parameter 'datetime'"
+            "layout[0].value: template contains '{datetime}': undeclared parameter 'datetime'"
         );
 
         let yaml_dt_declared = r#"
@@ -6452,7 +5773,7 @@ params:
   - name: bold
     type: boolean
   - name: width
-    type: length
+    type: number
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: text
@@ -6464,10 +5785,9 @@ layout:
         assert!(parse_and_validate(yaml).is_ok());
     }
 
-    // Issue 322: Task 2.2 - Image name validation: undeclared, wrong type, invalid characters
+    // Issue 322: Task 2.2 - An image source token must name a declared parameter
     #[test]
-    fn issue_322_image_name_validation_outcomes() {
-        // 1. name: logo with no logo declared
+    fn issue_322_image_src_names_a_declared_parameter() {
         let yaml_undeclared = r#"
 name: T
 unit: mm
@@ -6475,56 +5795,20 @@ dpi: 200
 format: { type: single, width: 20, height: 10 }
 layout:
   - type: image
-    name: logo
+    src: "{logo}"
     at: [0, 0]
     size: [10, 10]
 "#;
         let err = parse_and_validate(yaml_undeclared).unwrap_err();
-        assert_eq!(err, "undeclared parameter 'logo' referenced in image name");
-
-        // 2. logo declared as integer (wrong type)
-        let yaml_wrong_type = r#"
-name: T
-unit: mm
-dpi: 200
-params:
-  - name: logo
-    type: integer
-format: { type: single, width: 20, height: 10 }
-layout:
-  - type: image
-    name: logo
-    at: [0, 0]
-    size: [10, 10]
-"#;
-        let err = parse_and_validate(yaml_wrong_type).unwrap_err();
         assert_eq!(
             err,
-            "parameter 'logo' of type Integer cannot be used in image name"
-        );
-
-        // 3. name: "my logo" with spaces reports charset first
-        let yaml_bad_charset = r#"
-name: T
-unit: mm
-dpi: 200
-format: { type: single, width: 20, height: 10 }
-layout:
-  - type: image
-    name: "my logo"
-    at: [0, 0]
-    size: [10, 10]
-"#;
-        let err = parse_and_validate(yaml_bad_charset).unwrap_err();
-        assert_eq!(
-            err,
-            "image name 'my logo' contains invalid characters; must match ^[a-zA-Z0-9_-]+$"
+            "layout[0].src: template contains '{logo}': undeclared parameter 'logo'"
         );
     }
 
-    // Issue 322: Task 2.3 - Declared string image name binds and renders/errors as expected
+    // Issue 322: Task 2.3 - A declared string read as a whole `src` binds and renders/errors as expected
     #[test]
-    fn issue_322_image_name_declared_string_binding_and_render() {
+    fn issue_322_image_src_declared_string_binding_and_render() {
         let yaml = r#"
 name: T
 unit: mm
@@ -6536,7 +5820,7 @@ params:
 format: { type: single, width: 20, height: 10 }
 layout:
   - type: image
-    name: logo
+    src: "{logo}"
     at: [0, 0]
     size: [10, 10]
 "#;
@@ -6620,7 +5904,7 @@ layout:
 
     #[test]
     fn repeat_scope_reference_refusals_and_permissions() {
-        // 3.4: inside repeat scope: size, color, image name referencing list parameter are refused
+        // 3.4: inside repeat scope: size and color referencing a list parameter are refused
         let size_yaml = r#"
 name: T
 unit: mm
@@ -6636,6 +5920,7 @@ layout:
     flow: { direction: column }
     items:
       - type: container
+        size: [fill, fill]
         repeat: tags
         items:
           - type: text
@@ -6644,7 +5929,7 @@ layout:
             font_size: 8
 "#;
         let err = parse_and_validate(size_yaml).unwrap_err();
-        assert!(err.contains("parameter 'tags' of type List cannot be used in text width"));
+        assert!(err.contains("layout[0].items[0].items[0].size[0]: parameter 'tags' of type List cannot be used here"));
 
         let color_yaml = r#"
 name: T
@@ -6661,6 +5946,7 @@ layout:
     flow: { direction: column }
     items:
       - type: container
+        size: [fill, fill]
         repeat: tags
         items:
           - type: text
@@ -6670,31 +5956,7 @@ layout:
             font_size: 8
 "#;
         let err = parse_and_validate(color_yaml).unwrap_err();
-        assert!(err.contains("parameter 'tags' of type List cannot be used in color"));
-
-        let image_yaml = r#"
-name: T
-unit: mm
-dpi: 200
-params:
-  - name: tags
-    type: list
-format: { type: single, width: 50, height: 50 }
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 50]
-    flow: { direction: column }
-    items:
-      - type: container
-        repeat: tags
-        items:
-          - type: image
-            name: tags
-            size: [10, 10]
-"#;
-        let err = parse_and_validate(image_yaml).unwrap_err();
-        assert!(err.contains("parameter 'tags' of type List cannot be used in image name"));
+        assert!(err.contains("color: unknown colour '{tags}'"), "{err}");
 
         // 3.5: outside repeat scope: bare {tags} on list is refused
         let bare_yaml = r#"
@@ -6772,6 +6034,7 @@ layout:
     flow: { direction: column }
     items:
       - type: container
+        size: [fill, fill]
         repeat: tags
         when:
           tags: foo
@@ -6802,6 +6065,7 @@ layout:
     flow: { direction: column }
     items:
       - type: container
+        size: [fill, fill]
         repeat: tags
         items:
           - type: text
@@ -6836,6 +6100,7 @@ layout:
     flow: { direction: column }
     items:
       - type: container
+        size: [fill, fill]
         repeat: tags
         items:
           - type: text
@@ -7155,11 +6420,11 @@ layout: []
 "#;
         let err_null = crate::parse::parse_template(yaml_null).unwrap_err();
         match &err_null {
-            TemplateError::Yaml { path, msg } => {
+            TemplateError::Validation { path, msg } => {
                 assert_eq!(path, "params");
-                assert!(msg.contains("sequence"));
+                assert_eq!(msg, "key must not be null");
             }
-            _ => panic!("expected Yaml error, got {err_null:?}"),
+            _ => panic!("expected Validation error, got {err_null:?}"),
         }
 
         // 2. legacy mapping-shaped params: is rejected naming params
@@ -7315,155 +6580,635 @@ layout:
         }
     }
 
-    #[test]
-    fn line_spacing_undeclared_param_ref_quarantined() {
-        let dir = temp_dir("line_spacing_undeclared_ref");
-        let valid_yaml = sample_yaml("valid");
-        write_template(&dir, "valid.yaml", &valid_yaml);
+    /// A 60 x 20 single label. `params` is an indented YAML sequence body, or empty for no
+    /// `params:` key at all, so no fixture writes `params:` as a null by accident.
+    fn schema_label(params: &str, layout: &str) -> String {
+        let params = if params.is_empty() {
+            String::new()
+        } else {
+            format!("params:\n{params}")
+        };
+        format!(
+            "name: T\nunit: mm\ndpi: 100\n{params}format: {{ type: single, width: 60, height: 20 }}\nlayout:\n{layout}"
+        )
+    }
 
-        let bad_yaml = r#"name: BadRef
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-        write_template(&dir, "bad_ref.yaml", bad_yaml);
+    /// A 60 x 10 text item at the origin, followed by `extra` (keys indented four spaces).
+    fn schema_text(extra: &str) -> String {
+        format!(
+            "  - type: text\n    value: hi\n    at: [0, 0]\n    size: [60, 10]\n    font_size: 6\n{extra}"
+        )
+    }
 
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
-        assert!(registry.get("valid").is_some());
-        assert!(registry.get("bad_ref").is_none());
-
-        let broken = registry.broken();
-        assert_eq!(broken.len(), 1);
-        let entry = &broken[0];
-        assert_eq!(entry.path, "bad_ref.yaml");
+    /// Every `loads` case loads, and every `refused` case is refused with an error containing each
+    /// of its keys. Collects every miss, so one run shows each case's outcome.
+    fn assert_schema(loads: &[(&str, String)], refused: &[(&str, String, &[&str])]) {
+        let mut misses = Vec::new();
+        for (case, yaml) in loads {
+            if let Err(err) = parse_and_validate(yaml) {
+                misses.push(format!("{case}: refused: {err}"));
+            }
+        }
+        for (case, yaml, keys) in refused {
+            match parse_and_validate(yaml) {
+                Ok(()) => misses.push(format!("{case}: loads")),
+                Err(err) => {
+                    for key in *keys {
+                        if !err.contains(key) {
+                            misses.push(format!("{case}: error does not name `{key}`: {err}"));
+                        }
+                    }
+                }
+            }
+        }
         assert!(
-            entry.error.contains("layout[0]") && entry.error.contains("line_spacing"),
-            "error should name layout path and line_spacing: {}",
-            entry.error
+            misses.is_empty(),
+            "{} failing case(s):\n{}",
+            misses.len(),
+            misses.join("\n")
         );
     }
 
     #[test]
-    fn line_spacing_param_types_load_and_refusals() {
-        let dir = temp_dir("line_spacing_param_types");
-        let make_yaml = |param_def: &str| {
+    fn null_keys_are_refused_with_their_path() {
+        assert_schema(
+            &[],
+            &[
+                (
+                    "description: null",
+                    schema_label("", &schema_text(""))
+                        .replace("unit: mm", "description: null\nunit: mm"),
+                    &["description"],
+                ),
+                (
+                    "when: null",
+                    schema_label("", &schema_text("    when: null\n")),
+                    &["layout[0].when"],
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn unknown_keys_in_nested_mappings_are_refused_by_name() {
+        assert_schema(
+            &[],
+            &[
+                (
+                    "alignment verticle",
+                    schema_label(
+                        "",
+                        &schema_text("    alignment: { vertical: center, verticle: top }\n"),
+                    ),
+                    &["verticle"],
+                ),
+                (
+                    "font_size step",
+                    schema_label("", &schema_text(""))
+                        .replace("font_size: 6", "font_size: { min: 8, max: 12, step: 1 }"),
+                    &["step"],
+                ),
+                (
+                    "format width typo",
+                    schema_label("", &schema_text(""))
+                        .replace("width: 60,", "width: { min: 10, max: 50, typo: 1 },")
+                        .replace("size: [60, 10]", "size: [content, 10]"),
+                    &["typo"],
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_parameter_attribute_outside_its_types_row_is_refused() {
+        assert_schema(
+            &[],
+            &[(
+                "string min",
+                schema_label(
+                    "  - name: title\n    type: string\n    min: 1\n",
+                    &schema_text("").replace("value: hi", "value: \"{title}\""),
+                ),
+                &["title", "min"],
+            )],
+        );
+    }
+
+    #[test]
+    fn a_bad_value_inside_an_item_names_its_key() {
+        let container = |extra: &str| {
             format!(
-                r#"name: Test
-unit: mm
-dpi: 200
-format: {{ type: single, width: 50, height: 20 }}
-params:
-  - name: pitch
-    {param_def}
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{{pitch}}"
-"#
+                "  - type: container\n    at: [0, 0]\n    size: [60, 20]\n{extra}    items: []\n"
             )
         };
+        let nested = "  - type: container\n    at: [0, 0]\n    size: [60, 20]\n    items:\n      - type: text\n        value: hi\n        at: [0, 0]\n        size: [60, 10]\n        font_size: 6\n      - type: container\n        at: [0, 10]\n        size: [60, 10]\n        background: 42\n        items: []\n";
+        assert_schema(
+            &[],
+            &[
+                (
+                    "text font_size: abc",
+                    schema_label("", &schema_text("")).replace("font_size: 6", "font_size: abc"),
+                    &["font_size"],
+                ),
+                (
+                    "container background: 42",
+                    schema_label("", &container("    background: 42\n")),
+                    &["background"],
+                ),
+                (
+                    "text size: [true, 10]",
+                    schema_label("", &schema_text(""))
+                        .replace("size: [60, 10]", "size: [true, 10]"),
+                    &["size"],
+                ),
+                (
+                    "nested container background: 42",
+                    schema_label("", nested),
+                    &["layout[0]", "items[1]", "background"],
+                ),
+            ],
+        );
+    }
 
-        // Rejected parameter types
-        write_template(
-            &dir,
-            "length.yaml",
-            &make_yaml("type: length\n    default: 1.2"),
+    /// Every refusal from the load-time layout walks names the path to its key, however deep the
+    /// item sits.
+    #[test]
+    fn a_load_time_refusal_names_the_keys_layout_path() {
+        let nested = |child: String| {
+            let child: String = child.lines().map(|line| format!("    {line}\n")).collect();
+            format!("  - type: container\n    at: [0, 0]\n    size: [60, 20]\n    items:\n{child}")
+        };
+        let tags = "  - name: tags\n    type: list\n";
+        // A packed container repeating over `over`, holding `items` (indented ten spaces).
+        let repeating = |over: &str, items: &str| {
+            format!(
+                "  - type: container\n    at: [0, 0]\n    size: [60, 20]\n    flow: {{ direction: row }}\n    items:\n      - type: container\n        repeat: {over}\n        size: [20, 20]\n        items:{}\n{items}",
+                if items.is_empty() { " []" } else { "" }
+            )
+        };
+        assert_schema(
+            &[],
+            &[
+                (
+                    "nested undeclared font_weight reference",
+                    schema_label("", &nested(schema_text("    font_weight: \"{heft}\"\n"))),
+                    &["layout[0].items[0].font_weight"],
+                ),
+                (
+                    "string parameter in size",
+                    schema_label(
+                        "  - name: title\n    type: string\n",
+                        &schema_text("").replace("size: [60, 10]", "size: [\"{title}\", 10]"),
+                    ),
+                    &["layout[0].size[0]"],
+                ),
+                (
+                    "undeclared format reference",
+                    schema_label("", &schema_text("")).replace("height: 20", "height: \"{h}\""),
+                    &["format.height"],
+                ),
+                (
+                    "nested undeclared when key",
+                    schema_label("", &nested(schema_text("    when: { ghost: x }\n"))),
+                    &["layout[0].items[0].when.ghost"],
+                ),
+                (
+                    "nested font_size: 0",
+                    schema_label(
+                        "",
+                        &nested(schema_text("").replace("font_size: 6", "font_size: 0")),
+                    ),
+                    &["layout[0].items[0].font_size"],
+                ),
+                (
+                    "nested item out of frame",
+                    schema_label(
+                        "",
+                        &nested(schema_text("").replace("size: [60, 10]", "size: [70, 10]")),
+                    ),
+                    &["layout[0].items[0]"],
+                ),
+                (
+                    "repeat over an undeclared parameter",
+                    schema_label("", &repeating("ghost", "")),
+                    &["layout[0].items[0].repeat"],
+                ),
+                (
+                    "join inside its own repeat",
+                    schema_label(
+                        tags,
+                        &repeating(
+                            "tags",
+                            "          - type: text\n            value: \"{tags:join(', ')}\"\n            at: [0, 0]\n            size: [20, 10]\n            font_size: 6\n",
+                        ),
+                    ),
+                    &["layout[0].items[0].items[0].value"],
+                ),
+            ],
         );
-        write_template(
-            &dir,
-            "string.yaml",
-            &make_yaml("type: string\n    default: \"1.2\""),
-        );
-        write_template(
-            &dir,
-            "boolean.yaml",
-            &make_yaml("type: boolean\n    default: true"),
-        );
-        write_template(
-            &dir,
-            "enum.yaml",
-            &make_yaml("type: enum\n    values: [\"1.2\", \"1.5\"]\n    default: \"1.2\""),
-        );
-        write_template(
-            &dir,
-            "datetime.yaml",
-            &make_yaml("type: datetime\n    default: \"2026-08-19\""),
-        );
-        write_template(&dir, "list.yaml", &make_yaml("type: list\n    default: []"));
+    }
 
-        // Accepted parameter types
-        write_template(
-            &dir,
-            "number.yaml",
-            &make_yaml("type: number\n    default: 1.2"),
+    /// templates spec, "Top-level keys": a NaN anywhere in the document is refused naming its
+    /// path, whether under the format, an item key, or a sequence element.
+    #[test]
+    fn a_nan_anywhere_is_refused_naming_its_path() {
+        assert_schema(
+            &[],
+            &[
+                (
+                    "format width: .nan",
+                    schema_label("", &schema_text("")).replace("width: 60", "width: .nan"),
+                    &["format.width", "NaN"],
+                ),
+                (
+                    "font_size: .nan",
+                    schema_label(
+                        "",
+                        &schema_text("").replace("font_size: 6", "font_size: .nan"),
+                    ),
+                    &["layout[0].font_size", "NaN"],
+                ),
+                (
+                    "size: [.nan, 10]",
+                    schema_label(
+                        "",
+                        &schema_text("").replace("size: [60, 10]", "size: [.nan, 10]"),
+                    ),
+                    &["layout[0].size[0]", "NaN"],
+                ),
+            ],
         );
-        write_template(
-            &dir,
-            "integer.yaml",
-            &make_yaml("type: integer\n    default: 2"),
+    }
+
+    /// Guard, not a regression test: a quoted `line_spacing` is refused naming the key today, and
+    /// must stay so once styling keys deserialize straight into their types.
+    #[test]
+    fn a_quoted_line_spacing_is_refused_naming_the_key() {
+        assert_schema(
+            &[],
+            &[(
+                "line_spacing: \"1.2\"",
+                schema_label("", &schema_text("    line_spacing: \"1.2\"\n")),
+                &["line_spacing"],
+            )],
         );
-
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
-        assert!(registry.get("number").is_some());
-        assert!(registry.get("integer").is_some());
-
-        let broken = registry.broken();
-        assert_eq!(broken.len(), 6);
-        for filename in [
-            "length.yaml",
-            "string.yaml",
-            "boolean.yaml",
-            "enum.yaml",
-            "datetime.yaml",
-            "list.yaml",
-        ] {
-            let entry = broken
-                .iter()
-                .find(|b| b.path == filename)
-                .unwrap_or_else(|| panic!("expected {filename} to be quarantined"));
-            assert!(
-                entry.error.contains("layout[0]") && entry.error.contains("line_spacing"),
-                "{filename} error should name layout[0] and line_spacing: {}",
-                entry.error
-            );
-        }
     }
 
     #[test]
-    fn line_spacing_param_declaring_default_zero_loads() {
-        let dir = temp_dir("line_spacing_default_zero");
-        let yaml = r#"name: DefaultZero
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-    default: 0
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-        write_template(&dir, "default_zero.yaml", yaml);
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
-        assert!(
-            registry.get("default_zero").is_some(),
-            "template with default: 0 must load and be served"
+    fn a_dimension_is_a_number_or_an_exact_reference() {
+        let gap = "  - name: gap\n    type: number\n    default: 60\n";
+        let heft = "  - name: heft\n    type: integer\n    default: 400\n";
+        assert_schema(
+            &[],
+            &[
+                (
+                    "size: [\"{ gap }\", 10]",
+                    schema_label(
+                        gap,
+                        &schema_text("").replace("size: [60, 10]", "size: [\"{ gap }\", 10]"),
+                    ),
+                    &["size"],
+                ),
+                (
+                    "font_weight: \"{ heft }\"",
+                    schema_label(heft, &schema_text("    font_weight: \"{ heft }\"\n")),
+                    &["font_weight"],
+                ),
+                (
+                    "format width: \"{ gap }\"",
+                    schema_label(gap, &schema_text(""))
+                        .replace("width: 60,", "width: \"{ gap }\","),
+                    &["width"],
+                ),
+                (
+                    "size: [\"20\", 10]",
+                    schema_label(
+                        "",
+                        &schema_text("").replace("size: [60, 10]", "size: [\"20\", 10]"),
+                    ),
+                    &["size"],
+                ),
+                (
+                    "format width: \"80mm\"",
+                    schema_label("", &schema_text("")).replace("width: 60,", "width: \"80mm\","),
+                    &["width"],
+                ),
+            ],
         );
-        assert!(registry.broken().is_empty());
+    }
+
+    #[test]
+    fn an_interpolation_syntax_error_is_refused_at_load() {
+        assert_schema(
+            &[],
+            &[(
+                "value: \"50% {off\"",
+                schema_label(
+                    "",
+                    &schema_text("").replace("value: hi", "value: \"50% {off\""),
+                ),
+                &["layout[0].value"],
+            )],
+        );
+    }
+
+    #[test]
+    fn qr_error_correction_is_a_flat_strict_level() {
+        let qr = |extra: &str| {
+            schema_label(
+                "",
+                &format!(
+                    "  - type: qr\n    value: hi\n    at: [0, 0]\n    size: [20, 20]\n{extra}"
+                ),
+            )
+        };
+        let mut misses = Vec::new();
+        if let Err(err) = parse_and_validate(&qr("    error_correction: M\n")) {
+            misses.push(format!("error_correction: M: refused: {err}"));
+        }
+        for level in ["m", "X"] {
+            match parse_and_validate(&qr(&format!("    error_correction: {level}\n"))) {
+                Ok(()) => misses.push(format!("error_correction: {level}: loads")),
+                Err(err) if !err.contains("error_correction") || err.contains("unknown field") => {
+                    misses.push(format!(
+                        "error_correction: {level}: not refused as a bad level: {err}"
+                    ));
+                }
+                Err(_) => {}
+            }
+        }
+        assert!(misses.is_empty(), "{}", misses.join("\n"));
+    }
+
+    #[test]
+    fn qr_options_are_keys_of_the_item_not_a_params_mapping() {
+        let qr = |extra: &str| {
+            schema_label(
+                "",
+                &format!("  - type: qr\n    value: hi\n    at: [0, 0]\n{extra}"),
+            )
+        };
+        assert_schema(
+            &[(
+                "flat module_size and quiet_zone",
+                qr("    size: [content, content]\n    module_size: 0.5\n    quiet_zone: 1\n"),
+            )],
+            &[(
+                "params: { error_correction: m }",
+                qr("    size: [20, 20]\n    params: { error_correction: m }\n"),
+                &["unknown field", "params"],
+            )],
+        );
+    }
+
+    #[test]
+    fn a_removed_datetime_spelling_gets_no_hint() {
+        let yaml = schema_label(
+            "",
+            &schema_text("").replace("value: hi", "value: \"{datetime.long_date}\""),
+        );
+        let err = parse_and_validate(&yaml).expect_err("an unknown source must be refused");
+        assert!(err.contains("datetime"), "unexpected message: {err}");
+        assert!(!err.contains("sys.now:"), "message carries a hint: {err}");
+    }
+
+    #[test]
+    fn the_length_parameter_type_is_refused() {
+        assert_schema(
+            &[],
+            &[(
+                "type: length",
+                schema_label(
+                    "  - name: gap\n    type: length\n",
+                    &schema_text("").replace("value: hi", "value: \"{gap}\""),
+                ),
+                &["type", "length"],
+            )],
+        );
+    }
+
+    #[test]
+    fn a_cap_on_an_axis_that_does_not_stretch_is_refused() {
+        assert_schema(
+            &[],
+            &[
+                (
+                    "size: [40, 10], max_w: 30",
+                    schema_label(
+                        "",
+                        &schema_text("    max_w: 30\n").replace("size: [60, 10]", "size: [40, 10]"),
+                    ),
+                    &["max_w"],
+                ),
+                (
+                    "size: [content, 10], max_h: 5",
+                    schema_label(
+                        "",
+                        &schema_text("    max_h: 5\n")
+                            .replace("size: [60, 10]", "size: [content, 10]"),
+                    ),
+                    &["max_h"],
+                ),
+                (
+                    "at: [0, 0], to: [-0.0, 10], max_w: 30",
+                    schema_label(
+                        "",
+                        &schema_text("    max_w: 30\n").replace("size: [60, 10]", "to: [-0.0, 10]"),
+                    ),
+                    &["max_w"],
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_ranged_label_height_is_refused() {
+        assert_schema(
+            &[],
+            &[(
+                "height: { min: 10, max: 20 }",
+                schema_label("", &schema_text(""))
+                    .replace("height: 20 }", "height: { min: 10, max: 20 } }")
+                    .replace("size: [60, 10]", "size: [60, content]"),
+                &["format", "height"],
+            )],
+        );
+    }
+
+    #[test]
+    fn a_font_weight_parameters_default_must_be_a_weight() {
+        let weighted = |default: &str| {
+            schema_label(
+                &format!("  - name: heft\n    type: integer\n    default: {default}\n"),
+                &schema_text("    font_weight: \"{heft}\"\n"),
+            )
+        };
+        assert_schema(
+            &[],
+            &[
+                ("default: 65936", weighted("65936"), &["heft"]),
+                ("default: \"450\"", weighted("\"450\""), &["heft"]),
+            ],
+        );
+    }
+
+    #[test]
+    fn styling_keys_take_literals_only() {
+        let params = "  - name: pitch\n    type: number\n    default: 1.2\n  - name: brand\n    type: enum\n    values: [red, blue]\n";
+        let container = |extra: &str| {
+            format!(
+                "  - type: container\n    at: [0, 0]\n    size: [60, 20]\n{extra}    items: []\n"
+            )
+        };
+        assert_schema(
+            &[],
+            &[
+                (
+                    "line_spacing: \"{pitch}\"",
+                    schema_label(params, &schema_text("    line_spacing: \"{pitch}\"\n")),
+                    &["line_spacing"],
+                ),
+                (
+                    "color: \"{brand}\"",
+                    schema_label(params, &schema_text("    color: \"{brand}\"\n")),
+                    &["color"],
+                ),
+                (
+                    "background: \"{brand}\"",
+                    schema_label(params, &container("    background: \"{brand}\"\n")),
+                    &["background"],
+                ),
+                (
+                    "stroke color: \"{brand}\"",
+                    schema_label(
+                        params,
+                        &container("    stroke: { thickness: 1, color: \"{brand}\" }\n"),
+                    ),
+                    &["stroke", "color"],
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn an_at_and_to_of_mixed_sign_on_one_axis_is_refused() {
+        assert_schema(
+            &[],
+            &[(
+                "at: [-20.0, 1.0], to: [50.0, 10.0]",
+                schema_label(
+                    "",
+                    &schema_text("")
+                        .replace("at: [0, 0]", "at: [-20.0, 1.0]")
+                        .replace("size: [60, 10]", "to: [50.0, 10.0]"),
+                ),
+                &["layout[0]"],
+            )],
+        );
+    }
+
+    #[test]
+    fn the_circle_shape_is_refused() {
+        assert_schema(
+            &[],
+            &[(
+                "shape: circle",
+                schema_label(
+                    "",
+                    "  - type: container\n    at: [0, 0]\n    size: [10, 10]\n    shape: circle\n    items: []\n",
+                ),
+                &["rect", "ellipse"],
+            )],
+        );
+    }
+
+    #[test]
+    fn a_container_needs_size_or_to() {
+        assert_schema(
+            &[],
+            &[(
+                "container without size or to",
+                schema_label("", "  - type: container\n    at: [0, 0]\n    items: []\n"),
+                &["layout[0]"],
+            )],
+        );
+    }
+
+    #[test]
+    fn a_line_needs_a_stroke() {
+        assert_schema(
+            &[],
+            &[(
+                "line without stroke",
+                schema_label("", "  - type: line\n    at: [0, 0]\n    to: [10, 10]\n"),
+                &["stroke"],
+            )],
+        );
+    }
+
+    /// An image item reading `{logo}`, whose box is `extent` (one indented line or more).
+    fn schema_image(extent: &str) -> String {
+        schema_label(
+            "  - name: logo\n    type: string\n",
+            &format!("  - type: image\n    src: \"{{logo}}\"\n    at: [0, 0]\n{extent}"),
+        )
+    }
+
+    #[test]
+    fn an_image_axis_needs_an_authored_extent() {
+        assert_schema(
+            &[],
+            &[
+                (
+                    "size: [content, 10]",
+                    schema_image("    size: [content, 10]\n"),
+                    &["layout[0]"],
+                ),
+                (
+                    "size: [fill, 10]",
+                    schema_image("    size: [fill, 10]\n"),
+                    &["layout[0]"],
+                ),
+                (
+                    "to: [-0.0, 10]",
+                    schema_image("    to: [-0.0, 10]\n"),
+                    &["layout[0]"],
+                ),
+            ],
+        );
+    }
+
+    /// Guard, not a regression test: an image whose box is authored by number or by a same-sign
+    /// `to` loads today and must keep loading under the authored-extent rule.
+    #[test]
+    fn an_image_with_an_authored_extent_loads() {
+        assert_schema(
+            &[
+                ("size: [20, 10]", schema_image("    size: [20, 10]\n")),
+                ("to: [20, 10]", schema_image("    to: [20, 10]\n")),
+            ],
+            &[],
+        );
+    }
+
+    #[test]
+    fn an_image_reads_its_source_from_src_only() {
+        let image = |extra: &str| {
+            schema_label(
+                "  - name: photo\n    type: string\n",
+                &format!("  - type: image\n{extra}    at: [0, 0]\n    size: [20, 10]\n"),
+            )
+        };
+        assert_schema(
+            &[],
+            &[
+                (
+                    "name: photo",
+                    image("    name: photo\n"),
+                    &["unknown field", "name"],
+                ),
+                ("neither name nor src", image(""), &["missing field", "src"]),
+            ],
+        );
     }
 }

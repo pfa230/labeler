@@ -1,6 +1,6 @@
 use crate::errors::AppError;
 use crate::models::{
-    Alignment, FontSize, HorizontalAlign, Overflow, Point, QrParams, VerticalAlign,
+    Alignment, ErrorCorrection, FontSize, HorizontalAlign, Overflow, Point, VerticalAlign,
 };
 use crate::reason::Reason;
 use base64::Engine as _;
@@ -48,10 +48,9 @@ fn process_literal_chunk(chunk: &str, template: &str, out: &mut String) -> Resul
                     chars.next();
                     out.push('{');
                 } else {
-                    return Err(AppError::invalid_request(
-                        Reason::InterpolationSyntax,
-                        format!("unterminated '{{' in template '{template}'"),
-                    ));
+                    return Err(AppError::internal(format!(
+                        "unterminated '{{' in template '{template}', which load should have refused"
+                    )));
                 }
             }
             '}' => {
@@ -59,10 +58,9 @@ fn process_literal_chunk(chunk: &str, template: &str, out: &mut String) -> Resul
                     chars.next();
                     out.push('}');
                 } else {
-                    return Err(AppError::invalid_request(
-                        Reason::InterpolationSyntax,
-                        format!("unmatched '}}' in template '{template}'"),
-                    ));
+                    return Err(AppError::internal(format!(
+                        "unmatched '}}' in template '{template}', which load should have refused"
+                    )));
                 }
             }
             other => out.push(other),
@@ -95,14 +93,10 @@ pub(super) fn interpolate(
         }
         pos = scanned.end;
 
-        let token = crate::interpolation::parse(scanned.raw).map_err(|_| {
-            AppError::invalid_request(
-                Reason::InterpolationSyntax,
-                format!(
-                    "invalid interpolation token '{}' in template '{template}'",
-                    scanned.raw
-                ),
-            )
+        let token = crate::interpolation::parse(scanned.raw).map_err(|err| {
+            AppError::internal(format!(
+                "{err} in template '{template}', which load should have refused"
+            ))
         })?;
 
         let inner = scanned
@@ -232,79 +226,6 @@ pub(super) fn resolve_dynamic_value_f32(
     }
 }
 
-pub(super) fn resolve_dynamic_value_u16(
-    dyn_val: &crate::models::DynamicValue<u16>,
-    data: &HashMap<String, JsonValue>,
-) -> Result<u16, AppError> {
-    match dyn_val {
-        crate::models::DynamicValue::Literal(v) => Ok(*v),
-        crate::models::DynamicValue::Ref(name) => {
-            let val = data.get(name).ok_or_else(|| {
-                AppError::internal(format!(
-                    "parameter '{name}' has no value although load requires its default"
-                ))
-            })?;
-            match val {
-                JsonValue::Number(n) => n
-                    .as_u64()
-                    .map(|u| u as u16)
-                    .or_else(|| n.as_f64().map(|f| f.round() as u16))
-                    .ok_or_else(|| {
-                        AppError::param_value_invalid(
-                            name,
-                            None,
-                            format!("parameter '{name}' is not a valid integer"),
-                        )
-                    }),
-                JsonValue::String(s) => s.trim().parse::<u16>().map_err(|_| {
-                    AppError::param_value_invalid(
-                        name,
-                        None,
-                        format!("parameter '{name}' is not a valid integer"),
-                    )
-                }),
-                _ => Err(AppError::param_value_invalid(
-                    name,
-                    None,
-                    format!("parameter '{name}' is not a valid integer"),
-                )),
-            }
-        }
-    }
-}
-
-pub(super) fn resolve_dynamic_value_color(
-    dyn_val: &crate::models::DynamicValue<crate::models::Color>,
-    data: &HashMap<String, JsonValue>,
-) -> Result<crate::models::Color, AppError> {
-    match dyn_val {
-        crate::models::DynamicValue::Literal(color) => Ok(color.clone()),
-        crate::models::DynamicValue::Ref(name) => {
-            let val = data
-                .get(name)
-                .ok_or_else(|| AppError::color_param_invalid(name, "parameter was not supplied"))?;
-            let s = match val {
-                JsonValue::String(s) => s.trim(),
-                _ => {
-                    return Err(AppError::color_param_invalid(
-                        name,
-                        "expected a colour string",
-                    ))
-                }
-            };
-            if s.starts_with('{') && s.ends_with('}') && s.len() >= 2 {
-                return Err(AppError::color_param_invalid(
-                    name,
-                    "references cannot be chained",
-                ));
-            }
-            s.parse::<crate::models::Color>().map_err(|_| {
-                AppError::color_param_invalid(name, format!("unrecognised colour '{s}'"))
-            })
-        }
-    }
-}
-
 pub(super) fn resolve_dimension(
     dimension: &crate::models::DynamicDimension,
     data: &HashMap<String, JsonValue>,
@@ -371,46 +292,38 @@ pub(super) fn to_nonbreaking(value: &str) -> String {
     value.replace(' ', "\u{00A0}")
 }
 
-pub(super) fn build_qr_svg(payload: &[u8], params: &Option<QrParams>) -> Result<String, AppError> {
-    let ecc = params
-        .as_ref()
-        .and_then(|params| params.error_correction.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_uppercase())
-        .map(|value| match value.as_str() {
-            "L" => Ok(EcLevel::L),
-            "M" => Ok(EcLevel::M),
-            "Q" => Ok(EcLevel::Q),
-            "H" => Ok(EcLevel::H),
-            _ => Err(AppError::unsupported_layout_item(
-                Reason::QrErrorCorrectionInvalid,
-                "qr error_correction must be one of L, M, Q, H",
-            )),
-        })
-        .transpose()?
-        .unwrap_or(EcLevel::M);
-
-    let code = QrCode::with_error_correction_level(payload, ecc).map_err(|err| {
+pub(super) fn qr_code(
+    payload: &[u8],
+    error_correction: ErrorCorrection,
+) -> Result<QrCode, AppError> {
+    let level = match error_correction {
+        ErrorCorrection::L => EcLevel::L,
+        ErrorCorrection::M => EcLevel::M,
+        ErrorCorrection::Q => EcLevel::Q,
+        ErrorCorrection::H => EcLevel::H,
+    };
+    QrCode::with_error_correction_level(payload, level).map_err(|err| {
         AppError::unsupported_layout_item(
             Reason::QrPayloadInvalid,
             format!("qr generation failed: {err}"),
         )
-    })?;
+    })
+}
 
-    let qz = params
-        .as_ref()
-        .and_then(|params| params.quiet_zone)
-        .unwrap_or(0.0);
-
+pub(super) fn build_qr_svg(
+    payload: &[u8],
+    error_correction: ErrorCorrection,
+    quiet_zone: f32,
+) -> Result<String, AppError> {
+    let code = qr_code(payload, error_correction)?;
     let mut renderer = code.render::<svg::Color>();
     renderer.quiet_zone(false);
     let svg = renderer.build();
 
-    if qz > 0.0 {
+    if quiet_zone > 0.0 {
         let w = code.width() as f32;
-        let total = w + 2.0 * qz;
-        let neg_qz = -qz;
+        let total = w + 2.0 * quiet_zone;
+        let neg_qz = -quiet_zone;
         let old_vb = format!("viewBox=\"0 0 {w} {w}\"");
         let new_vb = format!("viewBox=\"{neg_qz} {neg_qz} {total} {total}\"");
         if svg.contains(&old_vb) {
@@ -422,144 +335,6 @@ pub(super) fn build_qr_svg(payload: &[u8], params: &Option<QrParams>) -> Result<
     } else {
         Ok(svg)
     }
-}
-
-pub(super) fn raster_image_dimensions(
-    bytes: &[u8],
-    fmt: ImageFmt,
-    dpi: u32,
-    unit: &str,
-    path: &str,
-) -> Result<(f32, f32), AppError> {
-    let format = match fmt {
-        ImageFmt::Png => image::ImageFormat::Png,
-        ImageFmt::Jpg => image::ImageFormat::Jpeg,
-        ImageFmt::Svg => unreachable!("svg is not a raster format"),
-    };
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes));
-    reader.set_format(format);
-    let (px_w, px_h) = reader.into_dimensions().map_err(|e| {
-        AppError::unsupported_layout_item(
-            Reason::IntrinsicSizeUndefined,
-            format!("at {path}: failed to read image dimensions: {e}"),
-        )
-    })?;
-
-    let scale = if unit == "in" {
-        1.0 / (dpi as f32)
-    } else {
-        25.4 / (dpi as f32)
-    };
-
-    Ok((px_w as f32 * scale, px_h as f32 * scale))
-}
-
-pub(super) fn svg_axis_intrinsic(
-    svg_str: &str,
-    axis: usize, // 0 = width, 1 = height
-    unit: &str,
-    dpi: u32,
-    path: &str,
-) -> Result<f32, AppError> {
-    let root_svg_re = regex::Regex::new(r#"<svg\b([^>]*)>"#).unwrap();
-    let Some(caps) = root_svg_re.captures(svg_str) else {
-        return Err(AppError::unsupported_layout_item(
-            Reason::IntrinsicSizeUndefined,
-            format!("at {path}: svg root tag not found"),
-        ));
-    };
-    let attrs = caps.get(1).map_or("", |m| m.as_str());
-
-    let attr_name = if axis == 0 { "width" } else { "height" };
-    let attr_re = regex::Regex::new(&format!(r#"\b{attr_name}\s*=\s*["']([^"']+)["']"#)).unwrap();
-
-    let scale_px = if unit == "in" {
-        1.0 / (dpi as f32)
-    } else {
-        25.4 / (dpi as f32)
-    };
-
-    if let Some(c) = attr_re.captures(attrs) {
-        let val_str = c.get(1).unwrap().as_str().trim();
-        if !val_str.ends_with('%')
-            && !val_str.ends_with("em")
-            && !val_str.ends_with("rem")
-            && !val_str.ends_with("ex")
-            && !val_str.ends_with("ch")
-        {
-            if let Some(num_str) = val_str.strip_suffix("in") {
-                if let Ok(num) = num_str.trim().parse::<f32>() {
-                    let val_in_unit = if unit == "in" { num } else { num * 25.4 };
-                    return Ok(val_in_unit);
-                }
-            } else if let Some(num_str) = val_str.strip_suffix("mm") {
-                if let Ok(num) = num_str.trim().parse::<f32>() {
-                    let val_in_unit = if unit == "mm" { num } else { num / 25.4 };
-                    return Ok(val_in_unit);
-                }
-            } else if let Some(num_str) = val_str.strip_suffix("cm") {
-                if let Ok(num) = num_str.trim().parse::<f32>() {
-                    let num_mm = num * 10.0;
-                    let val_in_unit = if unit == "mm" { num_mm } else { num_mm / 25.4 };
-                    return Ok(val_in_unit);
-                }
-            } else if let Some(num_str) = val_str.strip_suffix("pt") {
-                if let Ok(num) = num_str.trim().parse::<f32>() {
-                    let val_in_unit = if unit == "in" {
-                        num / 72.0
-                    } else {
-                        num * 25.4 / 72.0
-                    };
-                    return Ok(val_in_unit);
-                }
-            } else if let Some(num_str) = val_str.strip_suffix("pc") {
-                if let Ok(num) = num_str.trim().parse::<f32>() {
-                    let num_pt = num * 12.0;
-                    let val_in_unit = if unit == "in" {
-                        num_pt / 72.0
-                    } else {
-                        num_pt * 25.4 / 72.0
-                    };
-                    return Ok(val_in_unit);
-                }
-            } else if let Some(num_str) = val_str
-                .strip_suffix('q')
-                .or_else(|| val_str.strip_suffix('Q'))
-            {
-                if let Ok(num) = num_str.trim().parse::<f32>() {
-                    let num_mm = num * 0.25;
-                    let val_in_unit = if unit == "mm" { num_mm } else { num_mm / 25.4 };
-                    return Ok(val_in_unit);
-                }
-            } else if let Some(num_str) = val_str.strip_suffix("px") {
-                if let Ok(num) = num_str.trim().parse::<f32>() {
-                    return Ok(num * scale_px);
-                }
-            } else if let Ok(num) = val_str.parse::<f32>() {
-                return Ok(num * scale_px);
-            }
-        }
-    }
-
-    let vb_re = regex::Regex::new(r#"\bviewBox\s*=\s*["']([^"']+)["']"#).unwrap();
-    if let Some(c) = vb_re.captures(attrs) {
-        let vb_str = c.get(1).unwrap().as_str().trim();
-        let parts: Vec<&str> = vb_str
-            .split(|ch: char| ch.is_whitespace() || ch == ',')
-            .filter(|s| !s.is_empty())
-            .collect();
-        if parts.len() == 4 {
-            let vb_dim_str = if axis == 0 { parts[2] } else { parts[3] };
-            if let Ok(num) = vb_dim_str.parse::<f32>() {
-                return Ok(num * scale_px);
-            }
-        }
-    }
-
-    Err(AppError::unsupported_layout_item(
-        Reason::IntrinsicSizeUndefined,
-        format!("at {path}: svg has no absolute dimension or viewBox on requested axis"),
-    ))
 }
 
 pub(super) fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32) {
@@ -776,7 +551,7 @@ pub struct TextFit {
 pub(super) struct TextLayoutItem<'a> {
     pub raw_text: &'a str,
     pub font_size: &'a FontSize,
-    pub font_weight: Option<crate::models::DynamicValue<u16>>,
+    pub font_weight: Option<u16>,
     pub wrap: bool,
     pub line_spacing: Option<f32>,
     pub alignment: Alignment,
@@ -789,10 +564,7 @@ pub(super) fn layout_text(
     unit: &str,
     path: &str,
 ) -> Result<TextFit, AppError> {
-    let weight = match item.font_weight {
-        Some(crate::models::DynamicValue::Literal(val)) => val,
-        _ => 400,
-    };
+    let weight = item.font_weight.unwrap_or(400);
 
     let width_pt = units_to_pt(box_size.0, unit);
     let height_pt = units_to_pt(box_size.1, unit);
@@ -1669,19 +1441,19 @@ impl ImageFmt {
         }
     }
 
-    fn from_mime(mime: &str) -> Result<Self, AppError> {
+    fn from_mime(mime: &str, item_path: &str) -> Result<Self, AppError> {
         match mime.trim() {
             "image/png" => Ok(ImageFmt::Png),
-            "image/jpeg" | "image/jpg" => Ok(ImageFmt::Jpg),
+            "image/jpeg" => Ok(ImageFmt::Jpg),
             "image/svg+xml" => Ok(ImageFmt::Svg),
             other => Err(AppError::unsupported_layout_item(
                 Reason::ImageFormatUnsupported,
-                format!("unsupported image type '{other}'"),
+                format!("at {item_path}: unsupported image type '{other}'"),
             )),
         }
     }
 
-    fn from_path(path: &str) -> Result<Self, AppError> {
+    fn from_path(path: &str, item_path: &str) -> Result<Self, AppError> {
         let ext = path.rsplit('.').next().map(|e| e.to_ascii_lowercase());
         match ext.as_deref() {
             Some("png") => Ok(ImageFmt::Png),
@@ -1689,7 +1461,7 @@ impl ImageFmt {
             Some("svg") => Ok(ImageFmt::Svg),
             _ => Err(AppError::unsupported_layout_item(
                 Reason::ImageFormatUnsupported,
-                format!("unsupported image extension for '{path}'"),
+                format!("at {item_path}: unsupported image extension for '{path}'"),
             )),
         }
     }
@@ -1699,59 +1471,66 @@ pub(super) fn assets_root() -> PathBuf {
     crate::resolve_dir(std::env::var_os("LABELER_CONFIG_DIR"), "/config").join("assets")
 }
 
-pub(super) fn parse_image_data_uri(value: &str) -> Result<(Vec<u8>, ImageFmt), AppError> {
-    let rest = value.strip_prefix("data:").ok_or_else(|| {
+/// Decodes the data URI the image at `item_path` reads; every failure names that path.
+pub(super) fn parse_image_data_uri(
+    value: &str,
+    item_path: &str,
+) -> Result<(Vec<u8>, ImageFmt), AppError> {
+    let invalid = |msg: &str| {
         AppError::unsupported_layout_item(
             Reason::ImageDataInvalid,
-            "image data must be a base64 data URI",
+            format!("at {item_path}: {msg}"),
         )
-    })?;
-    let (meta, payload) = rest.split_once(',').ok_or_else(|| {
-        AppError::unsupported_layout_item(Reason::ImageDataInvalid, "malformed image data URI")
-    })?;
+    };
+    let rest = value
+        .strip_prefix("data:")
+        .ok_or_else(|| invalid("image data must be a base64 data URI"))?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| invalid("malformed image data URI"))?;
     let mut params = meta.split(';');
     let mime = params.next().unwrap_or("");
     if !params.any(|p| p.eq_ignore_ascii_case("base64")) {
-        return Err(AppError::unsupported_layout_item(
-            Reason::ImageDataInvalid,
-            "image data URI must be base64-encoded",
-        ));
+        return Err(invalid("image data URI must be base64-encoded"));
     }
-    let fmt = ImageFmt::from_mime(mime)?;
+    let fmt = ImageFmt::from_mime(mime, item_path)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload.trim())
-        .map_err(|_| {
-            AppError::unsupported_layout_item(
-                Reason::ImageDataInvalid,
-                "image data is not valid base64",
-            )
-        })?;
+        .map_err(|_| invalid("image data is not valid base64"))?;
     Ok((bytes, fmt))
 }
 
-pub(super) fn resolve_image_asset(root: &Path, src: &str) -> Result<(Vec<u8>, ImageFmt), AppError> {
-    let fmt = ImageFmt::from_path(src)?;
+/// Reads the asset the image at `item_path` names; every failure names that path.
+pub(super) fn resolve_image_asset(
+    root: &Path,
+    src: &str,
+    item_path: &str,
+) -> Result<(Vec<u8>, ImageFmt), AppError> {
+    let fmt = ImageFmt::from_path(src, item_path)?;
+    let failed = |reason: Reason, msg: String| {
+        AppError::unsupported_layout_item(reason, format!("at {item_path}: {msg}"))
+    };
     let canon_root = root.canonicalize().map_err(|_| {
-        AppError::unsupported_layout_item(
+        failed(
             Reason::AssetsDirUnavailable,
-            "assets directory is not available",
+            "assets directory is not available".to_string(),
         )
     })?;
     let candidate = canon_root.join(src);
     let canon = candidate.canonicalize().map_err(|_| {
-        AppError::unsupported_layout_item(
+        failed(
             Reason::ImageAssetMissing,
             format!("image asset not found: {src}"),
         )
     })?;
     if !canon.starts_with(&canon_root) {
-        return Err(AppError::unsupported_layout_item(
+        return Err(failed(
             Reason::ImageAssetPathEscapes,
-            "image asset path escapes the assets directory",
+            "image asset path escapes the assets directory".to_string(),
         ));
     }
     let bytes = std::fs::read(&canon).map_err(|_| {
-        AppError::unsupported_layout_item(
+        failed(
             Reason::ImageAssetUnreadable,
             format!("image asset not readable: {src}"),
         )
@@ -1809,25 +1588,27 @@ mod tests {
     #[test]
     fn parse_data_uri_accepts_png() {
         let uri = format!("data:image/png;base64,{PNG_1X1_B64}");
-        let (bytes, fmt) = parse_image_data_uri(&uri).expect("parse");
+        let (bytes, fmt) = parse_image_data_uri(&uri, "layout[0]").expect("parse");
         assert!(!bytes.is_empty());
         assert_eq!(fmt.ext(), "png");
     }
 
     #[test]
     fn parse_data_uri_rejects_non_data_uri() {
-        assert!(parse_image_data_uri("not-a-data-uri").is_err());
+        assert!(parse_image_data_uri("not-a-data-uri", "layout[0]").is_err());
     }
 
     #[test]
     fn parse_data_uri_rejects_bad_base64() {
-        assert!(parse_image_data_uri("data:image/png;base64,@@@not base64@@@").is_err());
+        assert!(
+            parse_image_data_uri("data:image/png;base64,@@@not base64@@@", "layout[0]").is_err()
+        );
     }
 
     #[test]
     fn parse_data_uri_rejects_unsupported_mime() {
         let uri = format!("data:image/gif;base64,{PNG_1X1_B64}");
-        assert!(parse_image_data_uri(&uri).is_err());
+        assert!(parse_image_data_uri(&uri, "layout[0]").is_err());
     }
 
     #[test]
@@ -1837,7 +1618,7 @@ mod tests {
             .decode(PNG_1X1_B64)
             .unwrap();
         fs::write(dir.join("logo.png"), &bytes).unwrap();
-        let (got, fmt) = resolve_image_asset(&dir, "logo.png").expect("resolve");
+        let (got, fmt) = resolve_image_asset(&dir, "logo.png", "layout[0]").expect("resolve");
         assert_eq!(got, bytes);
         assert_eq!(fmt.ext(), "png");
         fs::remove_dir_all(&dir).ok();
@@ -1850,7 +1631,7 @@ mod tests {
         let secret = parent.join(format!("labeler_secret_{}.png", std::process::id()));
         fs::write(&secret, b"x").unwrap();
         let rel = format!("../{}", secret.file_name().unwrap().to_str().unwrap());
-        assert!(resolve_image_asset(&root, &rel).is_err());
+        assert!(resolve_image_asset(&root, &rel, "layout[0]").is_err());
         fs::remove_file(&secret).ok();
         fs::remove_dir_all(&root).ok();
     }
@@ -1858,7 +1639,7 @@ mod tests {
     #[test]
     fn resolve_asset_missing_file_errors() {
         let dir = unique_dir("missing");
-        assert!(resolve_image_asset(&dir, "nope.png").is_err());
+        assert!(resolve_image_asset(&dir, "nope.png", "layout[0]").is_err());
         fs::remove_dir_all(&dir).ok();
     }
 }
@@ -3216,26 +2997,6 @@ mod dynamic_resolution_tests {
         let err =
             resolve_dynamic_value_f32(&DynamicValue::Ref("bad".to_string()), &data).unwrap_err();
         assert_eq!(err.code(), "InvalidRequest");
-    }
-
-    #[test]
-    fn resolve_dynamic_value_u16_literal_and_ref() {
-        let mut data = HashMap::new();
-        data.insert("weight".to_string(), json!(700));
-        data.insert("weight_str".to_string(), json!("600"));
-
-        assert_eq!(
-            resolve_dynamic_value_u16(&DynamicValue::Literal(400), &data).unwrap(),
-            400
-        );
-        assert_eq!(
-            resolve_dynamic_value_u16(&DynamicValue::Ref("weight".to_string()), &data).unwrap(),
-            700
-        );
-        assert_eq!(
-            resolve_dynamic_value_u16(&DynamicValue::Ref("weight_str".to_string()), &data).unwrap(),
-            600
-        );
     }
 
     #[test]

@@ -1,72 +1,24 @@
 use crate::errors::TemplateError;
 use crate::models::{
-    Color, DynamicDimension, DynamicValue, Extent, Flow, FlowDirection, FlowOverflow, Layout,
+    font_weight_ok, DynamicDimension, Extent, Flow, FlowDirection, FlowOverflow, Layout,
     LayoutItem, Padding, ParamSpec, ParamType, ParamValue, Placement, Shape, Size, SizeValue,
-    Stroke, TemplateFormat,
+    TemplateFormat,
 };
 use crate::raw::{
-    ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
-    RawSizeValue, RawTemplateFormat, StrokeRaw, TemplateDefinitionRaw,
+    ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamEntry,
+    RawParamType, RawSizeValue, RawTemplateFormat, SheetFormatRaw, SingleFormatRaw,
+    TemplateDefinitionRaw,
 };
 use crate::templates::TemplateContent;
 
-impl TryFrom<StrokeRaw> for Stroke {
-    type Error = TemplateError;
-
-    fn try_from(raw: StrokeRaw) -> Result<Self, Self::Error> {
-        let thickness = match raw.thickness {
-            None => {
-                return Err(TemplateError::Validation {
-                    path: "thickness".to_string(),
-                    msg: "stroke thickness is required".to_string(),
-                });
-            }
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "thickness".to_string(),
-                    msg: "stroke thickness cannot be null".to_string(),
-                });
-            }
-            Some(Some(t)) => t,
-        };
-
-        let color =
-            match raw.color {
-                None => DynamicValue::Literal(Color::black()),
-                Some(None) => {
-                    return Err(TemplateError::Validation {
-                        path: "color".to_string(),
-                        msg: "stroke color cannot be null".to_string(),
-                    });
-                }
-                Some(Some(raw_dyn)) => match raw_dyn {
-                    DynamicValue::Ref(r) => DynamicValue::Ref(r),
-                    DynamicValue::Literal(raw_color) => {
-                        let c = raw_color.0.parse::<Color>().map_err(|e| {
-                            TemplateError::Validation {
-                                path: "color".to_string(),
-                                msg: e,
-                            }
-                        })?;
-                        DynamicValue::Literal(c)
-                    }
-                },
-            };
-
-        Ok(Stroke { thickness, color })
-    }
-}
-
 impl PlacementRaw {
-    /// `size` xor `to`. `kind` is the item type (`text`, `qr`, `image`, `container`) and becomes the
-    /// error path, the way `require_one_of` does it: there is no `placement:` key in the YAML, so
-    /// naming one would point the author at something they cannot find. `default_extent` is what
-    /// "neither" means for this item kind: `None` makes it an error (text, qr, image), `Some`
-    /// supplies the container's fill-the-parent default.
+    /// `size` xor `to`, one of which every boxed item sets. `kind` is the item type (`text`, `qr`,
+    /// `image`, `container`) and becomes the error path for a missing or doubled extent, the way
+    /// `require_one_of` does it: there is no `placement:` key in the YAML, so naming one would point
+    /// the author at something they cannot find.
     pub(crate) fn into_placement(
         self,
         kind: &str,
-        default_extent: Option<Extent>,
         is_packed: bool,
     ) -> Result<Placement, TemplateError> {
         if is_packed {
@@ -90,34 +42,49 @@ impl PlacementRaw {
                     msg: "set exactly one of size or to, not both".to_string(),
                 })
             }
-            (Some(raw_size), None) => {
-                let mut size_vals = Vec::with_capacity(2);
-                for (axis, sv) in raw_size.0.into_iter().enumerate() {
-                    match sv {
-                        RawSizeValue::Auto => {
-                            return Err(TemplateError::Validation {
-                                path: format!("size[{axis}]"),
-                                msg: "`auto` was renamed: use `content` to hug the item's own size, or `fill` to stretch to the frame".to_string(),
-                            });
-                        }
-                        RawSizeValue::Content => size_vals.push(SizeValue::Content),
-                        RawSizeValue::Fill => size_vals.push(SizeValue::Fill),
-                        RawSizeValue::Dynamic(dv) => size_vals.push(SizeValue::Dynamic(dv)),
-                    }
-                }
-                Extent::Size(Size([size_vals.remove(0), size_vals.remove(0)]))
-            }
+            (Some(raw_size), None) => Extent::Size(Size(raw_size.0.map(|value| match value {
+                RawSizeValue::Content => SizeValue::Content,
+                RawSizeValue::Fill => SizeValue::Fill,
+                RawSizeValue::Dynamic(dv) => SizeValue::Dynamic(dv),
+            }))),
             (None, Some(to)) => Extent::To(to),
-            (None, None) => default_extent.ok_or_else(|| TemplateError::Validation {
-                path: kind.to_string(),
-                msg: "must set one of size or to".to_string(),
-            })?,
+            (None, None) => {
+                return Err(TemplateError::Validation {
+                    path: kind.to_string(),
+                    msg: "must set one of size or to".to_string(),
+                })
+            }
         };
         let at = if is_packed {
             None
         } else {
             Some(self.at.unwrap_or_default())
         };
+        if let (Some(at), Extent::To(to)) = (&at, &extent) {
+            for (axis, coord) in AXIS_COORDS.into_iter().enumerate() {
+                if at.0[axis].is_sign_negative() && !to.0[axis].is_sign_negative() {
+                    return Err(TemplateError::Validation {
+                        path: "to".to_string(),
+                        msg: format!(
+                            "an edge-relative at cannot pair with a non-negative to on {coord}"
+                        ),
+                    });
+                }
+            }
+        }
+        for (axis, (key, cap)) in [("max_w", self.max_w), ("max_h", self.max_h)]
+            .into_iter()
+            .enumerate()
+        {
+            let stretches = matches!(&extent, Extent::Size(size)
+                if matches!(size.0[axis], SizeValue::Content | SizeValue::Fill));
+            if cap.is_some() && !stretches {
+                return Err(TemplateError::Validation {
+                    path: key.to_string(),
+                    msg: format!("{key} caps only a size component written content or fill"),
+                });
+            }
+        }
         Ok(Placement {
             at,
             extent,
@@ -126,6 +93,38 @@ impl PlacementRaw {
             rotate: self.rotate,
         })
     }
+}
+
+/// The coordinate each axis index names in a refusal.
+const AXIS_COORDS: [&str; 2] = ["x", "y"];
+
+/// An image has no intrinsic size (`layout`, "Intrinsic sizes"), so each axis of its box is
+/// authored: a number or reference `size` component, or a `to` whose corners share a sign.
+fn require_authored_image_box(placement: &Placement) -> Result<(), TemplateError> {
+    for (axis, coord) in AXIS_COORDS.into_iter().enumerate() {
+        let refused = match &placement.extent {
+            Extent::Size(size) => {
+                matches!(size.0[axis], SizeValue::Content | SizeValue::Fill).then_some("size")
+            }
+            // An edge-relative `at` with a non-negative `to` is refused for every item before this.
+            Extent::To(to) => {
+                let at_is_edge = placement
+                    .at
+                    .as_ref()
+                    .is_some_and(|at| at.0[axis].is_sign_negative());
+                (at_is_edge != to.0[axis].is_sign_negative()).then_some("to")
+            }
+        };
+        if let Some(key) = refused {
+            return Err(TemplateError::Validation {
+                path: key.to_string(),
+                msg: format!(
+                    "an image has no intrinsic size, so its extent on {coord} must be a number, a reference, or a to whose corners share a sign"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 impl TryFrom<PaddingRaw> for Padding {
@@ -147,7 +146,8 @@ impl TryFrom<PaddingRaw> for Padding {
             },
         };
 
-        if padding.top < 0.0 || padding.right < 0.0 || padding.bottom < 0.0 || padding.left < 0.0 {
+        let sides = [padding.top, padding.right, padding.bottom, padding.left];
+        if sides.iter().any(|side| *side < 0.0) {
             return Err(TemplateError::Validation {
                 path: "padding".to_string(),
                 msg: "padding values must be >= 0".to_string(),
@@ -159,9 +159,13 @@ impl TryFrom<PaddingRaw> for Padding {
 }
 
 impl ContainerRaw {
-    pub(crate) fn try_into_container(self, is_packed: bool) -> Result<LayoutItem, TemplateError> {
+    pub(crate) fn try_into_container(
+        self,
+        placement: PlacementRaw,
+        is_packed: bool,
+    ) -> Result<LayoutItem, TemplateError> {
         let flow = match self.flow {
-            Some(Some(flow_raw)) => {
+            Some(flow_raw) => {
                 let direction = match flow_raw.direction.as_deref() {
                     Some("row") => FlowDirection::Row,
                     Some("column") => FlowDirection::Column,
@@ -217,100 +221,32 @@ impl ContainerRaw {
                     overflow,
                 })
             }
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "flow.direction".to_string(),
-                    msg: "flow direction is required ('row' or 'column')".to_string(),
-                });
-            }
             None => None,
         };
 
-        // A container with neither `size` nor `to` defaults to size: [fill, fill]
-        let default_extent = Some(Extent::Size(Size([SizeValue::Fill, SizeValue::Fill])));
-        let placement = self
-            .placement
-            .into_placement("container", default_extent, is_packed)?;
+        let placement = placement.into_placement("container", is_packed)?;
         let padding = match self.padding {
             None => Padding::ZERO,
             Some(padding) => Padding::try_from(padding)?,
         };
 
-        let stroke = match self.stroke {
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "stroke".to_string(),
-                    msg: "stroke cannot be null".to_string(),
-                });
-            }
-            Some(Some(raw_stroke)) => {
-                let stroke =
-                    Stroke::try_from(raw_stroke).map_err(|err| err.with_prefix("stroke"))?;
-                Some(stroke)
-            }
-            None => None,
-        };
-
         let shape = match self.shape {
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "shape".to_string(),
-                    msg: "shape cannot be null".to_string(),
-                });
-            }
-            Some(Some(s)) => match s.as_str() {
+            Some(s) => match s.as_str() {
                 "rect" => Shape::Rect,
                 "ellipse" => Shape::Ellipse,
-                "circle" => Shape::Circle,
                 _ => {
                     return Err(TemplateError::Validation {
                         path: "shape".to_string(),
-                        msg: format!(
-                            "unknown shape '{s}', accepted values are: rect, ellipse, circle"
-                        ),
+                        msg: format!("unknown shape '{s}', accepted values are: rect, ellipse"),
                     });
                 }
             },
             None => Shape::Rect,
         };
 
-        let background = match self.background {
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "background".to_string(),
-                    msg: "background cannot be null".to_string(),
-                });
-            }
-            Some(Some(raw_dyn)) => {
-                let dyn_color = match raw_dyn {
-                    DynamicValue::Ref(r) => DynamicValue::Ref(r),
-                    DynamicValue::Literal(raw_color) => {
-                        let c = raw_color.0.parse::<Color>().map_err(|e| {
-                            TemplateError::Validation {
-                                path: "background".to_string(),
-                                msg: e,
-                            }
-                        })?;
-                        DynamicValue::Literal(c)
-                    }
-                };
-                Some(dyn_color)
-            }
-            None => None,
-        };
+        let rounded = self.rounded;
 
-        let rounded = match self.rounded {
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "rounded".to_string(),
-                    msg: "rounded cannot be null".to_string(),
-                });
-            }
-            Some(Some(r)) => Some(r),
-            None => None,
-        };
-
-        if rounded.is_some() && matches!(shape, Shape::Ellipse | Shape::Circle) {
+        if rounded.is_some() && shape == Shape::Ellipse {
             return Err(TemplateError::Validation {
                 path: "rounded".to_string(),
                 msg: "rounded is only supported on rect containers".to_string(),
@@ -318,13 +254,7 @@ impl ContainerRaw {
         }
 
         let repeat = match self.repeat {
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "repeat".to_string(),
-                    msg: "repeat cannot be null".to_string(),
-                });
-            }
-            Some(Some(r)) => {
+            Some(r) => {
                 if !is_packed {
                     return Err(TemplateError::Validation {
                         path: "repeat".to_string(),
@@ -349,8 +279,8 @@ impl ContainerRaw {
             placement,
             when: self.when,
             shape,
-            stroke,
-            background,
+            stroke: self.stroke,
+            background: self.background,
             rounded,
             padding,
             flow,
@@ -360,28 +290,14 @@ impl ContainerRaw {
     }
 }
 
-impl TryFrom<ContainerRaw> for LayoutItem {
-    type Error = TemplateError;
-
-    fn try_from(raw: ContainerRaw) -> Result<Self, Self::Error> {
-        raw.try_into_container(false)
-    }
-}
-
 impl LayoutItem {
     pub(crate) fn try_from_raw(raw: LayoutItemRaw, is_packed: bool) -> Result<Self, TemplateError> {
         match raw {
-            LayoutItemRaw::Text(raw) => {
-                if raw.multiline.is_some() {
-                    return Err(TemplateError::Validation {
-                        path: "multiline".to_string(),
-                        msg: "`multiline` on a text item was renamed: use `wrap: true` to enable soft wrapping, or `wrap: false` (the default) to keep hard breaks without soft wrapping".to_string(),
-                    });
-                }
+            LayoutItemRaw::Text(placement, raw) => {
                 // Also checked in `TemplateDefinition::validate`, which covers items built by any
                 // other route; here so an API caller gets the error with its JSON path.
                 if let Some(crate::raw::Dynamic::Literal(weight)) = raw.font_weight {
-                    if !(100..=900).contains(&weight) || weight % 100 != 0 {
+                    if !font_weight_ok(weight.into()) {
                         return Err(TemplateError::Validation {
                             path: "text.font_weight".to_string(),
                             msg: format!(
@@ -390,91 +306,47 @@ impl LayoutItem {
                         });
                     }
                 }
-                let color = match raw.color {
-                    None | Some(None) => None,
-                    Some(Some(raw_dyn)) => {
-                        let dyn_color = match raw_dyn {
-                            DynamicValue::Ref(r) => DynamicValue::Ref(r),
-                            DynamicValue::Literal(raw_color) => {
-                                let c = raw_color.0.parse::<Color>().map_err(|e| {
-                                    TemplateError::Validation {
-                                        path: "color".to_string(),
-                                        msg: e,
-                                    }
-                                })?;
-                                DynamicValue::Literal(c)
-                            }
-                        };
-                        Some(dyn_color)
-                    }
-                };
-                let line_spacing = match raw.line_spacing {
-                    None => None,
-                    Some(None) => {
-                        return Err(TemplateError::Validation {
-                            path: "line_spacing".to_string(),
-                            msg: "line_spacing cannot be null".to_string(),
-                        });
-                    }
-                    Some(Some(crate::raw::RawLineSpacing::Float(spacing))) => {
-                        if !spacing.is_finite() || spacing <= 0.0 {
-                            return Err(TemplateError::Validation {
-                                path: "line_spacing".to_string(),
-                                msg: format!(
-                                    "line_spacing must be a finite number greater than 0, got {spacing}"
-                                ),
-                            });
-                        }
-                        Some(DynamicValue::Literal(spacing))
-                    }
-                    Some(Some(crate::raw::RawLineSpacing::Ref(param))) => {
-                        Some(DynamicValue::Ref(param))
-                    }
-                    Some(Some(crate::raw::RawLineSpacing::Invalid(s))) => {
+                if let Some(spacing) = raw.line_spacing {
+                    if !spacing.is_finite() || spacing <= 0.0 {
                         return Err(TemplateError::Validation {
                             path: "line_spacing".to_string(),
                             msg: format!(
-                                "line_spacing must be a bare number, finite, greater than zero, got {s}"
+                                "line_spacing must be a finite number greater than 0, got {spacing}"
                             ),
                         });
                     }
-                };
+                }
                 Ok(LayoutItem::Text {
                     value: raw.value,
-                    placement: raw.placement.into_placement("text", None, is_packed)?,
+                    placement: placement.into_placement("text", is_packed)?,
                     font_size: raw.font_size,
                     font_weight: raw.font_weight,
-                    color,
+                    color: raw.color,
                     wrap: raw.wrap,
-                    line_spacing,
+                    line_spacing: raw.line_spacing,
                     alignment: raw.alignment,
                     overflow: raw.overflow,
                     when: raw.when,
                 })
             }
-            LayoutItemRaw::Qr(raw) => Ok(LayoutItem::Qr {
+            LayoutItemRaw::Qr(placement, raw) => Ok(LayoutItem::Qr {
                 value: raw.value,
-                placement: raw.placement.into_placement("qr", None, is_packed)?,
-                params: raw.params,
+                placement: placement.into_placement("qr", is_packed)?,
+                error_correction: raw.error_correction,
+                module_size: raw.module_size,
+                quiet_zone: raw.quiet_zone,
                 when: raw.when,
             }),
-            LayoutItemRaw::Image(raw) => match (&raw.src, &raw.name) {
-                (Some(_), Some(_)) => Err(TemplateError::Validation {
-                    path: "image".to_string(),
-                    msg: "image must set exactly one of src or name, not both".to_string(),
-                }),
-                (None, None) => Err(TemplateError::Validation {
-                    path: "image".to_string(),
-                    msg: "image must set one of src or name".to_string(),
-                }),
-                _ => Ok(LayoutItem::Image {
-                    name: raw.name,
+            LayoutItemRaw::Image(placement, raw) => {
+                let placement = placement.into_placement("image", is_packed)?;
+                require_authored_image_box(&placement)?;
+                Ok(LayoutItem::Image {
                     src: raw.src,
-                    placement: raw.placement.into_placement("image", None, is_packed)?,
+                    placement,
                     fit: raw.fit,
                     when: raw.when,
-                }),
-            },
+                })
+            }
             LayoutItemRaw::Line(raw) => {
                 if is_packed {
                     return Err(TemplateError::Validation {
@@ -482,26 +354,16 @@ impl LayoutItem {
                         msg: "line cannot be a packed child".to_string(),
                     });
                 }
-                let stroke = match raw.stroke {
-                    None => None,
-                    Some(None) => {
-                        return Err(TemplateError::Validation {
-                            path: "stroke".to_string(),
-                            msg: "stroke cannot be null".to_string(),
-                        });
-                    }
-                    Some(Some(raw_stroke)) => Some(
-                        Stroke::try_from(raw_stroke).map_err(|err| err.with_prefix("stroke"))?,
-                    ),
-                };
                 Ok(LayoutItem::Line {
                     at: raw.at,
                     to: raw.to,
-                    stroke,
+                    stroke: raw.stroke,
                     when: raw.when,
                 })
             }
-            LayoutItemRaw::Container(raw) => raw.try_into_container(is_packed),
+            LayoutItemRaw::Container(placement, raw) => {
+                raw.try_into_container(placement, is_packed)
+            }
         }
     }
 }
@@ -530,26 +392,26 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
 
     fn try_from(raw: RawTemplateFormat) -> Result<Self, Self::Error> {
         match raw {
-            RawTemplateFormat::Sheet {
+            RawTemplateFormat::Sheet(SheetFormatRaw {
                 paper_width,
                 paper_height,
                 label_width,
                 label_height,
                 positions,
-            } => Ok(TemplateFormat::Sheet {
+            }) => Ok(TemplateFormat::Sheet {
                 paper_width,
                 paper_height,
                 label_width,
                 label_height,
                 positions,
             }),
-            RawTemplateFormat::Single {
+            RawTemplateFormat::Single(SingleFormatRaw {
                 width,
                 height,
                 media_width,
-            } => Ok(TemplateFormat::Single {
+            }) => Ok(TemplateFormat::Single {
                 width: DynamicDimension::try_from(width)?,
-                height: DynamicDimension::try_from(height)?,
+                height,
                 media_width,
             }),
         }
@@ -560,13 +422,7 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
 /// text, for `resolve_environment` to resolve per request. A literal default is judged now by the
 /// supplied-value rule of the parameter's type, bounds included, and stored coerced; one the rule
 /// refuses, or reads as an omission, is refused at `default`.
-fn set_default(
-    spec: &mut ParamSpec,
-    default_raw: Option<serde_yaml_ng::Value>,
-) -> Result<(), TemplateError> {
-    let Some(raw) = default_raw else {
-        return Ok(());
-    };
+fn set_default(spec: &mut ParamSpec, raw: serde_yaml_ng::Value) -> Result<(), TemplateError> {
     if let serde_yaml_ng::Value::String(text) = &raw {
         if text.contains('{') || text.contains('}') {
             spec.default = Some(ParamValue::String(text.clone()));
@@ -594,176 +450,75 @@ fn set_default(
     }
 }
 
-impl TryFrom<RawParamSpec> for ParamSpec {
+/// A `list` default: a sequence of strings, element errors naming the element's position.
+fn list_default(default_raw: serde_yaml_ng::Value) -> Result<ParamValue, TemplateError> {
+    let serde_yaml_ng::Value::Sequence(seq) = default_raw else {
+        return Err(TemplateError::Validation {
+            path: "default".to_string(),
+            msg: "default for a list parameter must be a sequence of strings".to_string(),
+        });
+    };
+    let mut items = Vec::with_capacity(seq.len());
+    for (idx, elem) in seq.into_iter().enumerate() {
+        match elem {
+            serde_yaml_ng::Value::String(s) => items.push(s),
+            _ => {
+                return Err(TemplateError::Validation {
+                    path: format!("default[{idx}]"),
+                    msg: format!("list default element at position {idx} must be a string"),
+                });
+            }
+        }
+    }
+    Ok(ParamValue::List(items))
+}
+
+impl TryFrom<RawParamEntry> for ParamSpec {
     type Error = TemplateError;
 
-    fn try_from(raw: RawParamSpec) -> Result<Self, Self::Error> {
-        if raw.format.is_some() {
+    fn try_from(raw: RawParamEntry) -> Result<Self, Self::Error> {
+        // The parameters spec's type table: the attributes each type admits besides `description`.
+        let (type_name, attributes): (&str, &[&str]) = match raw.param_type {
+            RawParamType::String => ("string", &["default", "multiline"]),
+            RawParamType::Integer => ("integer", &["default", "min", "max"]),
+            RawParamType::Number => ("number", &["default", "min", "max"]),
+            RawParamType::Boolean => ("boolean", &["default"]),
+            RawParamType::Enum => ("enum", &["values", "default"]),
+            RawParamType::Datetime => ("datetime", &["default", "time"]),
+            RawParamType::List => ("list", &["default"]),
+        };
+        let present = [
+            ("default", raw.default.is_some()),
+            ("min", raw.min.is_some()),
+            ("max", raw.max.is_some()),
+            ("multiline", raw.multiline.is_some()),
+            ("values", raw.values.is_some()),
+            ("time", raw.time.is_some()),
+        ];
+        if let Some((key, _)) = present
+            .iter()
+            .find(|(key, is_present)| *is_present && !attributes.contains(key))
+        {
             return Err(TemplateError::Validation {
-                path: "format".to_string(),
-                msg: "format is not supported on parameters; choose format in the interpolation token (e.g. '{param.format_name}')".to_string(),
+                path: key.to_string(),
+                msg: format!("{key} is not an attribute of a {type_name} parameter"),
             });
         }
-
-        if let Some(serde_yaml_ng::Value::Null) = raw.default {
-            return Err(TemplateError::Validation {
-                path: "default".to_string(),
-                msg: "default cannot be null".to_string(),
-            });
-        }
-        let default_raw = raw.default;
-
-        if raw.param_type != crate::raw::RawParamType::List {
-            if let Some(serde_yaml_ng::Value::Sequence(_)) = default_raw {
-                return Err(TemplateError::Validation {
-                    path: "default".to_string(),
-                    msg: "sequence default is only supported on list parameters".to_string(),
-                });
-            }
-        }
-
-        if raw.param_type == crate::raw::RawParamType::Datetime {
-            if raw.min.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "min".to_string(),
-                    msg: "min is not supported on datetime parameters".to_string(),
-                });
-            }
-            if raw.max.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "max".to_string(),
-                    msg: "max is not supported on datetime parameters".to_string(),
-                });
-            }
-            if raw.multiline.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "multiline".to_string(),
-                    msg: "multiline is not supported on datetime parameters".to_string(),
-                });
-            }
-            if raw.values.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "values".to_string(),
-                    msg: "values is not supported on datetime parameters".to_string(),
-                });
-            }
-
-            let time = match raw.time {
-                None => false,
-                Some(Some(b)) => b,
-                Some(None) => {
-                    return Err(TemplateError::Validation {
-                        path: "time".to_string(),
-                        msg: "time must be a boolean (true or false)".to_string(),
-                    });
-                }
-            };
-
-            let mut spec = ParamSpec {
-                param_type: ParamType::Datetime { time },
-                default: None,
-                default_instant: None,
-                min: None,
-                max: None,
-                description: raw.description,
-            };
-            set_default(&mut spec, default_raw)?;
-            return Ok(spec);
-        }
-
-        if raw.param_type == crate::raw::RawParamType::List {
-            if raw.min.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "min".to_string(),
-                    msg: "min is not supported on list parameters".to_string(),
-                });
-            }
-            if raw.max.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "max".to_string(),
-                    msg: "max is not supported on list parameters".to_string(),
-                });
-            }
-            if raw.multiline.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "multiline".to_string(),
-                    msg: "multiline is not supported on list parameters".to_string(),
-                });
-            }
-            if raw.values.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "values".to_string(),
-                    msg: "values is not supported on list parameters".to_string(),
-                });
-            }
-            if raw.time.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "time".to_string(),
-                    msg: "time is only supported on datetime parameters".to_string(),
-                });
-            }
-
-            let default = match default_raw {
-                None => None,
-                Some(serde_yaml_ng::Value::Sequence(seq)) => {
-                    let mut items = Vec::with_capacity(seq.len());
-                    for (idx, elem) in seq.into_iter().enumerate() {
-                        match elem {
-                            serde_yaml_ng::Value::String(s) => items.push(s),
-                            _ => {
-                                return Err(TemplateError::Validation {
-                                    path: format!("default[{idx}]"),
-                                    msg: format!(
-                                        "list default element at position {idx} must be a string"
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                    Some(ParamValue::List(items))
-                }
-                Some(_) => {
-                    return Err(TemplateError::Validation {
-                        path: "default".to_string(),
-                        msg: "default for a list parameter must be a sequence of strings"
-                            .to_string(),
-                    });
-                }
-            };
-
-            return Ok(ParamSpec {
-                param_type: ParamType::List,
-                default,
-                default_instant: None,
-                min: None,
-                max: None,
-                description: raw.description,
-            });
-        }
-
-        if raw.time.is_some() {
-            return Err(TemplateError::Validation {
-                path: "time".to_string(),
-                msg: "time is only supported on datetime parameters".to_string(),
-            });
-        }
-
-        // `.flatten()` collapses "absent" and "written empty" back into the one `None` the domain
-        // model has always had. Presence mattered only to the datetime rules above; from here the
-        // behavior for every other type is what it was before `datetime` existed.
-        let multiline = raw.multiline.flatten().unwrap_or(false);
-        let values = raw.values.flatten().unwrap_or_default();
-        let min = raw.min.flatten();
-        let max = raw.max.flatten();
 
         let param_type = match raw.param_type {
-            crate::raw::RawParamType::String => ParamType::String { multiline },
-            crate::raw::RawParamType::Length => ParamType::Length,
-            crate::raw::RawParamType::Integer => ParamType::Integer,
-            crate::raw::RawParamType::Number => ParamType::Number,
-            crate::raw::RawParamType::Boolean => ParamType::Boolean,
-            crate::raw::RawParamType::Enum => ParamType::Enum { values },
-            crate::raw::RawParamType::Datetime | crate::raw::RawParamType::List => unreachable!(),
+            RawParamType::String => ParamType::String {
+                multiline: raw.multiline.unwrap_or(false),
+            },
+            RawParamType::Integer => ParamType::Integer,
+            RawParamType::Number => ParamType::Number,
+            RawParamType::Boolean => ParamType::Boolean,
+            RawParamType::Enum => ParamType::Enum {
+                values: raw.values.unwrap_or_default(),
+            },
+            RawParamType::Datetime => ParamType::Datetime {
+                time: raw.time.unwrap_or(false),
+            },
+            RawParamType::List => ParamType::List,
         };
 
         if let ParamType::Enum { values } = &param_type {
@@ -783,11 +538,23 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             param_type,
             default: None,
             default_instant: None,
-            min,
-            max,
+            min: raw.min,
+            max: raw.max,
             description: raw.description,
         };
-        set_default(&mut spec, default_raw)?;
+        match raw.default {
+            None => {}
+            Some(default_raw) if spec.param_type == ParamType::List => {
+                spec.default = Some(list_default(default_raw)?);
+            }
+            Some(serde_yaml_ng::Value::Sequence(_)) => {
+                return Err(TemplateError::Validation {
+                    path: "default".to_string(),
+                    msg: "sequence default is only supported on list parameters".to_string(),
+                });
+            }
+            Some(default_raw) => set_default(&mut spec, default_raw)?,
+        }
         Ok(spec)
     }
 }
@@ -805,14 +572,14 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
 
         let mut params = indexmap::IndexMap::new();
         for entry in raw.params {
-            let key = entry.name;
+            let key = entry.name.clone();
             if params.contains_key(&key) {
                 return Err(TemplateError::Validation {
                     path: format!("params.{key}"),
                     msg: format!("duplicate parameter name '{key}'"),
                 });
             }
-            let spec = ParamSpec::try_from(entry.spec)
+            let spec = ParamSpec::try_from(entry)
                 .map_err(|err| err.with_prefix(&format!("params.{key}")))?;
             params.insert(key, spec);
         }
@@ -822,7 +589,7 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
         let mut repeated_in_scope = Vec::new();
         validate_repetition_layout(&items, &params, "layout", &mut repeated_in_scope)?;
 
-        Ok(TemplateContent {
+        let content = TemplateContent {
             name: raw.name,
             description: raw.description.unwrap_or_default(),
             categories: raw.categories,
@@ -831,7 +598,25 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
             format,
             params,
             layout: Layout::Items(items),
-        })
+        };
+        for name in content.weight_params() {
+            // An undeclared or mistyped reference is refused by `validate_references`.
+            let default = content
+                .params
+                .get(name)
+                .and_then(|spec| spec.default.as_ref());
+            if let Some(&ParamValue::Integer(weight)) = default {
+                if !font_weight_ok(weight) {
+                    return Err(TemplateError::Validation {
+                        path: format!("params.{name}.default"),
+                        msg: format!(
+                            "a font_weight reads this parameter, so its default must be a multiple of 100 between 100 and 900, got {weight}"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(content)
     }
 }
 
@@ -857,16 +642,17 @@ fn validate_repetition_item(
     match item {
         LayoutItem::Container { repeat, items, .. } => {
             if let Some(rep_name) = repeat {
+                let repeat_path = format!("{path}.repeat");
                 let spec = params
                     .get(rep_name)
                     .ok_or_else(|| TemplateError::Validation {
-                        path: path.to_string(),
+                        path: repeat_path.clone(),
                         msg: format!("repeat references undeclared parameter '{rep_name}'"),
                     })?;
 
                 if !matches!(spec.param_type, ParamType::List) {
                     return Err(TemplateError::Validation {
-                        path: path.to_string(),
+                        path: repeat_path.clone(),
                         msg: format!(
                             "repeat references parameter '{rep_name}' declared as type: {}, but repeat requires a list",
                             spec.param_type.type_name()
@@ -876,7 +662,7 @@ fn validate_repetition_item(
 
                 if repeated_in_scope.iter().any(|r| r == rep_name) {
                     return Err(TemplateError::Validation {
-                        path: path.to_string(),
+                        path: repeat_path,
                         msg: format!(
                             "nested repeat over '{rep_name}' is not allowed: parameter is already repeated by an enclosing container"
                         ),
@@ -902,12 +688,12 @@ fn validate_repetition_item(
             }
         }
         LayoutItem::Text { value, .. } | LayoutItem::Qr { value, .. } => {
-            check_scoped_tokens(value, path, repeated_in_scope)?;
+            check_scoped_tokens(value, &format!("{path}.value"), repeated_in_scope)?;
         }
-        LayoutItem::Image { src: Some(src), .. } => {
-            check_scoped_tokens(src, path, repeated_in_scope)?;
+        LayoutItem::Image { src, .. } => {
+            check_scoped_tokens(src, &format!("{path}.src"), repeated_in_scope)?;
         }
-        LayoutItem::Image { src: None, .. } | LayoutItem::Line { .. } => {}
+        LayoutItem::Line { .. } => {}
     }
     Ok(())
 }
@@ -955,17 +741,13 @@ fn check_scoped_tokens(
 #[cfg(test)]
 mod tests {
     use crate::models::Shape;
-    use crate::raw::TemplateDefinitionRaw;
     use crate::templates::TemplateContent;
-    use std::str::FromStr;
 
     fn try_build(layout_yaml: &str) -> Result<TemplateContent, String> {
         let yaml = format!(
             "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n{layout_yaml}"
         );
-        let raw: TemplateDefinitionRaw =
-            serde_yaml_ng::from_str(&yaml).map_err(|e| e.to_string())?;
-        TemplateContent::try_from(raw).map_err(|e| e.to_string())
+        crate::parse::parse_template(&yaml).map_err(|e| e.to_string())
     }
 
     #[test]
@@ -1030,22 +812,33 @@ mod tests {
         );
     }
 
-    /// max_w/max_h beside `to` is accepted in conversion; resolver binds or ignores caps by source.
+    /// A cap binds only a `size` component written `content` or `fill`, so beside `to` it is refused.
     #[test]
-    fn to_with_max_w_is_accepted() {
-        assert!(try_build("  - type: text\n    value: \"x\"\n    at: [0,0]\n    to: [10,5]\n    max_w: 8\n    font_size: 8\n").is_ok());
+    fn to_with_max_w_is_refused() {
+        let err = try_build("  - type: text\n    value: \"x\"\n    at: [0,0]\n    to: [10,5]\n    max_w: 8\n    font_size: 8\n").unwrap_err();
+        assert!(
+            err.contains("layout[0].max_w"),
+            "expected the cap's path in {err}"
+        );
     }
 
-    /// A container with neither keeps today's fill-the-parent default.
     #[test]
-    fn container_with_neither_defaults_to_auto() {
-        assert!(try_build("  - type: container\n    at: [0,0]\n    items: []\n").is_ok());
+    fn container_with_neither_is_refused() {
+        let err = try_build("  - type: container\n    at: [0,0]\n    items: []\n").unwrap_err();
+        assert!(
+            err.contains("layout[0]"),
+            "expected the item's path in {err}"
+        );
     }
 
+    /// Load `param_yaml` as the attributes of one parameter `p` of an otherwise empty template.
     fn try_build_param(param_yaml: &str) -> Result<crate::models::ParamSpec, String> {
-        let raw: crate::raw::RawParamSpec =
-            serde_yaml_ng::from_str(param_yaml).map_err(|e| e.to_string())?;
-        crate::models::ParamSpec::try_from(raw).map_err(|e| e.to_string())
+        let yaml = format!(
+            "name: T\nunit: mm\ndpi: 200\nformat: {{ type: single, width: 10, height: 10 }}\nparams:\n  - name: p\n    {}\nlayout: []\n",
+            param_yaml.lines().collect::<Vec<_>>().join("\n    ")
+        );
+        let content = crate::parse::parse_template(&yaml).map_err(|e| e.to_string())?;
+        Ok(content.params["p"].clone())
     }
 
     #[test]
@@ -1102,23 +895,19 @@ mod tests {
     #[test]
     fn non_datetime_param_attributes_keep_their_types() {
         assert!(
-            try_build_param("type: length\nmin: \"twenty\"\n").is_err(),
+            try_build_param("type: number\nmin: \"twenty\"\n").is_err(),
             "a non-numeric min must fail to load, not resolve to no min"
         );
-        assert!(try_build_param("type: length\nmax: [1, 2]\n").is_err());
+        assert!(try_build_param("type: number\nmax: [1, 2]\n").is_err());
         assert!(
             try_build_param("type: string\nmultiline: \"yes\"\n").is_err(),
             "a non-boolean multiline must fail to load, not resolve to false"
         );
         assert!(try_build_param("type: enum\nvalues: 3\n").is_err());
 
-        let ok = try_build_param("type: length\nmin: 25\nmax: 300\n").unwrap();
+        let ok = try_build_param("type: number\nmin: 25\nmax: 300\n").unwrap();
         assert_eq!(ok.min, Some(25.0));
         assert_eq!(ok.max, Some(300.0));
-
-        // Written and left empty is the same as absent for every type but `datetime`.
-        let empty = try_build_param("type: length\nmin:\n").unwrap();
-        assert_eq!(empty.min, None);
     }
 
     #[test]
@@ -1136,11 +925,8 @@ mod tests {
             "type: enum\nenum: [a, b]\n",
             "type: integer\ndefault: 400\nenum: [100, 400, 700]\n",
             "type: datetime\nenum: [\"2026-01-01\"]\n",
-            "type: integer\nenum:\n",
         ] {
-            let err = serde_yaml_ng::from_str::<crate::raw::RawParamSpec>(yaml)
-                .expect_err("enum: must be refused as unknown field");
-            let msg = err.to_string();
+            let msg = try_build_param(yaml).expect_err("enum: must be refused as unknown field");
             assert!(
                 msg.contains("enum"),
                 "expected error to name `enum` for {yaml:?}, got: {msg}"
@@ -1168,35 +954,24 @@ mod tests {
         );
         assert_eq!(ok.description, Some("Asset tags".to_string()));
 
-        // Distinguish default: [] from default: (empty/null)
+        // default: [] is a present, empty list
         let empty_list = try_build_param("type: list\ndefault: []\n").unwrap();
         assert_eq!(
             empty_list.default,
             Some(crate::models::ParamValue::List(vec![]))
         );
 
-        let null_default = try_build_param("type: list\ndefault:\n").unwrap_err();
-        assert!(
-            null_default.contains("default cannot be null"),
-            "{null_default}"
-        );
-
         let absent_key = try_build_param("type: list\n").unwrap();
         assert_eq!(absent_key.default, None);
 
-        // Forbidden attributes refused, including explicit nulls
+        // Attributes outside the list row refused
         for forbidden in [
             "min: 0",
-            "min:",
             "max: 100",
-            "max:",
             "multiline: true",
-            "multiline:",
             "values: [a, b]",
-            "values:",
             "time: true",
             "time: false",
-            "time:",
             "format: whatever",
         ] {
             let yaml = format!("type: list\n{forbidden}\n");
@@ -1288,91 +1063,24 @@ mod tests {
             "name: test\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 50\nparams:\n  - name: {param_name}\n    {}\nlayout: []\n",
             param_yaml.lines().collect::<Vec<_>>().join("\n    ")
         );
-        let raw: crate::raw::TemplateDefinitionRaw =
-            serde_yaml_ng::from_str(&yaml).map_err(|e| e.to_string())?;
-        crate::templates::TemplateContent::try_from(raw).map_err(|e| e.to_string())
+        crate::parse::parse_template(&yaml).map_err(|e| e.to_string())
     }
 
     #[test]
     fn shape_paint_container_refusals_and_defaults() {
-        // stroke: null
-        let err = try_build("  - type: container\n    at: [0,0]\n    stroke:\n    items: []\n")
-            .unwrap_err();
-        assert!(
-            err.contains("layout[0].stroke"),
-            "expected layout[0].stroke in {err}"
-        );
-        assert!(
-            err.contains("stroke cannot be null"),
-            "expected message in {err}"
-        );
-
-        // background: null
-        let err = try_build("  - type: container\n    at: [0,0]\n    background:\n    items: []\n")
-            .unwrap_err();
-        assert!(
-            err.contains("layout[0].background"),
-            "expected layout[0].background in {err}"
-        );
-        assert!(
-            err.contains("background cannot be null"),
-            "expected message in {err}"
-        );
-
-        // rounded: null
-        let err = try_build("  - type: container\n    at: [0,0]\n    rounded:\n    items: []\n")
-            .unwrap_err();
-        assert!(
-            err.contains("layout[0].rounded"),
-            "expected layout[0].rounded in {err}"
-        );
-        assert!(
-            err.contains("rounded cannot be null"),
-            "expected message in {err}"
-        );
-
-        // stroke thickness null
-        let err = try_build(
-            "  - type: container\n    at: [0,0]\n    stroke:\n      thickness:\n    items: []\n",
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("layout[0].stroke.thickness"),
-            "expected path in {err}"
-        );
-        assert!(
-            err.contains("stroke thickness cannot be null"),
-            "expected message in {err}"
-        );
-
-        // stroke color null
-        let err = try_build("  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 1.0\n      color:\n    items: []\n").unwrap_err();
-        assert!(
-            err.contains("layout[0].stroke.color"),
-            "expected path in {err}"
-        );
-        assert!(
-            err.contains("stroke color cannot be null"),
-            "expected message in {err}"
-        );
-
         // stroke missing thickness
         let err = try_build(
-            "  - type: container\n    at: [0,0]\n    stroke:\n      color: red\n    items: []\n",
+            "  - type: container\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      color: red\n    items: []\n",
         )
         .unwrap_err();
         assert!(
-            err.contains("layout[0].stroke.thickness"),
-            "expected path in {err}"
-        );
-        assert!(
-            err.contains("stroke thickness is required"),
-            "expected message in {err}"
+            err.contains("stroke") && err.contains("missing field `thickness`"),
+            "expected the key and the missing field in {err}"
         );
 
         // valid stroke defaults color to black
         let template = try_build(
-            "  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.5\n    items: []\n",
+            "  - type: container\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 0.5\n    items: []\n",
         )
         .unwrap();
         let crate::models::Layout::Items(items) = &template.layout;
@@ -1385,11 +1093,8 @@ mod tests {
         {
             let stroke = stroke.as_ref().expect("stroke should be present");
             assert_eq!(stroke.thickness, 0.5);
-            assert_eq!(
-                stroke.color,
-                crate::models::DynamicValue::Literal(crate::models::Color::black())
-            );
-            assert_eq!(stroke.color.as_literal().unwrap().hex(), "#000000ff");
+            assert_eq!(stroke.color, crate::models::Color::black());
+            assert_eq!(stroke.color.hex(), "#000000");
             assert!(background.is_none());
             assert!(rounded.is_none());
         } else {
@@ -1397,7 +1102,7 @@ mod tests {
         }
 
         // valid stroke with custom color, background, and rounded
-        let template = try_build("  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.0001\n      color: '#f0c'\n    background: navy\n    rounded: 0.0001\n    items: []\n").unwrap();
+        let template = try_build("  - type: container\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 0.0001\n      color: '#FF00cc'\n    background: blue\n    rounded: 0.0001\n    items: []\n").unwrap();
         let crate::models::Layout::Items(items) = &template.layout;
         if let crate::models::LayoutItem::Container {
             stroke,
@@ -1408,18 +1113,8 @@ mod tests {
         {
             let stroke = stroke.as_ref().unwrap();
             assert_eq!(stroke.thickness, 0.0001);
-            assert_eq!(
-                stroke.color,
-                crate::models::DynamicValue::Literal(
-                    crate::models::Color::from_str("#f0c").unwrap()
-                )
-            );
-            assert_eq!(
-                background.as_ref().unwrap(),
-                &crate::models::DynamicValue::Literal(
-                    crate::models::Color::from_str("navy").unwrap()
-                )
-            );
+            assert_eq!(stroke.color.hex(), "#ff00cc");
+            assert_eq!(background.as_ref().unwrap().hex(), "#0000ff");
             assert_eq!(rounded.unwrap(), 0.0001);
         } else {
             panic!("expected container");
@@ -1429,47 +1124,10 @@ mod tests {
     #[test]
     fn shape_paint_line_refusals() {
         // line stroke required
-        // line without stroke is accepted with stroke: None (omitted = no outline)
-        let template = try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n").unwrap();
-        let crate::models::Layout::Items(items) = &template.layout;
-        if let crate::models::LayoutItem::Line { stroke, .. } = &items[0] {
-            assert!(stroke.is_none());
-        } else {
-            panic!("expected line");
-        }
-
-        // line stroke null
-        let err =
-            try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n").unwrap_err();
-        assert!(err.contains("layout[0].stroke"), "expected path in {err}");
+        let err = try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n").unwrap_err();
         assert!(
-            err.contains("stroke cannot be null"),
-            "expected message in {err}"
-        );
-
-        // line stroke thickness null
-        let err = try_build(
-            "  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n      thickness:\n",
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("layout[0].stroke.thickness"),
-            "expected path in {err}"
-        );
-        assert!(
-            err.contains("stroke thickness cannot be null"),
-            "expected message in {err}"
-        );
-
-        // line stroke color null
-        let err = try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n      thickness: 1.0\n      color:\n").unwrap_err();
-        assert!(
-            err.contains("layout[0].stroke.color"),
-            "expected path in {err}"
-        );
-        assert!(
-            err.contains("stroke color cannot be null"),
-            "expected message in {err}"
+            err.contains("missing field `stroke`"),
+            "expected missing field stroke in {err}"
         );
 
         // line background rejected
@@ -1499,71 +1157,19 @@ mod tests {
         .unwrap();
         let crate::models::Layout::Items(items) = &template.layout;
         if let crate::models::LayoutItem::Line { stroke, .. } = &items[0] {
-            let stroke = stroke.as_ref().unwrap();
             assert_eq!(stroke.thickness, 0.5);
-            assert_eq!(
-                stroke.color,
-                crate::models::DynamicValue::Literal(crate::models::Color::black())
-            );
+            assert_eq!(stroke.color, crate::models::Color::black());
         } else {
             panic!("expected line");
         }
     }
 
     #[test]
-    fn padded_color_literals_convert_to_expected_colors() {
-        let layout_yaml = r#"  - type: container
-    at: [0, 0]
-    size: [10, 10]
-    background: " #F0F "
-    stroke:
-      thickness: 0.2
-      color: " navy "
-    items:
-      - type: text
-        value: "Hello"
-        at: [0, 0]
-        size: [10, 5]
-        font_size: 8
-        color: " red "
-"#;
-        let template = try_build(layout_yaml).expect("template should load");
-        let crate::models::Layout::Items(items) = &template.layout;
-        match &items[0] {
-            crate::models::LayoutItem::Container {
-                background,
-                stroke,
-                items: child_items,
-                ..
-            } => {
-                let bg = background.as_ref().expect("background present");
-                assert_eq!(bg.as_literal().unwrap().rgba(), [0xff, 0x00, 0xff, 0xff]);
-
-                let stroke_val = stroke.as_ref().expect("stroke present");
-                assert_eq!(
-                    stroke_val.color.as_literal().unwrap().rgba(),
-                    [0x00, 0x00, 0x80, 0xff]
-                );
-
-                match &child_items[0] {
-                    crate::models::LayoutItem::Text { color, .. } => {
-                        let text_col = color.as_ref().expect("text color present");
-                        assert_eq!(
-                            text_col.as_literal().unwrap().rgba(),
-                            [0xff, 0x00, 0x00, 0xff]
-                        );
-                    }
-                    _ => panic!("expected text child"),
-                }
-            }
-            _ => panic!("expected container"),
-        }
-    }
-
-    #[test]
     fn container_shape_conversion_and_refusals() {
         // 1. Default is rect when shape is omitted
-        let template = try_build("  - type: container\n    at: [0,0]\n    items: []\n").unwrap();
+        let template =
+            try_build("  - type: container\n    at: [0,0]\n    size: [10,10]\n    items: []\n")
+                .unwrap();
         let crate::models::Layout::Items(items) = &template.layout;
         if let crate::models::LayoutItem::Container { shape, .. } = &items[0] {
             assert_eq!(*shape, Shape::Rect);
@@ -1572,13 +1178,9 @@ mod tests {
         }
 
         // 2. Each accepted value parses
-        for (val, expected) in [
-            ("rect", Shape::Rect),
-            ("ellipse", Shape::Ellipse),
-            ("circle", Shape::Circle),
-        ] {
+        for (val, expected) in [("rect", Shape::Rect), ("ellipse", Shape::Ellipse)] {
             let yaml =
-                format!("  - type: container\n    at: [0,0]\n    shape: {val}\n    items: []\n");
+                format!("  - type: container\n    at: [0,0]\n    size: [10,10]\n    shape: {val}\n    items: []\n");
             let template = try_build(&yaml).unwrap();
             let crate::models::Layout::Items(items) = &template.layout;
             if let crate::models::LayoutItem::Container { shape, .. } = &items[0] {
@@ -1590,22 +1192,22 @@ mod tests {
 
         // 3. polygon is refused naming value and set
         let err =
-            try_build("  - type: container\n    at: [0,0]\n    shape: polygon\n    items: []\n")
+            try_build("  - type: container\n    at: [0,0]\n    size: [10,10]\n    shape: polygon\n    items: []\n")
                 .unwrap_err();
         assert!(err.contains("layout[0].shape"), "expected path in {err}");
         assert!(err.contains("polygon"), "expected value in {err}");
         assert!(
-            err.contains("rect, ellipse, circle"),
+            err.contains("accepted values are: rect, ellipse"),
             "expected accepted set in {err}"
         );
 
         // 4. Rect (case-sensitive) is refused naming value and set
-        let err = try_build("  - type: container\n    at: [0,0]\n    shape: Rect\n    items: []\n")
+        let err = try_build("  - type: container\n    at: [0,0]\n    size: [10,10]\n    shape: Rect\n    items: []\n")
             .unwrap_err();
         assert!(err.contains("layout[0].shape"), "expected path in {err}");
         assert!(err.contains("Rect"), "expected value in {err}");
         assert!(
-            err.contains("rect, ellipse, circle"),
+            err.contains("accepted values are: rect, ellipse"),
             "expected accepted set in {err}"
         );
 
@@ -1628,8 +1230,10 @@ mod tests {
         );
 
         // 7. shape on image is refused
-        let err = try_build("  - type: image\n    name: logo\n    at: [0,0]\n    shape: rect\n")
-            .unwrap_err();
+        let err = try_build(
+            "  - type: image\n    src: logo.png\n    at: [0,0]\n    size: [5,5]\n    shape: rect\n",
+        )
+        .unwrap_err();
         assert!(
             err.contains("unknown field `shape`"),
             "expected unknown field shape in {err}"
@@ -1644,30 +1248,10 @@ mod tests {
         );
 
         // 9. rounded on ellipse is refused
-        let err = try_build("  - type: container\n    at: [0,0]\n    shape: ellipse\n    rounded: 1.0\n    items: []\n").unwrap_err();
+        let err = try_build("  - type: container\n    at: [0,0]\n    size: [10,10]\n    shape: ellipse\n    rounded: 1.0\n    items: []\n").unwrap_err();
         assert!(err.contains("layout[0].rounded"), "expected path in {err}");
         assert!(
             err.contains("rounded is only supported on rect containers"),
-            "expected message in {err}"
-        );
-
-        // 10. rounded on circle is refused
-        let err = try_build("  - type: container\n    at: [0,0]\n    shape: circle\n    rounded: 1.0\n    items: []\n").unwrap_err();
-        assert!(err.contains("layout[0].rounded"), "expected path in {err}");
-        assert!(
-            err.contains("rounded is only supported on rect containers"),
-            "expected message in {err}"
-        );
-
-        // 11. shape null is refused
-        let err = try_build("  - type: container\n    at: [0,0]\n    shape:\n    items: []\n")
-            .unwrap_err();
-        assert!(
-            err.contains("layout[0].shape"),
-            "expected layout[0].shape in {err}"
-        );
-        assert!(
-            err.contains("shape cannot be null"),
             "expected message in {err}"
         );
     }
@@ -1679,28 +1263,11 @@ mod tests {
         let yaml = format!(
             "name: test\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 50\nparams:\n{params_yaml}\nlayout:\n{layout_yaml}"
         );
-        let raw: crate::raw::TemplateDefinitionRaw =
-            serde_yaml_ng::from_str(&yaml).map_err(|e| e.to_string())?;
-        crate::templates::TemplateContent::try_from(raw).map_err(|e| e.to_string())
+        crate::parse::parse_template(&yaml).map_err(|e| e.to_string())
     }
 
     #[test]
-    fn repeat_null_and_parent_flow_refusals() {
-        // 1.3: repeat: null on a container is refused naming the key and the container's layout path
-        let err = try_build_with_params(
-            "  - name: items\n    type: list\n",
-            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat:\n        items: []\n",
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("layout[0].items[0].repeat"),
-            "expected path in {err}"
-        );
-        assert!(
-            err.contains("repeat cannot be null"),
-            "expected message in {err}"
-        );
-
+    fn repeat_parent_flow_refusals() {
         // 1.4: repeat on a root-level container is refused naming the key and the layout path
         let err = try_build_with_params(
             "  - name: items\n    type: list\n",
@@ -1716,7 +1283,7 @@ mod tests {
         // 1.4: repeat on a container inside an absolute-positioned container (no flow) is refused
         let err = try_build_with_params(
             "  - name: items\n    type: list\n",
-            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    items:\n      - type: container\n        repeat: items\n        at: [0, 0]\n        items: []\n",
+            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    items:\n      - type: container\n        repeat: items\n        size: [10, 10]\n        at: [0, 0]\n        items: []\n",
         )
         .unwrap_err();
         assert!(
@@ -1734,7 +1301,7 @@ mod tests {
         // 2.2: repeat naming an undeclared parameter is refused with expected path and message
         let err = try_build_with_params(
             "  - name: other\n    type: list\n",
-            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: missing\n        items: []\n",
+            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: missing\n        size: [10, 10]\n        items: []\n",
         )
         .unwrap_err();
         assert!(
@@ -1755,7 +1322,7 @@ mod tests {
         ] {
             let params = format!("  - name: {name}\n    {param_def}\n");
             let layout = format!(
-                "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: {{ direction: column }}\n    items:\n      - type: container\n        repeat: {name}\n        items: []\n"
+                "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: {{ direction: column }}\n    items:\n      - type: container\n        repeat: {name}\n        size: [10, 10]\n        items: []\n"
             );
             let err = try_build_with_params(&params, &layout).unwrap_err();
             assert!(
@@ -1775,7 +1342,7 @@ mod tests {
     fn repeat_nesting_and_scoped_token_refusals() {
         // 2.4: Nested repeat over the same list is refused at the inner container path
         let params = "  - name: tags\n    type: list\n";
-        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: tags\n            items: []\n";
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        size: [10, 10]\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: tags\n            size: [10, 10]\n            items: []\n";
         let err = try_build_with_params(params, layout).unwrap_err();
         assert!(
             err.contains("layout[0].items[0].items[0]"),
@@ -1788,11 +1355,11 @@ mod tests {
 
         // 2.4: Nested repeat over two different lists is accepted
         let params = "  - name: tags\n    type: list\n  - name: codes\n    type: list\n";
-        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: codes\n            items: []\n";
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        size: [10, 10]\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: codes\n            size: [10, 10]\n            items: []\n";
         assert!(try_build_with_params(params, layout).is_ok());
 
         // 2.5: {p:join(',')} inside a repeat over p is refused
-        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags:join(',')}\"\n            size: [10, 5]\n            font_size: 8\n";
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        size: [10, 10]\n        items:\n          - type: text\n            value: \"{tags:join(',')}\"\n            size: [10, 5]\n            font_size: 8\n";
         let err = try_build_with_params("  - name: tags\n    type: list\n", layout).unwrap_err();
         assert!(
             err.contains("layout[0].items[0].items[0]"),
@@ -1804,7 +1371,7 @@ mod tests {
         );
 
         // 2.6: {p:long_date} inside a repeat over p is refused as format on non-instant
-        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags:long_date}\"\n            size: [10, 5]\n            font_size: 8\n";
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        size: [10, 10]\n        items:\n          - type: text\n            value: \"{tags:long_date}\"\n            size: [10, 5]\n            font_size: 8\n";
         let err = try_build_with_params("  - name: tags\n    type: list\n", layout).unwrap_err();
         assert!(
             err.contains("layout[0].items[0].items[0]"),
@@ -1816,7 +1383,7 @@ mod tests {
         );
 
         // Bare {tags} inside repeat over tags is accepted
-        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags}\"\n            size: [10, 5]\n            font_size: 8\n";
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        size: [10, 10]\n        items:\n          - type: text\n            value: \"{tags}\"\n            size: [10, 5]\n            font_size: 8\n";
         assert!(try_build_with_params("  - name: tags\n    type: list\n", layout).is_ok());
     }
 

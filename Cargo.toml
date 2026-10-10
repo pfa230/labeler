@@ -47,7 +47,6 @@ urlencoding = "2.1"
 regex = "1"
 rustix = { version = "1", features = ["fs", "alloc"] }
 
-image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 rustybuzz = "0.20.1"
 unicode-bidi = "0.3.18"
 unicode-script = "0.5.8"
@@ -59,6 +58,7 @@ unicode-script = "0.5.8"
 debug = "line-tables-only"
 
 [dev-dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 http-body-util = "0.1"
 tower = "0.5"
 wiremock = "0.6"

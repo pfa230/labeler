@@ -59,35 +59,13 @@ impl std::fmt::Display for TokenError {
                 )
             }
             TokenError::UnknownSource { token, source } => {
-                if source == "datetime" {
-                    if let Some(tail) = token
-                        .strip_prefix('{')
-                        .and_then(|s| s.strip_suffix('}'))
-                        .and_then(|s| s.strip_prefix("datetime."))
-                    {
-                        write!(
-                            f,
-                            "template contains '{token}': unknown source 'datetime'; use '{{sys.now:{tail}}}' instead"
-                        )
-                    } else {
-                        write!(f, "template contains '{token}': unknown source 'datetime'")
-                    }
-                } else {
-                    write!(f, "template contains '{token}': unknown source '{source}'")
-                }
+                write!(f, "template contains '{token}': unknown source '{source}'")
             }
             TokenError::UnknownSysValue { token, value } => {
-                if let Some(tail) = value.strip_prefix("now.") {
-                    write!(
-                        f,
-                        "template contains '{token}': unknown system value '{value}'; use '{{sys.now:{tail}}}' instead"
-                    )
-                } else {
-                    write!(
-                        f,
-                        "template contains '{token}': unknown system value '{value}' under 'sys'"
-                    )
-                }
+                write!(
+                    f,
+                    "template contains '{token}': unknown system value '{value}' under 'sys'"
+                )
             }
         }
     }
@@ -229,10 +207,10 @@ pub fn scan_tokens(s: &str) -> Vec<ScannedToken<'_>> {
     tokens
 }
 
-/// Validate the brace syntax of a parameter default string at template load time.
-/// Scans for well-formed tokens and verifies that literal chunks between them obey the
-/// brace-balance rules (unterminated '{' or unmatched '}'), honouring '{{' and '}}'.
-pub fn validate_default_syntax(s: &str) -> Result<(), String> {
+/// Check the literal text of an interpolated string at load: every brace outside a token is doubled,
+/// so an undoubled `{` that opens no token or an unmatched `}` is an error. Tokens themselves are
+/// judged by [`parse`].
+pub fn validate_braces(s: &str) -> Result<(), String> {
     let tokens = scan_tokens(s);
     let mut pos = 0;
     for token in tokens {
@@ -469,18 +447,40 @@ mod tests {
             ]
         );
 
-        // Braces inside join separator behavior (task 2.4)
+        // A brace inside a join separator never re-pairs into a token: each string is refused at
+        // load, by its one scanned token or by its literal text.
         let scanned_closing = scan_tokens("{tags:join('}')}");
         assert_eq!(scanned_closing.len(), 1);
         assert_eq!(scanned_closing[0].raw, "{tags:join('}");
         assert!(parse(scanned_closing[0].raw).is_err());
+        assert_eq!(
+            validate_braces("{tags:join('}')}"),
+            Err("unmatched '}'".to_string())
+        );
 
         let scanned_opening = scan_tokens("{tags:join('{')}");
         assert_eq!(scanned_opening.len(), 1);
         assert_eq!(scanned_opening[0].raw, "{')}");
-        assert!(parse(scanned_opening[0].raw).is_err());
+        assert_eq!(
+            validate_braces("{tags:join('{')}"),
+            Err("unterminated '{'".to_string())
+        );
 
         let scanned_double = scan_tokens("{tags:join('{{')}");
         assert!(scanned_double.is_empty());
+        assert_eq!(
+            validate_braces("{tags:join('{{')}"),
+            Err("unterminated '{'".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_braces_accepts_doubled_braces_and_tokens() {
+        assert_eq!(validate_braces("{{id}} is {id} }}{{"), Ok(()));
+        assert_eq!(
+            validate_braces("50% {off"),
+            Err("unterminated '{'".to_string())
+        );
+        assert_eq!(validate_braces("a } b"), Err("unmatched '}'".to_string()));
     }
 }

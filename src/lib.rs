@@ -98,7 +98,7 @@ mod tests {
 mod http_tests {
     use super::store::Store;
     use super::{app, AppState, TemplateRegistry};
-    use crate::models::{DynamicValue, Layout, LayoutItem};
+    use crate::models::{Layout, LayoutItem};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -1748,6 +1748,31 @@ layout: []
         bytes_response(response).await
     }
 
+    /// A `data:` URI in `src` is the image itself, so it renders with nothing in the assets folder.
+    #[tokio::test]
+    async fn an_image_src_data_uri_renders_without_an_asset() {
+        let dir = temp_templates_dir();
+        let yaml = format!(
+            "name: Inline Image\nunit: mm\ndpi: 200\nformat: {{ type: single, width: 20, height: 10 }}\nlayout:\n  - type: image\n    src: \"{}\"\n    at: [0, 0]\n    size: [10, 10]\n",
+            crate::render::SAMPLE_PNG_DATA_URI
+        );
+        std::fs::write(dir.join("inline_image.yaml"), yaml).unwrap();
+        let app = build_app_in(&dir);
+        let response = app
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label",
+                json!({ "template": "inline_image", "data": {} }).to_string(),
+            ))
+            .await
+            .expect("request");
+        let status = response.status();
+        let body = bytes_response(response).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn dynamic_tape_is_auto_length() {
         let app = build_app();
@@ -2714,12 +2739,8 @@ layout:
             assert_eq!(body["error"]["code"], "TemplateInvalid");
             let msg = body["error"]["message"].as_str().unwrap_or("");
             assert!(
-                msg.contains("layout[0].multiline"),
-                "error must name layout path: {msg}"
-            );
-            assert!(
-                msg.contains("wrap"),
-                "error must name rename to wrap: {msg}"
+                msg.contains("layout[0]") && msg.contains("multiline"),
+                "error must name the item and the key: {msg}"
             );
             assert!(
                 !dir.join(format!("{id}.yaml")).exists(),
@@ -2831,7 +2852,7 @@ layout:
             body["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("params.str_val.default"),
+                .contains("params[0].default"),
             "{body}"
         );
 
@@ -3070,105 +3091,16 @@ layout:
     }
 
     #[tokio::test]
-    async fn template_keeps_a_padded_color_literal_and_a_canonical_reference() {
-        let dir = temp_templates_dir();
-        let yaml = r#"
-name: ColorReadback
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-    default: red
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 10]
-    font_size: 10
-    color: " red "
-  - type: container
-    at: [0, 10]
-    size: [50, 10]
-    background: " {brand} "
-    items:
-      - type: text
-        value: "Escaped"
-        at: [0, 0]
-        size: [50, 10]
-        font_size: 10
-        color: "\u0062lue"
-"#;
-        let tpl_path = dir.join("color_readback.yaml");
-        std::fs::write(&tpl_path, yaml).unwrap();
-
-        let app = build_app_in(&dir);
-
-        let (status, _) = get_json(&app, "/api/templates/color_readback").await;
-        assert_eq!(status, StatusCode::OK, "the template is served");
-
-        let Layout::Items(items) = crate::parse::parse_template(yaml).unwrap().layout;
-        let LayoutItem::Text {
-            color: Some(DynamicValue::Literal(color)),
-            ..
-        } = &items[0]
-        else {
-            panic!("item 0 is a text with a literal color: {:?}", items[0]);
-        };
-        assert_eq!(color.spelling(), " red ");
-        let LayoutItem::Container {
-            background,
-            items: children,
-            ..
-        } = &items[1]
-        else {
-            panic!("item 1 is a container: {:?}", items[1]);
-        };
-        assert_eq!(background, &Some(DynamicValue::Ref("brand".to_string())));
-        let LayoutItem::Text {
-            color: Some(DynamicValue::Literal(color)),
-            ..
-        } = &children[0]
-        else {
-            panic!("child 0 is a text with a literal color: {:?}", children[0]);
-        };
-        assert_eq!(color.spelling(), "blue");
-
-        let source_res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/templates/color_readback/source")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(source_res.status(), StatusCode::OK);
-        let source_body = axum::body::to_bytes(source_res.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let source_str = String::from_utf8(source_body.to_vec()).unwrap();
-        assert!(source_str.contains(r#""\u0062lue""#) || source_str.contains(r#"\u0062lue"#));
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[tokio::test]
     async fn template_line_spacing_readback_and_refusals() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
 
-        // 1. PUT a template with explicit line_spacing: 0.99, absent line_spacing, and ref "{pitch}"
+        // 1. PUT a template with explicit line_spacing: 0.99 and absent line_spacing
         let yaml_valid = r#"
 name: SpacingReadback
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 60 }
-params:
-  - name: pitch
-    type: number
-    default: 1.2
 layout:
   - type: text
     value: "Explicit Spacing"
@@ -3181,12 +3113,6 @@ layout:
     at: [0, 20]
     size: [50, 20]
     font_size: 10
-  - type: text
-    value: "Ref Spacing"
-    at: [0, 40]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
 "#;
         let res = app
             .clone()
@@ -3201,16 +3127,12 @@ layout:
 
         let Layout::Items(items) = crate::parse::parse_template(yaml_valid).unwrap().layout;
         let line_spacing = |item: &LayoutItem| match item {
-            LayoutItem::Text { line_spacing, .. } => line_spacing.clone(),
+            LayoutItem::Text { line_spacing, .. } => *line_spacing,
             other => panic!("expected a text item: {other:?}"),
         };
-        // Item 0 keeps authored 0.99, item 1 declares none, item 2 references "{pitch}"
-        assert_eq!(line_spacing(&items[0]), Some(DynamicValue::Literal(0.99)));
+        // Item 0 keeps authored 0.99, item 1 declares none
+        assert_eq!(line_spacing(&items[0]), Some(0.99));
         assert_eq!(line_spacing(&items[1]), None);
-        assert_eq!(
-            line_spacing(&items[2]),
-            Some(DynamicValue::Ref("pitch".to_string()))
-        );
 
         // 2. PUT with line_spacing on non-text items: container, qr, image, line
         for (item_type, item_yaml) in [
@@ -3233,7 +3155,7 @@ layout:
             (
                 "image",
                 r#"  - type: image
-    name: logo
+    src: logo.png
     at: [0, 0]
     size: [20, 20]
     line_spacing: 0.99"#,
@@ -3243,6 +3165,7 @@ layout:
                 r#"  - type: line
     at: [0, 0]
     to: [50, 0]
+    stroke: { thickness: 0.2 }
     line_spacing: 0.99"#,
             ),
         ] {
@@ -3431,22 +3354,22 @@ layout:
             // 1. Non-positive stroke thickness
             (
                 "stroke_zero",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n      thickness: 0\n    items: []\n",
             ),
             // 2. Sub-0.0001 stroke thickness
             (
                 "stroke_too_small",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.00001\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n      thickness: 0.00001\n    items: []\n",
             ),
             // 3. Zero rounded
             (
                 "rounded_zero",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    rounded: 0\n    items: []\n",
             ),
             // 4. Sub-0.0001 rounded
             (
                 "rounded_too_small",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0.00001\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    rounded: 0.00001\n    items: []\n",
             ),
             // 5. Line non-positive stroke thickness
             (
@@ -3484,12 +3407,12 @@ layout:
             // Null stroke
             (
                 "stroke_null",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    stroke:\n    items: []\n",
             ),
             // Null background
             (
                 "bg_null",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    background:\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    background:\n    items: []\n",
             ),
             // Line with background (unknown field)
             (
@@ -3499,12 +3422,12 @@ layout:
             // Bad color name
             (
                 "bad_color",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    background: chartreuse\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    background: chartreuse\n    items: []\n",
             ),
             // Legacy frame spelling
             (
                 "legacy_frame",
-                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    frame:\n      thickness: 0.02\n    items: []\n",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    size: [fill, fill]\n    at: [0,0]\n    frame:\n      thickness: 0.02\n    items: []\n",
             ),
         ];
 
@@ -3605,6 +3528,7 @@ format:
   height: 30
 layout:
   - type: container
+    size: [fill, fill]
     at: [0, 0]
     option:
       orientation: vertical
@@ -5208,7 +5132,6 @@ layout:
             json!(""),
             json!("   "),
             json!(123),
-            json!(null),
             json!({}),
             json!("ghost"),
         ] {
@@ -7035,6 +6958,90 @@ layout:
         );
     }
 
+    /// errors spec, "Request body rejection": each body is otherwise valid, so the unlisted or
+    /// `null` key is the only fault it carries.
+    #[tokio::test]
+    async fn request_bodies_refuse_unknown_and_null_keys() {
+        let app = build_app();
+        let cases = [
+            (
+                "PUT",
+                "/api/variables/test-var",
+                json!({ "value": "x", "bogus": 1 }),
+                "unknown field",
+            ),
+            (
+                "PUT",
+                "/api/settings/datetime_formats",
+                json!({ "value": { "day": "%d" }, "bogus": 1 }),
+                "unknown field",
+            ),
+            (
+                "PUT",
+                "/api/settings/datetime_formats",
+                json!({ "value": null }),
+                "null",
+            ),
+            (
+                "PUT",
+                "/api/settings/datetime_formats",
+                json!({ "value": { "short_date": null } }),
+                "null",
+            ),
+            (
+                "POST",
+                "/api/datetime-formats/preview",
+                json!({ "pattern": "%Y", "bogus": 1 }),
+                "unknown field",
+            ),
+            (
+                "POST",
+                "/api/auth/login",
+                json!({ "username": "a", "password": "x", "bogus": 1 }),
+                "unknown field",
+            ),
+            (
+                "POST",
+                "/api/auth/password",
+                json!({ "current_password": "a", "new_password": "b", "bogus": 1 }),
+                "unknown field",
+            ),
+            (
+                "POST",
+                "/api/tokens",
+                json!({ "name": "t", "bogus": 1 }),
+                "unknown field",
+            ),
+        ];
+        let mut misses = Vec::new();
+        for (method, uri, body, cause) in cases {
+            let res = app
+                .clone()
+                .oneshot(json_req(method, uri, body.to_string()))
+                .await
+                .unwrap();
+            let status = res.status();
+            // An accepted batch answers with a ZIP, which reads as `null` here.
+            let answer: Value =
+                serde_json::from_slice(&bytes_response(res).await).unwrap_or(Value::Null);
+            let error = answer["error"]["details"]["error"]
+                .as_str()
+                .unwrap_or_default();
+            if status != StatusCode::BAD_REQUEST
+                || answer["error"]["details"]["reason"] != "json_malformed"
+                || !error.contains(cause)
+            {
+                misses.push(format!("{method} {uri} {body}: {status} {answer}"));
+            }
+        }
+        assert!(
+            misses.is_empty(),
+            "{} failing case(s):\n{}",
+            misses.len(),
+            misses.join("\n")
+        );
+    }
+
     #[tokio::test]
     async fn all_eighteen_json_endpoints_reject_malformed_body_identically() {
         let endpoints = [
@@ -7579,7 +7586,7 @@ layout:
     when: { tags: KIDS }
 "#,
             ),
-            // Image binding list
+            // Image source reading a list as a bare token
             (
                 "put_img_list",
                 r#"
@@ -7592,7 +7599,7 @@ params:
     type: list
 layout:
   - type: image
-    name: tags
+    src: "{tags}"
     at: [0, 0]
     size: [50, 20]
 "#,
@@ -7765,7 +7772,7 @@ layout:
                 dpi: 200,
                 format: crate::models::TemplateFormat::Single {
                     width: crate::models::Dimension::Fixed(50.0).into(),
-                    height: crate::models::Dimension::Fixed(20.0).into(),
+                    height: 20.0.into(),
                     media_width: None,
                 },
                 params,
@@ -7923,7 +7930,7 @@ layout:
             "template_validation_failed"
         );
 
-        // Image template binding undeclared name
+        // Image template reading an undeclared parameter
         let img_tpl = r#"
 name: ImageTemplate
 unit: mm
@@ -7931,7 +7938,7 @@ dpi: 200
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: image
-    name: logo
+    src: "{logo}"
     at: [0, 0]
     size: [50, 20]
 "#;
@@ -7946,35 +7953,6 @@ layout:
             .unwrap();
         assert_eq!(put_img.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(put_img).await;
-        assert_eq!(body["error"]["code"], "TemplateInvalid");
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "template_validation_failed"
-        );
-
-        // Image with content sizing binding undeclared name
-        let img_content_tpl = r#"
-name: ImageContentTemplate
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: image
-    name: logo
-    at: [0, 0]
-    size: [content, content]
-"#;
-        let put_img_content = app
-            .clone()
-            .oneshot(yaml_post(
-                "/api/templates/img_content_tpl",
-                "PUT",
-                img_content_tpl.to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(put_img_content.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(put_img_content).await;
         assert_eq!(body["error"]["code"], "TemplateInvalid");
         assert_eq!(
             body["error"]["details"]["reason"],
@@ -8868,82 +8846,6 @@ layout:
             .unwrap();
         assert_eq!(res_wrap.status(), StatusCode::OK);
         assert_eq!(res_wrap.headers()["content-type"], "image/png");
-    }
-
-    #[tokio::test]
-    async fn render_label_repetition_extentless_container() {
-        let dir = temp_templates_dir();
-        let app = build_app_in(&dir);
-
-        // 4.10: Repeating container written with neither size nor to renders one instance for
-        // a one-element list and fails with item_out_of_frame naming the second instance for a
-        // two-element one
-        let rep_extentless = r#"
-name: RepExtentless
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 50 }
-params:
-  - name: tags
-    type: list
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 50]
-    flow: { direction: column }
-    items:
-      - type: container
-        repeat: tags
-        items:
-          - type: text
-            at: [0, 0]
-            value: "{tags}"
-            size: [10, 10]
-            font_size: 8
-"#;
-        let put_res = app
-            .clone()
-            .oneshot(yaml_post(
-                "/api/templates/rep_extentless",
-                "POST",
-                rep_extentless.to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(put_res.status(), StatusCode::CREATED);
-
-        // 1 element renders successfully
-        let res_one = app
-            .clone()
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label?format=png",
-                json!({ "template": "rep_extentless", "data": { "tags": ["A"] } }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res_one.status(), StatusCode::OK);
-        assert_eq!(res_one.headers()["content-type"], "image/png");
-
-        // 2 elements fail with item_out_of_frame naming layout[0].items[0]#1
-        let res_two = app
-            .clone()
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label?format=png",
-                json!({ "template": "rep_extentless", "data": { "tags": ["A", "B"] } }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res_two.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body_two = json_response(res_two).await;
-        assert_eq!(body_two["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body_two["error"]["details"]["reason"], "item_out_of_frame");
-        let msg = body_two["error"]["message"].as_str().unwrap();
-        assert!(
-            msg.contains("layout[0].items[0]#1"),
-            "expected layout[0].items[0]#1 in error message: {msg}"
-        );
     }
 
     #[tokio::test]
@@ -9969,7 +9871,7 @@ layout:
 mod auth_http_tests {
     use super::store::Store;
     use super::{app, AppState};
-    use crate::models::{Color, DynamicValue, Layout, LayoutItem};
+    use crate::models::{Color, Layout, LayoutItem};
     use crate::TemplateRegistry;
     use axum::{
         body::Body,
@@ -10608,7 +10510,6 @@ mod auth_http_tests {
             r#"{"value":"unknown-connection-id"}"#,
             r#"{"value":""}"#,
             r#"{"value":"   "}"#,
-            r#"{"value":null}"#,
             r#"{"value":123}"#,
             r#"{"value":{}}"#,
         ];
@@ -11568,7 +11469,7 @@ layout:
     flow: { direction: row, overflow: trim }
     items:
       - { type: container, size: [20, 10], items: [] }
-      - { type: image, name: missing_image, size: [4, 4] }
+      - { type: image, src: "{missing_image}", size: [4, 4] }
 "#;
         let trim_child_too_large = r#"
 name: Trim Does Not Bypass Child Bounds
@@ -11576,7 +11477,7 @@ unit: mm
 dpi: 200
 params:
   - name: box_w
-    type: length
+    type: number
     default: 8
 format: { type: single, width: 20, height: 10 }
 layout:
@@ -11670,149 +11571,6 @@ layout:
     }
 
     #[tokio::test]
-    async fn render_label_and_batch_invalid_color_parameter_refusals() {
-        let text_yaml = r#"
-name: DynamicColor
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-format:
-  type: single
-  width: 50
-  height: 20
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{brand}"
-"#;
-        let shape_yaml = r#"
-name: DynamicShapeColor
-unit: mm
-dpi: 200
-params:
-  - name: bg_color
-    type: string
-  - name: stroke_color
-    type: string
-format:
-  type: single
-  width: 50
-  height: 20
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 20]
-    background: "{bg_color}"
-    items: []
-  - type: line
-    at: [0, 0]
-    to: [50, 20]
-    stroke:
-      thickness: 0.5
-      color: "{stroke_color}"
-"#;
-        let (app, _state) = test_app_with_custom_templates(vec![
-            ("dyn_color", text_yaml),
-            ("dyn_shape_color", shape_yaml),
-        ]);
-
-        // 1. POST /api/render/label supplying non-colour for text returns 400 InvalidRequest / color_param_invalid naming parameter
-        let req1 = req_post_json(
-            "/api/render/label",
-            &serde_json::json!({
-                "template": "dyn_color",
-                "data": { "brand": "octarine" }
-            })
-            .to_string(),
-        );
-        let res1 = app.clone().oneshot(req1).await.unwrap();
-        assert_eq!(res1.status(), StatusCode::BAD_REQUEST);
-        let body1 = body_json(res1).await;
-        assert_eq!(body1["error"]["code"], "InvalidRequest");
-        assert_eq!(body1["error"]["details"]["reason"], "color_param_invalid");
-        let msg1 = body1["error"]["message"].as_str().unwrap();
-        assert!(
-            msg1.contains("brand"),
-            "error message '{msg1}' must name the failing parameter 'brand'"
-        );
-
-        // 2. POST /api/render/label supplying non-colour for container background returns 400 InvalidRequest / color_param_invalid naming bg_color
-        let req_bg = req_post_json(
-            "/api/render/label",
-            &serde_json::json!({
-                "template": "dyn_shape_color",
-                "data": { "bg_color": "octarine", "stroke_color": "black" }
-            })
-            .to_string(),
-        );
-        let res_bg = app.clone().oneshot(req_bg).await.unwrap();
-        assert_eq!(res_bg.status(), StatusCode::BAD_REQUEST);
-        let body_bg = body_json(res_bg).await;
-        assert_eq!(body_bg["error"]["code"], "InvalidRequest");
-        assert_eq!(body_bg["error"]["details"]["reason"], "color_param_invalid");
-        let msg_bg = body_bg["error"]["message"].as_str().unwrap();
-        assert!(
-            msg_bg.contains("bg_color"),
-            "error message '{msg_bg}' must name the failing parameter 'bg_color'"
-        );
-
-        // 3. POST /api/render/label supplying "{other}" chained reference for stroke returns 400 InvalidRequest / color_param_invalid naming stroke_color
-        let req_stroke = req_post_json(
-            "/api/render/label",
-            &serde_json::json!({
-                "template": "dyn_shape_color",
-                "data": { "bg_color": "blue", "stroke_color": "{other}" }
-            })
-            .to_string(),
-        );
-        let res_stroke = app.clone().oneshot(req_stroke).await.unwrap();
-        assert_eq!(res_stroke.status(), StatusCode::BAD_REQUEST);
-        let body_stroke = body_json(res_stroke).await;
-        assert_eq!(body_stroke["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body_stroke["error"]["details"]["reason"],
-            "color_param_invalid"
-        );
-        let msg_stroke = body_stroke["error"]["message"].as_str().unwrap();
-        assert!(
-            msg_stroke.contains("stroke_color"),
-            "error message '{msg_stroke}' must name the failing parameter 'stroke_color'"
-        );
-
-        // 4. POST /api/render with 2 labels (second bad background color) returns 422 BatchInvalid with failure at index 1
-        let req3 = req_post_json(
-            "/api/render",
-            &serde_json::json!({
-                "template": "dyn_shape_color",
-                "labels": [
-                    { "data": { "bg_color": "red", "stroke_color": "black" } },
-                    { "data": { "bg_color": "octarine", "stroke_color": "black" } }
-                ]
-            })
-            .to_string(),
-        );
-        let res3 = app.clone().oneshot(req3).await.unwrap();
-        assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body3 = body_json(res3).await;
-        assert_eq!(body3["error"]["code"], "BatchInvalid");
-        let failures = body3["error"]["details"]["failures"].as_array().unwrap();
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0]["index"], 1);
-        assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["details"]["reason"], "color_param_invalid");
-        let msg3 = failures[0]["message"].as_str().unwrap();
-        assert!(
-            msg3.contains("bg_color"),
-            "failure message '{msg3}' must name the failing parameter 'bg_color'"
-        );
-    }
-
-    #[tokio::test]
     async fn white_color_template_loads_and_renders_successfully() {
         let yaml = r#"
 name: WhiteColor
@@ -11854,7 +11612,7 @@ layout:
     }
 
     #[tokio::test]
-    async fn colored_text_and_alpha_composite_png_rendering() {
+    async fn colored_text_png_rendering() {
         let red_yaml = r#"
 name: RedColor
 unit: mm
@@ -11871,28 +11629,9 @@ layout:
     font_size: 10
     color: red
 "#;
-        let alpha_yaml = r#"
-name: AlphaColor
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 20
-layout:
-  - type: text
-    value: "Alpha Text"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: '#00000080'
-"#;
-        let (app, _state) = test_app_with_custom_templates(vec![
-            ("red_color", red_yaml),
-            ("alpha_color", alpha_yaml),
-        ]);
+        let (app, _state) = test_app_with_custom_templates(vec![("red_color", red_yaml)]);
 
-        // 1. Red text PNG produces CSS Level 1 red (255, 0, 0) glyph pixels
+        // Red text PNG produces CSS Level 1 red (255, 0, 0) glyph pixels
         let req_red = req_post_json(
             "/api/render/label?format=png",
             &serde_json::json!({ "template": "red_color", "data": {} }).to_string(),
@@ -11919,26 +11658,6 @@ layout:
         assert_eq!(
             typst_legacy_red, 0,
             "Typst's legacy red (255, 65, 54) must not appear anywhere"
-        );
-
-        // 2. Alpha color (#00000080 over white background) composites to (128, 128, 128)
-        let req_alpha = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({ "template": "alpha_color", "data": {} }).to_string(),
-        );
-        let res_alpha = app.clone().oneshot(req_alpha).await.unwrap();
-        assert_eq!(res_alpha.status(), StatusCode::OK);
-        let png_alpha = body_bytes(res_alpha).await;
-        let img_alpha = image::load_from_memory(&png_alpha)
-            .expect("decode alpha png")
-            .to_rgba8();
-        let composite_count = img_alpha
-            .pixels()
-            .filter(|p| (p[0], p[1], p[2]) == (128, 128, 128))
-            .count();
-        assert!(
-            composite_count > 0,
-            "rendered PNG with #00000080 over white must composite to (128, 128, 128), found {composite_count}"
         );
     }
 
@@ -11971,8 +11690,9 @@ layout:
             LayoutItem::Text { color, .. } => color.clone(),
             other => panic!("expected a text item: {other:?}"),
         };
-        assert!(
-            matches!(color(&items[0]), Some(DynamicValue::Literal(c)) if c.spelling() == "red"),
+        assert_eq!(
+            color(&items[0]).map(|c| c.hex()).as_deref(),
+            Some("#ff0000"),
             "item 0 keeps declared color 'red'"
         );
         assert_eq!(color(&items[1]), None, "item 1 declares no color");
@@ -11993,23 +11713,18 @@ format:
   positions:
     - [0, 0]
     - [25, 0]
-params:
-  - name: bg
-    type: string
-  - name: txt_col
-    type: string
 layout:
   - type: container
     at: [0, 0]
     size: [20, 20]
-    background: "{bg}"
+    background: red
     items:
       - type: text
         value: "Label"
         at: [0, 0]
         size: [20, 20]
         font_size: 8
-        color: "{txt_col}"
+        color: white
 "#;
         let (app, _state) = test_app_with_custom_templates(vec![("sheet_color", sheet_yaml)]);
 
@@ -12018,10 +11733,7 @@ layout:
             "/api/render",
             &serde_json::json!({
                 "template": "sheet_color",
-                "labels": [
-                    { "data": { "bg": "red", "txt_col": "yellow" } },
-                    { "data": { "bg": "navy", "txt_col": "white" } }
-                ]
+                "labels": [{ "data": {} }, { "data": {} }]
             })
             .to_string(),
         );
@@ -12031,7 +11743,7 @@ layout:
         assert!(pdf.starts_with(b"%PDF"));
 
         // 2. Bilevel thresholding with light glyphs (yellow) inside dark background (navy)
-        let dark_bg_light_text_yaml = r#"
+        let dark_bg_light_text_yaml = r##"
 name: DarkBgLightText
 unit: mm
 dpi: 200
@@ -12043,15 +11755,15 @@ layout:
   - type: container
     at: [0, 0]
     size: [30, 15]
-    background: navy
+    background: "#000080"
     items:
       - type: text
         value: "LIGHT"
         at: [2, 2]
         size: [26, 11]
         font_size: 10
-        color: yellow
-"#;
+        color: "#ffff00"
+"##;
         let (app2, _state2) =
             test_app_with_custom_templates(vec![("bilevel_test", dark_bg_light_text_yaml)]);
         let req_bilevel = req_post_json(
@@ -12091,104 +11803,6 @@ layout:
             }),
             "bilevel output must be pure B/W thresholded"
         );
-    }
-
-    #[tokio::test]
-    async fn shape_and_text_parameter_referenced_color_rendering() {
-        let yaml = r#"
-name: ShapeParamColors
-unit: mm
-dpi: 200
-params:
-  - name: bg_color
-    type: string
-  - name: stroke_color
-    type: string
-  - name: text_color
-    type: string
-format:
-  type: single
-  width: 50
-  height: 30
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 30]
-    background: "{bg_color}"
-    stroke:
-      thickness: 1.0
-      color: "{stroke_color}"
-    items:
-      - type: text
-        value: "PARAM"
-        at: [5, 5]
-        size: [40, 20]
-        font_size: 14
-        color: "{text_color}"
-"#;
-        let (app, _state) = test_app_with_custom_templates(vec![("shape_param_colors", yaml)]);
-
-        // 1. PNG render resolves container background, stroke, and text color parameters
-        let req_png = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "shape_param_colors",
-                "data": {
-                    "bg_color": "#000080",
-                    "stroke_color": "#ff0000",
-                    "text_color": "#ffff00"
-                }
-            })
-            .to_string(),
-        );
-        let res_png = app.clone().oneshot(req_png).await.unwrap();
-        assert_eq!(res_png.status(), StatusCode::OK);
-        let png = body_bytes(res_png).await;
-        let img = image::load_from_memory(&png)
-            .expect("decode png")
-            .to_rgba8();
-
-        // Navy background pixels (0, 0, 128)
-        let navy_count = img
-            .pixels()
-            .filter(|p| (p[0], p[1], p[2]) == (0, 0, 128))
-            .count();
-        assert!(
-            navy_count > 0,
-            "must contain navy (0, 0, 128) background pixels"
-        );
-
-        // Red stroke pixels (255, 0, 0)
-        let red_count = img
-            .pixels()
-            .filter(|p| (p[0], p[1], p[2]) == (255, 0, 0))
-            .count();
-        assert!(red_count > 0, "must contain red (255, 0, 0) stroke pixels");
-
-        // Yellow text glyph pixels over navy background
-        let yellow_count = img
-            .pixels()
-            .filter(|p| p[0] > 180 && p[1] > 180 && p[2] < 100)
-            .count();
-        assert!(yellow_count > 0, "must contain yellow glyph pixels");
-
-        // 2. PDF render resolves all three parameters
-        let req_pdf = req_post_json(
-            "/api/render/label?format=pdf",
-            &serde_json::json!({
-                "template": "shape_param_colors",
-                "data": {
-                    "bg_color": "#000080",
-                    "stroke_color": "#ff0000",
-                    "text_color": "#ffff00"
-                }
-            })
-            .to_string(),
-        );
-        let res_pdf = app.clone().oneshot(req_pdf).await.unwrap();
-        assert_eq!(res_pdf.status(), StatusCode::OK);
-        let pdf = body_bytes(res_pdf).await;
-        assert!(pdf.starts_with(b"%PDF"));
     }
 
     #[tokio::test]
@@ -12251,9 +11865,6 @@ layout:
 name: AuthoredColors
 unit: mm
 dpi: 200
-params:
-  - name: brand
-    type: string
 format:
   type: single
   width: 50
@@ -12264,7 +11875,7 @@ layout:
     size: [50, 30]
     stroke:
       thickness: 0.2
-      color: "#F0F"
+      color: "#FF00ff"
     background: red
     rounded: 1.0
     items:
@@ -12278,15 +11889,15 @@ layout:
         size: [40, 15]
         stroke:
           thickness: 0.1
-          color: "{brand}"
-        background: "{brand}"
+          color: blue
+        background: green
         items: []
       - type: text
-        value: "Dynamic Color"
+        value: "Authored Color"
         at: [5, 20]
         size: [40, 5]
         font_size: 6
-        color: "{brand}"
+        color: white
       - type: text
         value: "Default Color"
         at: [5, 25]
@@ -12294,10 +11905,6 @@ layout:
         font_size: 6
 "##;
         let Layout::Items(items) = crate::parse::parse_template(yaml).unwrap().layout;
-        let spelling = |paint: &DynamicValue<Color>| match paint {
-            DynamicValue::Literal(color) => color.spelling().to_string(),
-            DynamicValue::Ref(name) => format!("{{{name}}}"),
-        };
         let LayoutItem::Container {
             stroke: Some(stroke),
             background: Some(background),
@@ -12309,24 +11916,20 @@ layout:
             panic!("item 0 is a stroked, filled container: {:?}", items[0]);
         };
 
-        // Top-level container: authored spelling preserved
-        assert_eq!(spelling(background), "red");
-        assert_eq!(spelling(&stroke.color), "#F0F");
+        // Top-level container: a name and a mixed-case hex
+        assert_eq!(background.hex(), "#ff0000");
+        assert_eq!(stroke.color.hex(), "#ff00ff");
         assert_eq!(stroke.thickness, 0.2);
         assert_eq!(*rounded, Some(1.0));
 
-        // Line with defaulted color -> "black"
-        let LayoutItem::Line {
-            stroke: Some(stroke),
-            ..
-        } = &children[0]
-        else {
+        // Line with defaulted color -> black
+        let LayoutItem::Line { stroke, .. } = &children[0] else {
             panic!("child 0 is a stroked line: {:?}", children[0]);
         };
-        assert_eq!(spelling(&stroke.color), "black");
+        assert_eq!(stroke.color.hex(), "#000000");
         assert_eq!(stroke.thickness, 0.5);
 
-        // Nested container with stroke: { color: "{brand}" } and background: "{brand}"
+        // Nested container with stroke: { color: blue } and background: green
         let LayoutItem::Container {
             stroke: Some(stroke),
             background: Some(background),
@@ -12335,15 +11938,15 @@ layout:
         else {
             panic!("child 1 is a stroked, filled container: {:?}", children[1]);
         };
-        assert_eq!(spelling(&stroke.color), "{brand}");
-        assert_eq!(spelling(background), "{brand}");
+        assert_eq!(stroke.color.hex(), "#0000ff");
+        assert_eq!(background.hex(), "#008000");
 
-        // Text item with color reference, and an uncoloured one
+        // A coloured text item, and an uncoloured one
         let text_color = |item: &LayoutItem| match item {
-            LayoutItem::Text { color, .. } => color.as_ref().map(spelling),
+            LayoutItem::Text { color, .. } => color.as_ref().map(Color::hex),
             other => panic!("expected a text item: {other:?}"),
         };
-        assert_eq!(text_color(&children[2]).as_deref(), Some("{brand}"));
+        assert_eq!(text_color(&children[2]).as_deref(), Some("#ffffff"));
         assert_eq!(text_color(&children[3]), None);
     }
 
@@ -12565,7 +12168,7 @@ layout:
                 "params.b_bad.default",
             ),
             (
-                "  - name: l_bad\n    type: length\n    default: \"80mm\"",
+                "  - name: l_bad\n    type: number\n    default: \"80mm\"",
                 "params.l_bad.default",
             ),
         ] {
@@ -12623,167 +12226,6 @@ layout:
     #[tokio::test]
     async fn container_geometry_http_render_and_batch() {
         let app = test_app_no_auth();
-
-        // 6.2 Render endpoint: content-sized circle
-        // Square resolution renders OK
-        let req_square = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "container_circle_content",
-                "data": {}
-            })
-            .to_string(),
-        );
-        let res_square = app.clone().oneshot(req_square).await.unwrap();
-        assert_eq!(res_square.status(), StatusCode::OK);
-        assert_eq!(
-            res_square.headers().get("content-type").unwrap(),
-            "image/png"
-        );
-
-        // Non-square content circle returns 422 with UnsupportedLayoutItem and circle_box_not_square
-        let bad_content_circle_yaml = r#"
-name: BadContentCircle
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 50 }
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: [content, content]
-    items:
-      - type: text
-        value: "Non Square Text"
-        at: [0, 0]
-        size: [30, 10]
-        font_size: 8
-"#;
-        let (custom_app, _state) =
-            test_app_with_custom_templates(vec![("bad_content_circle", bad_content_circle_yaml)]);
-        let req_bad_content = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "bad_content_circle",
-                "data": {}
-            })
-            .to_string(),
-        );
-        let res_bad_content = custom_app.clone().oneshot(req_bad_content).await.unwrap();
-        assert_eq!(res_bad_content.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body_bad_content = body_json(res_bad_content).await;
-        assert_eq!(body_bad_content["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(
-            body_bad_content["error"]["details"]["reason"],
-            "circle_box_not_square"
-        );
-        assert!(body_bad_content["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("layout[0]"));
-
-        // 6.3 Batch endpoint: failure returns 422 BatchInvalid with failure details
-        let req_batch = req_post_json(
-            "/api/render",
-            &serde_json::json!({
-                "template": "bad_content_circle",
-                "labels": [
-                    { "data": {} }
-                ]
-            })
-            .to_string(),
-        );
-        let res_batch = custom_app.clone().oneshot(req_batch).await.unwrap();
-        assert_eq!(res_batch.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body_batch = body_json(res_batch).await;
-        assert_eq!(body_batch["error"]["code"], "BatchInvalid");
-        let failures = body_batch["error"]["details"]["failures"]
-            .as_array()
-            .unwrap();
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0]["index"], 0);
-        assert_eq!(failures[0]["code"], "UnsupportedLayoutItem");
-        assert_eq!(failures[0]["details"]["reason"], "circle_box_not_square");
-        assert!(failures[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("layout[0]"));
-
-        // 6.4 Render endpoint: container_circle_param
-        // No w supplied -> default w=20 (square) -> renders OK
-        let req_param_default = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "container_circle_param",
-                "data": {}
-            })
-            .to_string(),
-        );
-        let res_param_default = app.clone().oneshot(req_param_default).await.unwrap();
-        assert_eq!(res_param_default.status(), StatusCode::OK);
-
-        // Supplying w=14 -> non-square (14x20) -> 422 UnsupportedLayoutItem / circle_box_not_square
-        let req_param_nonsquare = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "container_circle_param",
-                "data": { "w": 14.0 }
-            })
-            .to_string(),
-        );
-        let res_param_nonsquare = app.clone().oneshot(req_param_nonsquare).await.unwrap();
-        assert_eq!(
-            res_param_nonsquare.status(),
-            StatusCode::UNPROCESSABLE_ENTITY
-        );
-        let body_param_nonsquare = body_json(res_param_nonsquare).await;
-        assert_eq!(
-            body_param_nonsquare["error"]["code"],
-            "UnsupportedLayoutItem"
-        );
-        assert_eq!(
-            body_param_nonsquare["error"]["details"]["reason"],
-            "circle_box_not_square"
-        );
-        assert!(body_param_nonsquare["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("layout[0]"));
-
-        // 6.5 Render endpoint: container_circle_gated
-        // False when: (enabled: "no") with w=14 -> succeeds
-        let req_gated_off = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "container_circle_gated",
-                "data": { "enabled": "no", "w": 14.0 }
-            })
-            .to_string(),
-        );
-        let res_gated_off = app.clone().oneshot(req_gated_off).await.unwrap();
-        assert_eq!(res_gated_off.status(), StatusCode::OK);
-
-        // True when: (enabled: "yes") with w=14 -> refused with 422 UnsupportedLayoutItem / circle_box_not_square
-        let req_gated_on = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "container_circle_gated",
-                "data": { "enabled": "yes", "w": 14.0 }
-            })
-            .to_string(),
-        );
-        let res_gated_on = app.clone().oneshot(req_gated_on).await.unwrap();
-        assert_eq!(res_gated_on.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body_gated_on = body_json(res_gated_on).await;
-        assert_eq!(body_gated_on["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(
-            body_gated_on["error"]["details"]["reason"],
-            "circle_box_not_square"
-        );
-        assert!(body_gated_on["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("layout[0]"));
 
         // 6.6 Byte-identical render for default-rect container & unknown shape quarantine
         let explicit_rect_yaml = r#"
@@ -12849,6 +12291,7 @@ format: { type: single, width: 40, height: 30 }
 layout:
   - type: container
     at: [0, 0]
+    size: [10, 10]
     shape: octagon
     items: []
 "#;
@@ -12963,526 +12406,6 @@ layout:
         assert_eq!(body["error"]["details"]["reason"], "text_does_not_fit");
     }
 
-    #[tokio::test]
-    async fn issue_364_line_spacing_endpoint_render_measured_tests() {
-        let ink_rows_helper = |png: &[u8]| -> (u32, u32) {
-            let img = image::load_from_memory(png).expect("decode").to_luma8();
-            let (w, h) = (img.width(), img.height());
-            let inked: Vec<u32> = (0..h)
-                .filter(|&y| (0..w).any(|x| img.get_pixel(x, y).0[0] < 128))
-                .collect();
-            assert!(!inked.is_empty(), "rendered label has no ink");
-            (inked[0], inked[inked.len() - 1])
-        };
-
-        let line1_ink_height = |png: &[u8]| -> u32 {
-            let img = image::load_from_memory(png).expect("decode").to_luma8();
-            let (w, h) = (img.width(), img.height());
-            let mut line1_top = None;
-            let mut line1_bottom = None;
-            let mut inside_band = false;
-            for y in 0..h {
-                let has_ink = (0..w).any(|x| img.get_pixel(x, y).0[0] < 128);
-                if has_ink {
-                    if !inside_band {
-                        inside_band = true;
-                        if line1_top.is_none() {
-                            line1_top = Some(y);
-                        }
-                    }
-                } else if inside_band {
-                    line1_bottom = Some(y - 1);
-                    break;
-                }
-            }
-            line1_bottom.expect("line1 bottom") - line1_top.expect("line1 top") + 1
-        };
-
-        let tpl_pitch_num = r#"
-name: tpl_pitch_num
-unit: mm
-dpi: 180
-format: { type: single, width: 100, height: 60 }
-params:
-  - name: pitch
-    type: number
-  - name: text
-    type: string
-    default: "Hxy\nHxy"
-layout:
-  - type: text
-    value: "{text}"
-    at: [0, 0]
-    size: [100, 60]
-    font_size: 20
-    line_spacing: "{pitch}"
-"#;
-
-        let tpl_pitch_int = r#"
-name: tpl_pitch_int
-unit: mm
-dpi: 180
-format: { type: single, width: 100, height: 60 }
-params:
-  - name: pitch
-    type: integer
-  - name: text
-    type: string
-    default: "Hxy\nHxy"
-layout:
-  - type: text
-    value: "{text}"
-    at: [0, 0]
-    size: [100, 60]
-    font_size: 20
-    line_spacing: "{pitch}"
-"#;
-
-        let tpl_pitch_default = r#"
-name: tpl_pitch_default
-unit: mm
-dpi: 180
-format: { type: single, width: 100, height: 60 }
-params:
-  - name: pitch
-    type: number
-    default: 0.99
-  - name: text
-    type: string
-    default: "Hxy\nHxy"
-layout:
-  - type: text
-    value: "{text}"
-    at: [0, 0]
-    size: [100, 60]
-    font_size: 20
-    line_spacing: "{pitch}"
-"#;
-
-        let tpl_pitch_shrink = r#"
-name: tpl_pitch_shrink
-unit: mm
-dpi: 180
-format: { type: single, width: 100, height: 10 }
-params:
-  - name: pitch
-    type: number
-layout:
-  - type: text
-    value: "Hxy\nHxy"
-    at: [0, 0]
-    size: [100, 10]
-    font_size: { min: 8, max: 24 }
-    line_spacing: "{pitch}"
-"#;
-
-        let (app, _state) = test_app_with_custom_templates(vec![
-            ("tpl_pitch_num", tpl_pitch_num),
-            ("tpl_pitch_int", tpl_pitch_int),
-            ("tpl_pitch_default", tpl_pitch_default),
-            ("tpl_pitch_shrink", tpl_pitch_shrink),
-        ]);
-
-        let render_pitch_png = |template: &str, data: serde_json::Value| {
-            let app = app.clone();
-            let template = template.to_string();
-            async move {
-                let req = req_post_json(
-                    "/api/render/label?format=png",
-                    &serde_json::json!({
-                        "template": template,
-                        "data": data
-                    })
-                    .to_string(),
-                );
-                let res = app.oneshot(req).await.unwrap();
-                assert_eq!(res.status(), StatusCode::OK);
-                body_bytes(res).await
-            }
-        };
-
-        // Task 6.1: Render one template declaring line_spacing: "{pitch}" twice (0.99 and 1.5)
-        let png_1line_099 = render_pitch_png(
-            "tpl_pitch_num",
-            serde_json::json!({ "pitch": 0.99, "text": "Hxy" }),
-        )
-        .await;
-        let png_2line_099 = render_pitch_png(
-            "tpl_pitch_num",
-            serde_json::json!({ "pitch": 0.99, "text": "Hxy\nHxy" }),
-        )
-        .await;
-        let (_, bottom1_099) = ink_rows_helper(&png_1line_099);
-        let (_, bottom2_099) = ink_rows_helper(&png_2line_099);
-        let pitch_px_099 = (bottom2_099 - bottom1_099) as f32;
-        let drift_099 = (pitch_px_099 - 0.99 * 50.0).abs();
-        assert!(
-            drift_099 <= 1.0,
-            "pitch 0.99: measured {pitch_px_099}px, expected 49.5px (drift {drift_099}px)"
-        );
-
-        let png_1line_15 = render_pitch_png(
-            "tpl_pitch_num",
-            serde_json::json!({ "pitch": 1.5, "text": "Hxy" }),
-        )
-        .await;
-        let png_2line_15 = render_pitch_png(
-            "tpl_pitch_num",
-            serde_json::json!({ "pitch": 1.5, "text": "Hxy\nHxy" }),
-        )
-        .await;
-        let (_, bottom1_15) = ink_rows_helper(&png_1line_15);
-        let (_, bottom2_15) = ink_rows_helper(&png_2line_15);
-        let pitch_px_15 = (bottom2_15 - bottom1_15) as f32;
-        let drift_15 = (pitch_px_15 - 1.5 * 50.0).abs();
-        assert!(
-            drift_15 <= 1.0,
-            "pitch 1.5: measured {pitch_px_15}px, expected 75.0px (drift {drift_15}px)"
-        );
-
-        // Task 6.7: integer-typed pitch 2 renders with ink bands 2 font sizes apart
-        let png_1line_2 = render_pitch_png(
-            "tpl_pitch_int",
-            serde_json::json!({ "pitch": 2, "text": "Hxy" }),
-        )
-        .await;
-        let png_2line_2 = render_pitch_png(
-            "tpl_pitch_int",
-            serde_json::json!({ "pitch": 2, "text": "Hxy\nHxy" }),
-        )
-        .await;
-        let (_, bottom1_2) = ink_rows_helper(&png_1line_2);
-        let (_, bottom2_2) = ink_rows_helper(&png_2line_2);
-        let pitch_px_2 = (bottom2_2 - bottom1_2) as f32;
-        let drift_2 = (pitch_px_2 - 2.0 * 50.0).abs();
-        assert!(
-            drift_2 <= 1.0,
-            "integer pitch 2: measured {pitch_px_2}px, expected 100.0px (drift {drift_2}px)"
-        );
-
-        // Task 6.12: pitch parameter declaring default: 0.99, omitted at request, renders at 0.99 font sizes
-        let png_1line_def =
-            render_pitch_png("tpl_pitch_default", serde_json::json!({ "text": "Hxy" })).await;
-        let png_2line_def = render_pitch_png(
-            "tpl_pitch_default",
-            serde_json::json!({ "text": "Hxy\nHxy" }),
-        )
-        .await;
-        let (_, bottom1_def) = ink_rows_helper(&png_1line_def);
-        let (_, bottom2_def) = ink_rows_helper(&png_2line_def);
-        let pitch_px_def = (bottom2_def - bottom1_def) as f32;
-        let drift_def = (pitch_px_def - 0.99 * 50.0).abs();
-        assert!(
-            drift_def <= 1.0,
-            "default pitch 0.99: measured {pitch_px_def}px, expected 49.5px (drift {drift_def}px)"
-        );
-
-        // Task 6.3: height-bound two-line item with range font_size: tighter pitch (0.99) settles at larger size than looser (1.5)
-        let png_shrink_099 =
-            render_pitch_png("tpl_pitch_shrink", serde_json::json!({ "pitch": 0.99 })).await;
-        let png_shrink_15 =
-            render_pitch_png("tpl_pitch_shrink", serde_json::json!({ "pitch": 1.5 })).await;
-        let h_099 = line1_ink_height(&png_shrink_099);
-        let h_15 = line1_ink_height(&png_shrink_15);
-        assert!(
-            h_099 > h_15,
-            "tighter pitch (0.99) line 1 height ({h_099}px) must be greater than looser pitch (1.5) line 1 height ({h_15}px)"
-        );
-    }
-
-    #[tokio::test]
-    async fn issue_364_line_spacing_endpoint_refusal_tests() {
-        let tpl_pitch_num = r#"
-name: tpl_pitch_num_refusal
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-    default: 1.2
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-
-        let tpl_pitch_int = r#"
-name: tpl_pitch_int_refusal
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: integer
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-
-        let tpl_pitch_int_overflow_fail = r#"
-name: tpl_pitch_int_overflow_fail
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 10 }
-params:
-  - name: pitch
-    type: integer
-layout:
-  - type: text
-    value: "Hxy\nHxy"
-    at: [0, 0]
-    size: [50, 10]
-    font_size: 10
-    line_spacing: "{pitch}"
-    overflow: fail
-"#;
-
-        let tpl_pitch_def_zero = r#"
-name: tpl_pitch_def_zero
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-    default: 0
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-
-        let tpl_pitch_def_nan = r#"
-name: tpl_pitch_def_nan
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-    default: .nan
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-
-        let (app, _state) = test_app_with_custom_templates(vec![
-            ("tpl_pitch_num_refusal", tpl_pitch_num),
-            ("tpl_pitch_int_refusal", tpl_pitch_int),
-            ("tpl_pitch_int_overflow_fail", tpl_pitch_int_overflow_fail),
-            ("tpl_pitch_def_zero", tpl_pitch_def_zero),
-        ]);
-
-        let post_render = |template: &str, data: serde_json::Value| {
-            let app = app.clone();
-            let template = template.to_string();
-            async move {
-                let req = req_post_json(
-                    "/api/render/label?format=png",
-                    &serde_json::json!({
-                        "template": template,
-                        "data": data
-                    })
-                    .to_string(),
-                );
-                app.oneshot(req).await.unwrap()
-            }
-        };
-
-        // Task 6.4: supplied 0 and -0.5 are refused with 400 InvalidRequest, line_spacing_param_invalid, message naming layout path and pitch
-        for bad_pitch in [serde_json::json!(0), serde_json::json!(-0.5)] {
-            let res = post_render(
-                "tpl_pitch_num_refusal",
-                serde_json::json!({ "pitch": bad_pitch }),
-            )
-            .await;
-            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-            let body = body_json(res).await;
-            assert_eq!(body["error"]["code"], "InvalidRequest");
-            assert_eq!(
-                body["error"]["details"]["reason"],
-                "line_spacing_param_invalid"
-            );
-            let msg = body["error"]["message"].as_str().unwrap();
-            assert!(
-                msg.contains("layout[0]") && msg.contains("pitch"),
-                "message must name layout[0] and pitch: {msg}"
-            );
-        }
-
-        // Task 6.5: supplied value numeric resolution cannot read as a number is refused with 400, param_value_invalid, naming pitch, not line_spacing_param_invalid
-        let res = post_render(
-            "tpl_pitch_num_refusal",
-            serde_json::json!({ "pitch": "invalid_num" }),
-        )
-        .await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("pitch"), "message must name pitch: {msg}");
-
-        // Task 6.6: a supplied non-finite number is refused with 400, param_value_invalid, naming pitch
-        for bad_num in [serde_json::json!("NaN"), serde_json::json!("inf")] {
-            let res = post_render(
-                "tpl_pitch_num_refusal",
-                serde_json::json!({ "pitch": bad_num }),
-            )
-            .await;
-            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-            let body = body_json(res).await;
-            assert_eq!(body["error"]["code"], "InvalidRequest");
-            assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
-            assert_eq!(body["error"]["details"]["param"], "pitch");
-        }
-
-        // Tasks 6.8 and 6.9: an integer-typed pitch supplied as a whole JSON number outside the
-        // i64 range is not an integer: 400 param_value_invalid, not a saturated pitch
-        for out_of_range in [serde_json::json!(1e300), serde_json::json!(-1e300)] {
-            let res = post_render(
-                "tpl_pitch_int_overflow_fail",
-                serde_json::json!({ "pitch": out_of_range }),
-            )
-            .await;
-            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-            let body = body_json(res).await;
-            assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
-            assert_eq!(body["error"]["details"]["param"], "pitch");
-        }
-
-        // Task 6.10: integer-typed pitch supplied as string "9223372036854775808" fails integer parsing -> 400 param_value_invalid
-        let res = post_render(
-            "tpl_pitch_int_refusal",
-            serde_json::json!({ "pitch": "9223372036854775808" }),
-        )
-        .await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("pitch"), "message must name pitch: {msg}");
-
-        // Task 6.13: pitch parameter declaring default: 0 loads and is served, and omitting pitch is refused with 400 line_spacing_param_invalid
-        let res = post_render("tpl_pitch_def_zero", serde_json::json!({})).await;
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "line_spacing_param_invalid"
-        );
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(
-            msg.contains("layout[0]") && msg.contains("pitch"),
-            "message must name layout[0] and pitch: {msg}"
-        );
-
-        // Task 6.14: a pitch parameter declaring default: .nan is refused at load
-        let err = crate::parse::parse_template(tpl_pitch_def_nan)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("params.pitch.default"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn issue_364_line_spacing_batch_tests() {
-        let tpl_pitch_num = r#"
-name: tpl_pitch_batch
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-    default: 1.2
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-
-        let tpl_pitch_def_nan = r#"
-name: tpl_pitch_batch_nan
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: pitch
-    type: number
-    default: .nan
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    line_spacing: "{pitch}"
-"#;
-
-        let (app, _state) =
-            test_app_with_custom_templates(vec![("tpl_pitch_batch", tpl_pitch_num)]);
-
-        // Task 7.1: 3 labels from template declaring line_spacing: "{pitch}",
-        // 1st and 3rd supplying usable pitch (1.2, 1.5) and 2nd supplying 0 ->
-        // refuse whole request with 422 BatchInvalid, exactly 1 failures entry at index 1
-        // with code InvalidRequest and reason line_spacing_param_invalid naming layout path and pitch.
-        let req1 = req_post_json(
-            "/api/render",
-            &serde_json::json!({
-                "template": "tpl_pitch_batch",
-                "labels": [
-                    { "data": { "pitch": 1.2 } },
-                    { "data": { "pitch": 0 } },
-                    { "data": { "pitch": 1.5 } }
-                ]
-            })
-            .to_string(),
-        );
-        let res1 = app.clone().oneshot(req1).await.unwrap();
-        assert_eq!(res1.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body1 = body_json(res1).await;
-        assert_eq!(body1["error"]["code"], "BatchInvalid");
-        let failures1 = body1["error"]["details"]["failures"].as_array().unwrap();
-        assert_eq!(failures1.len(), 1);
-        assert_eq!(failures1[0]["index"], 1);
-        assert_eq!(failures1[0]["code"], "InvalidRequest");
-        assert_eq!(
-            failures1[0]["details"]["reason"],
-            "line_spacing_param_invalid"
-        );
-        let msg1 = failures1[0]["message"].as_str().unwrap();
-        assert!(
-            msg1.contains("layout[0]") && msg1.contains("pitch"),
-            "message must name layout[0] and pitch: {msg1}"
-        );
-
-        // Task 7.3: a template declaring default: .nan is refused at load
-        let err = crate::parse::parse_template(tpl_pitch_def_nan)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("params.pitch.default"), "{err}");
-    }
-
     // Issue 235: dynamic width max resolved below min tests
     #[tokio::test]
     async fn http_render_dynamic_width_max_below_min_repro_and_ordered_cases() {
@@ -13498,7 +12421,7 @@ format:
   height: 18.1
 params:
   - name: max_width
-    type: length
+    type: number
     default: 120.0
 layout:
   - type: text
@@ -13572,7 +12495,7 @@ format:
   height: 18.1
 params:
   - name: min_width
-    type: length
+    type: number
     default: 10.0
 layout:
   - type: text
@@ -13594,10 +12517,10 @@ format:
   height: 18.1
 params:
   - name: lo
-    type: length
+    type: number
     default: 10.0
   - name: hi
-    type: length
+    type: number
     default: 50.0
 layout:
   - type: text
@@ -13672,7 +12595,7 @@ format:
   height: 18.1
 params:
   - name: max_width
-    type: length
+    type: number
     default: 5.0
 layout:
   - type: text
@@ -13733,10 +12656,10 @@ format:
   height: 18.1
 params:
   - name: max_width
-    type: length
+    type: number
     default: 120.0
   - name: w
-    type: length
+    type: number
     default: 5.0
 layout:
   - type: text
@@ -13779,7 +12702,7 @@ format:
   height: 18.1
 params:
   - name: max_width
-    type: length
+    type: number
     default: 120.0
 layout:
   - type: text
@@ -14030,7 +12953,7 @@ mod parameters_http_tests {
     // A1
     #[tokio::test]
     async fn list_and_detail_publish_each_parameters_control() {
-        let params = "  - name: t\n    type: string\n  - name: ta\n    type: string\n    multiline: true\n  - name: i\n    type: integer\n  - name: n\n    type: number\n  - name: len\n    type: length\n  - name: b\n    type: boolean\n  - name: e\n    type: enum\n    values: [a, z]\n  - name: d\n    type: datetime\n  - name: dt\n    type: datetime\n    time: true\n  - name: l\n    type: list\n  - name: photo\n    type: string\n  - name: icon\n    type: string\n"
+        let params = "  - name: t\n    type: string\n  - name: ta\n    type: string\n    multiline: true\n  - name: i\n    type: integer\n  - name: n\n    type: number\n  - name: b\n    type: boolean\n  - name: e\n    type: enum\n    values: [a, z]\n  - name: d\n    type: datetime\n  - name: dt\n    type: datetime\n    time: true\n  - name: l\n    type: list\n  - name: photo\n    type: string\n  - name: icon\n    type: string\n"
             .to_string()
             + GATE_PARAM;
         let layout = text("{t}")
@@ -14043,7 +12966,6 @@ mod parameters_http_tests {
             ("ta", "textarea"),
             ("i", "integer"),
             ("n", "number"),
-            ("len", "number"),
             ("b", "checkbox"),
             ("e", "select"),
             ("d", "date"),
@@ -14381,6 +13303,48 @@ mod parameters_http_tests {
             "a literal default above max is quarantined at params.n.default",
             &json!(error),
         );
+        misses.assert_none();
+    }
+
+    const HEFT_PARAM: &str = "  - name: heft\n    type: integer\n    default: 400\n";
+
+    /// A text item reading `heft` as its weight; `when` gates it, or is empty for none.
+    fn heft_text(when: &str) -> String {
+        format!(
+            "  - type: text\n    value: hi\n    at: [0, 0]\n    size: [60, 10]\n    font_size: 6\n    font_weight: \"{{heft}}\"\n{when}"
+        )
+    }
+
+    /// text spec, "Font weight resolution": a supplied weight that is not a multiple of 100 in
+    /// 100..=900 is refused, before any `when:`, so a reader no label activates refuses it too.
+    #[tokio::test]
+    async fn a_weight_parameter_refuses_a_value_that_is_not_a_weight() {
+        let active = single(HEFT_PARAM, &heft_text(""));
+        let inactive = single(
+            &(GATE_PARAM.to_string() + HEFT_PARAM),
+            &(text("fixed") + &heft_text("    when: { gate: shown }\n")),
+        );
+        let (app, _state, _dir) = app_with(&[("active", &active), ("inactive", &inactive)]);
+        let mut misses = Misses::default();
+        for template in ["active", "inactive"] {
+            for weight in ["450", "0", "1000"] {
+                let (status, body) =
+                    render(&app, template, &format!(r#"{{"heft": {weight}}}"#)).await;
+                misses.param_value_invalid(status, &body, "heft", &format!("{template} {weight}"));
+            }
+        }
+        misses.assert_none();
+    }
+
+    /// Guard, not a regression test: integer coercion refuses a fractional weight before any
+    /// weight rule runs.
+    #[tokio::test]
+    async fn a_fractional_weight_is_refused_by_coercion() {
+        let yaml = single(HEFT_PARAM, &heft_text(""));
+        let (app, _state, _dir) = app_with(&[("weighted", &yaml)]);
+        let (status, body) = render(&app, "weighted", r#"{"heft": 399.9}"#).await;
+        let mut misses = Misses::default();
+        misses.param_value_invalid(status, &body, "heft", "heft: 399.9");
         misses.assert_none();
     }
 

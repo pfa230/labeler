@@ -251,24 +251,6 @@ impl AppError {
         )
     }
 
-    pub fn color_param_invalid(param: &str, detail: impl std::fmt::Display) -> Self {
-        Self::invalid_request(
-            Reason::ColorParamInvalid,
-            format!("Invalid value for color parameter '{param}': {detail}"),
-        )
-    }
-
-    pub fn line_spacing_param_invalid(
-        path: &str,
-        param: &str,
-        detail: impl std::fmt::Display,
-    ) -> Self {
-        Self::invalid_request(
-            Reason::LineSpacingParamInvalid,
-            format!("Invalid line_spacing value for parameter '{param}' at {path}: {detail}"),
-        )
-    }
-
     pub fn width_bounds_inverted(
         min: f32,
         max: f32,

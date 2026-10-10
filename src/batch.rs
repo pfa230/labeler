@@ -190,7 +190,7 @@ mod tests {
                 dpi: 200,
                 format: TemplateFormat::Single {
                     width: Dimension::Fixed(20.0).into(),
-                    height: Dimension::Fixed(10.0).into(),
+                    height: 10.0.into(),
                     media_width: None,
                 },
                 params: indexmap::IndexMap::from([(

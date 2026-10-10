@@ -1,43 +1,86 @@
+use serde_yaml_ng::Value;
+
 use crate::errors::TemplateError;
-use crate::models::LayoutItem;
-use crate::raw::{LayoutItemRaw, TemplateDefinitionRaw};
+use crate::raw::TemplateDefinitionRaw;
 use crate::templates::TemplateContent;
 
-pub fn parse_nodes(src: &str) -> Result<Vec<LayoutItem>, TemplateError> {
-    let deserializer = serde_yaml_ng::Deserializer::from_str(src);
-    let raw: Vec<LayoutItemRaw> =
-        serde_path_to_error::deserialize(deserializer).map_err(|err| {
-            TemplateError::Yaml {
-                path: err.path().to_string(),
-                msg: err.to_string(),
-            }
-            .with_prefix("items")
-        })?;
-
-    raw.into_iter()
-        .enumerate()
-        .map(|(idx, item)| {
-            LayoutItem::try_from(item).map_err(|err| err.with_prefix(&format!("items[{idx}]")))
-        })
-        .collect()
-}
-
 pub fn parse_template(src: &str) -> Result<TemplateContent, TemplateError> {
+    let document: Value = serde_yaml_ng::from_str(src).map_err(|err| TemplateError::Yaml {
+        path: String::new(),
+        msg: err.to_string(),
+    })?;
+    refuse_nulls_and_nans(&document, "")?;
+
     let deserializer = serde_yaml_ng::Deserializer::from_str(src);
     let raw: TemplateDefinitionRaw =
         serde_path_to_error::deserialize(deserializer).map_err(|err| TemplateError::Yaml {
             path: err.path().to_string(),
-            msg: err.to_string(),
+            msg: err.into_inner().to_string(),
         })?;
 
     TemplateContent::try_from(raw)
 }
 
+/// Refuse the first mapping entry, at any depth, whose value is `null`, and the first number, at
+/// any depth, that is NaN. One walk of the document instead of a check on every field, which each
+/// new field would have to remember; NaN in particular slips past every `<=` bound. A `null`
+/// sequence element is not a key and is left to the typed deserializer.
+fn refuse_nulls_and_nans(value: &Value, path: &str) -> Result<(), TemplateError> {
+    match value {
+        Value::Mapping(mapping) => {
+            for (key, entry) in mapping {
+                let key = match key {
+                    Value::String(key) => key.clone(),
+                    other => serde_yaml_ng::to_string(other)
+                        .map_err(|err| TemplateError::Yaml {
+                            path: path.to_string(),
+                            msg: err.to_string(),
+                        })?
+                        .trim_end()
+                        .to_string(),
+                };
+                let entry_path = if path.is_empty() {
+                    key
+                } else {
+                    format!("{path}.{key}")
+                };
+                if entry.is_null() {
+                    return Err(TemplateError::Validation {
+                        path: entry_path,
+                        msg: "key must not be null".to_string(),
+                    });
+                }
+                refuse_nulls_and_nans(entry, &entry_path)?;
+            }
+            Ok(())
+        }
+        Value::Sequence(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(idx, item)| refuse_nulls_and_nans(item, &format!("{path}[{idx}]"))),
+        Value::Tagged(tagged) => refuse_nulls_and_nans(&tagged.value, path),
+        Value::Number(number) if number.is_nan() => Err(TemplateError::Validation {
+            path: path.to_string(),
+            msg: "number must not be NaN".to_string(),
+        }),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_nodes;
+    use super::parse_template;
     use crate::errors::TemplateError;
-    use crate::models::{LayoutItem, Padding};
+    use crate::models::{Layout, LayoutItem, Padding};
+
+    /// Parse `src`, a YAML sequence of layout items, as the layout of an otherwise minimal template.
+    fn parse_nodes(src: &str) -> Result<Vec<LayoutItem>, TemplateError> {
+        let yaml = format!(
+            "name: T\nunit: mm\ndpi: 200\nformat: {{ type: single, width: 10, height: 10 }}\nlayout:{src}"
+        );
+        let Layout::Items(items) = parse_template(&yaml)?.layout;
+        Ok(items)
+    }
 
     #[test]
     fn parse_nodes_accepts_uniform_padding() {
@@ -142,7 +185,7 @@ mod tests {
         let err = parse_nodes(src).expect_err("expected error");
         match err {
             TemplateError::Validation { path, msg } => {
-                assert_eq!(path, "items[0].text");
+                assert_eq!(path, "layout[0].text");
                 assert_eq!(msg, "must set one of size or to");
             }
             other => panic!("unexpected error: {other:?}"),
@@ -163,7 +206,7 @@ mod tests {
         match err {
             TemplateError::Yaml { path, .. } => {
                 assert!(
-                    path.contains("items[0]") || path.contains("padding"),
+                    path.contains("layout[0]") || path.contains("padding"),
                     "path was {path}"
                 );
             }
@@ -181,42 +224,6 @@ mod tests {
 "#;
         let items = parse_nodes(src).expect("parse nodes");
         assert!(matches!(items[0], LayoutItem::Image { .. }));
-    }
-
-    #[test]
-    fn parse_nodes_image_accepts_name() {
-        let src = r#"
-- type: image
-  name: photo
-  at: [0.0, 0.0]
-  size: [10.0, 10.0]
-"#;
-        let items = parse_nodes(src).expect("parse nodes");
-        assert!(matches!(items[0], LayoutItem::Image { .. }));
-    }
-
-    #[test]
-    fn parse_nodes_image_rejects_both_src_and_name() {
-        let src = r#"
-- type: image
-  src: logo.png
-  name: photo
-  at: [0.0, 0.0]
-  size: [10.0, 10.0]
-"#;
-        let err = parse_nodes(src).expect_err("expected error");
-        assert!(matches!(err, TemplateError::Validation { .. }));
-    }
-
-    #[test]
-    fn parse_nodes_image_rejects_neither_src_nor_name() {
-        let src = r#"
-- type: image
-  at: [0.0, 0.0]
-  size: [10.0, 10.0]
-"#;
-        let err = parse_nodes(src).expect_err("expected error");
-        assert!(matches!(err, TemplateError::Validation { .. }));
     }
 
     #[test]

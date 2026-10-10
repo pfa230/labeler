@@ -1,7 +1,7 @@
 export interface ApiErrorBody { error: { code: string; message: string; details?: unknown } }
 export type Dimension = number | { min?: number; max?: number };
 export type TemplateFormat =
-  | { type: "single"; width: Dimension; height: Dimension }
+  | { type: "single"; width: Dimension; height: number }
   | { type: "sheet"; paper_width: number; paper_height: number; label_width: number; label_height: number; positions: [number, number][] };
 
 export type ParamValue = string | number | boolean | string[];
@@ -20,7 +20,7 @@ export type ParamControl =
 
 export interface Param {
   name: string;
-  type: "string" | "number" | "integer" | "boolean" | "enum" | "length" | "datetime" | "list";
+  type: "string" | "number" | "integer" | "boolean" | "enum" | "datetime" | "list";
   control: ParamControl;
   default?: ParamValue;
   description?: string;

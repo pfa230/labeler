@@ -12,9 +12,8 @@ use crate::templates::{TemplateContent, TemplateDefinition};
 use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, interpolate,
-    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_color,
-    resolve_dynamic_value_f32, resolve_dynamic_value_u16, resolve_image_asset, to_page_coords,
-    typst_alignment, typst_font_options,
+    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32, resolve_image_asset,
+    to_page_coords, typst_alignment, typst_font_options,
 };
 
 pub(crate) use helpers::value_to_string;
@@ -85,7 +84,7 @@ pub(crate) fn coerce_param_value(
             JsonValue::String(s) => ParamValue::String(s.clone()),
             _ => return Err(not_a("a string")),
         },
-        ParamType::Number | ParamType::Length => {
+        ParamType::Number => {
             let number = match val {
                 JsonValue::Number(n) => n.as_f64(),
                 JsonValue::String(s) => s.trim().parse::<f64>().ok(),
@@ -186,6 +185,31 @@ pub(crate) fn coerce_param_value(
     }))
 }
 
+/// [`coerce_param_value`], then for a parameter some `font_weight` reads the weight rule
+/// (`parameters`, "Parameter references from layout attributes").
+fn coerce_declared(
+    val: &JsonValue,
+    spec: &ParamSpec,
+    reads_weight: bool,
+) -> Result<Option<Coerced>, Refusal> {
+    let coerced = coerce_param_value(val, spec)?;
+    if let Some(Coerced {
+        value: ParamValue::Integer(weight),
+        ..
+    }) = &coerced
+    {
+        if reads_weight && !crate::models::font_weight_ok(*weight) {
+            return Err(Refusal {
+                message: format!(
+                    "{weight} is not a font weight: a multiple of 100 between 100 and 900"
+                ),
+                element: None,
+            });
+        }
+    }
+    Ok(coerced)
+}
+
 /// Returns the parameter names that match no key of `template.params`,
 /// sorted ascending by Unicode code point (`str`'s `Ord`), empty when there are none.
 pub fn unknown_param_names<'a>(
@@ -243,16 +267,18 @@ pub fn resolve_parameters(
 ) -> Result<ResolvedParams, AppError> {
     let mut resolved = data.clone();
     let mut instants = BTreeMap::new();
+    let weight_params = template.weight_params();
 
     for (name, spec) in &template.params {
         let supplied = match data.get(name) {
-            Some(val) => coerce_param_value(val, spec).map_err(|refusal| {
-                AppError::param_value_invalid(
-                    name,
-                    refusal.element,
-                    format!("invalid value for parameter '{name}': {}", refusal.message),
-                )
-            })?,
+            Some(val) => coerce_declared(val, spec, weight_params.contains(name.as_str()))
+                .map_err(|refusal| {
+                    AppError::param_value_invalid(
+                        name,
+                        refusal.element,
+                        format!("invalid value for parameter '{name}': {}", refusal.message),
+                    )
+                })?,
             None => None,
         };
         let value = match supplied {
@@ -342,12 +368,14 @@ pub fn resolve_environment<'a>(
     }
 
     let mut defaults = ResolvedDefaults::new();
+    let weight_params = template.weight_params();
     for (name, spec) in &template.params {
         let Some(text) = spec.tokened_default() else {
             continue;
         };
         let value = interpolate(text, &HashMap::new(), settings, datetime, None)?;
-        let why = match coerce_param_value(&JsonValue::String(value.clone()), spec) {
+        let reads_weight = weight_params.contains(name.as_str());
+        let why = match coerce_declared(&JsonValue::String(value.clone()), spec, reads_weight) {
             Ok(Some(coerced)) => {
                 defaults.insert(name.clone(), coerced);
                 continue;
@@ -470,7 +498,7 @@ fn compile_label_source(
     let (mut width_units, height_units) = match &template.format {
         TemplateFormat::Single { width, height, .. } => (
             resolve_dimension(width, resolved_data)?,
-            resolve_dimension(height, resolved_data)?,
+            resolve_dynamic_value_f32(height, resolved_data)?,
         ),
         TemplateFormat::Sheet {
             label_width,
@@ -518,8 +546,8 @@ fn compile_label_source(
             ));
         }
 
-        let probe = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
-            .with_instants(&resolved.instants);
+        let probe =
+            RenderContext::new(unit, resolved_data, env, &images).with_instants(&resolved.instants);
         let (m_tree, root_w_req) = probe.measure_items(
             items,
             (max_w, height_units),
@@ -532,8 +560,8 @@ fn compile_label_source(
         measured = m_tree;
     } else {
         check_dimension_limit(width_units, unit, "width")?;
-        let probe = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
-            .with_instants(&resolved.instants);
+        let probe =
+            RenderContext::new(unit, resolved_data, env, &images).with_instants(&resolved.instants);
         let (m_tree, _) = probe.measure_items(
             items,
             (width_units, height_units),
@@ -555,8 +583,8 @@ fn compile_label_source(
     writeln!(source, "#set text(font: \"Inter\")")
         .map_err(|err| AppError::internal(format!("failed to build typst source: {err}")))?;
 
-    let context = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
-        .with_instants(&resolved.instants);
+    let context =
+        RenderContext::new(unit, resolved_data, env, &images).with_instants(&resolved.instants);
     let body = context.render_items(
         items,
         &measured,
@@ -760,7 +788,7 @@ pub fn render_sheet_pages(
             }
         };
         let geometry_values = render_geometry_values(&resolved.data, template);
-        let context = RenderContext::new(unit, template.dpi, &resolved.data, env, &images)
+        let context = RenderContext::new(unit, &resolved.data, env, &images)
             .with_instants(&resolved.instants);
         let (measured, _) = match context.measure_items(
             items,
@@ -952,7 +980,6 @@ pub struct RenderEnv<'a> {
 
 pub(crate) struct RenderContext<'a> {
     pub unit: &'a str,
-    pub dpi: u32,
     pub data: &'a HashMap<String, JsonValue>,
     pub env: &'a RenderEnv<'a>,
     pub images: &'a RefCell<ImageCollector>,
@@ -981,7 +1008,7 @@ struct ContainerRenderArgs<'a> {
     pub placement: &'a Placement,
     pub shape: Shape,
     pub stroke: &'a Option<crate::models::Stroke>,
-    pub background: &'a Option<crate::models::DynamicValue<crate::models::Color>>,
+    pub background: &'a Option<crate::models::Color>,
     pub rounded: &'a Option<f32>,
     pub padding: &'a crate::models::Padding,
     pub flow: &'a Option<crate::models::Flow>,
@@ -1011,14 +1038,12 @@ pub(crate) struct ExpandedItem<'a> {
 impl<'a> RenderContext<'a> {
     pub(crate) fn new(
         unit: &'a str,
-        dpi: u32,
         data: &'a HashMap<String, JsonValue>,
         env: &'a RenderEnv<'a>,
         images: &'a RefCell<ImageCollector>,
     ) -> Self {
         Self {
             unit,
-            dpi,
             data,
             env,
             images,
@@ -1032,7 +1057,6 @@ impl<'a> RenderContext<'a> {
     ) -> RenderContext<'b> {
         RenderContext {
             unit: self.unit,
-            dpi: self.dpi,
             data,
             env: self.env,
             images: self.images,
@@ -1103,6 +1127,35 @@ impl<'a> RenderContext<'a> {
             }
         }
         Ok(expanded)
+    }
+
+    /// The weight a `text` item is measured and drawn at: its literal, or the resolved value of
+    /// the parameter it references, which `resolve_parameters` has held to the weight rule. `None`
+    /// is an item that declares no weight.
+    fn resolve_font_weight(
+        &self,
+        font_weight: Option<&DynamicValue<u16>>,
+    ) -> Result<Option<u16>, AppError> {
+        let name = match font_weight {
+            None => return Ok(None),
+            Some(DynamicValue::Literal(weight)) => return Ok(Some(*weight)),
+            Some(DynamicValue::Ref(name)) => name,
+        };
+        let value = self.data.get(name).ok_or_else(|| {
+            AppError::internal(format!(
+                "parameter '{name}' has no value although load requires its default"
+            ))
+        })?;
+        value
+            .as_i64()
+            .filter(|weight| crate::models::font_weight_ok(*weight))
+            .and_then(|weight| u16::try_from(weight).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                AppError::internal(format!(
+                    "parameter '{name}' resolved to {value}, which is not a font weight"
+                ))
+            })
     }
 
     fn resolve_item_text(&self, value: &str) -> Result<String, AppError> {
@@ -1355,35 +1408,6 @@ impl<'a> RenderContext<'a> {
                 ..
             } => {
                 let text = self.resolve_item_text(value)?;
-                let dyn_weight = font_weight.as_ref().map(|dw| match dw {
-                    crate::models::DynamicValue::Literal(w) => {
-                        crate::models::DynamicValue::Literal(*w)
-                    }
-                    crate::models::DynamicValue::Ref(r) => {
-                        let resolved = self
-                            .data
-                            .get(r)
-                            .and_then(|v| v.as_u64())
-                            .map(|u| u as u16)
-                            .unwrap_or(400);
-                        crate::models::DynamicValue::Literal(resolved)
-                    }
-                });
-
-                let resolved_line_spacing = match line_spacing {
-                    None => None,
-                    Some(dyn_val) => {
-                        let f = helpers::resolve_dynamic_value_f32(dyn_val, self.data)?;
-                        if !f.is_finite() || f <= 0.0 {
-                            let param_name = match dyn_val {
-                                crate::models::DynamicValue::Ref(r) => r.as_str(),
-                                crate::models::DynamicValue::Literal(_) => "line_spacing",
-                            };
-                            return Err(AppError::line_spacing_param_invalid(path, param_name, f));
-                        }
-                        Some(f)
-                    }
-                };
 
                 // The layout pass is unconditional: the emitted lines are the render payload
                 // whether or not either axis asked for an intrinsic.
@@ -1391,9 +1415,9 @@ impl<'a> RenderContext<'a> {
                     helpers::TextLayoutItem {
                         raw_text: &text,
                         font_size,
-                        font_weight: dyn_weight,
+                        font_weight: self.resolve_font_weight(font_weight.as_ref())?,
                         wrap: *wrap,
-                        line_spacing: resolved_line_spacing,
+                        line_spacing: *line_spacing,
                         alignment: alignment.clone(),
                         overflow: *overflow,
                     },
@@ -1405,7 +1429,13 @@ impl<'a> RenderContext<'a> {
                 let extents = (text_fit.width_units, text_fit.height_units);
                 Ok((per_axis(extents), Some(text_fit)))
             }
-            LayoutItem::Qr { value, params, .. } => {
+            LayoutItem::Qr {
+                value,
+                error_correction,
+                module_size,
+                quiet_zone,
+                ..
+            } => {
                 if !demands[0] && !demands[1] {
                     return Ok(([None, None], None));
                 }
@@ -1413,77 +1443,19 @@ impl<'a> RenderContext<'a> {
                 if payload.is_empty() {
                     return Ok((per_axis((0.0, 0.0)), None));
                 }
-                let module_size = params.as_ref().and_then(|p| p.module_size);
                 let m = module_size.ok_or_else(|| {
-                    AppError::unsupported_layout_item(
-                        Reason::IntrinsicSizeUndefined,
-                        format!("at {path}: qr with content or fill size requires module_size"),
-                    )
+                    AppError::internal(format!(
+                        "at {path}: a qr with a content or fill extent and no module_size passed load"
+                    ))
                 })?;
-                let ecc = params
-                    .as_ref()
-                    .and_then(|p| p.error_correction.as_deref())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(|v| v.to_ascii_uppercase())
-                    .map(|v| match v.as_str() {
-                        "L" => Ok(qrcode::EcLevel::L),
-                        "M" => Ok(qrcode::EcLevel::M),
-                        "Q" => Ok(qrcode::EcLevel::Q),
-                        "H" => Ok(qrcode::EcLevel::H),
-                        _ => Err(AppError::unsupported_layout_item(
-                            Reason::QrErrorCorrectionInvalid,
-                            "qr error_correction must be one of L, M, Q, H",
-                        )),
-                    })
-                    .transpose()?
-                    .unwrap_or(qrcode::EcLevel::M);
-                let code = qrcode::QrCode::with_error_correction_level(payload.as_bytes(), ecc)
-                    .map_err(|err| {
-                        AppError::unsupported_layout_item(
-                            Reason::QrPayloadInvalid,
-                            format!("qr generation failed: {err}"),
-                        )
-                    })?;
-                let qz = params.as_ref().and_then(|p| p.quiet_zone).unwrap_or(0.0);
+                let code = helpers::qr_code(payload.as_bytes(), *error_correction)?;
+                let qz = *quiet_zone;
                 let qr_dim = (code.width() as f32 + 2.0 * qz) * m;
                 Ok((per_axis((qr_dim, qr_dim)), None))
             }
-            LayoutItem::Image { name, src, .. } => {
-                if !demands[0] && !demands[1] {
-                    return Ok(([None, None], None));
-                }
-                let Some((bytes, fmt)) = self.resolve_image(src.as_deref(), name.as_deref())?
-                else {
-                    return Ok((per_axis((0.0, 0.0)), None));
-                };
-
-                let extents = match fmt {
-                    helpers::ImageFmt::Png | helpers::ImageFmt::Jpg => {
-                        helpers::raster_image_dimensions(&bytes, fmt, self.dpi, self.unit, path)?
-                    }
-                    helpers::ImageFmt::Svg => {
-                        let svg_str = std::str::from_utf8(&bytes).map_err(|_| {
-                            AppError::unsupported_layout_item(
-                                Reason::ImageDataInvalid,
-                                format!("at {path}: svg data is not valid utf-8"),
-                            )
-                        })?;
-                        let w = if demands[0] {
-                            helpers::svg_axis_intrinsic(svg_str, 0, self.unit, self.dpi, path)?
-                        } else {
-                            0.0
-                        };
-                        let h = if demands[1] {
-                            helpers::svg_axis_intrinsic(svg_str, 1, self.unit, self.dpi, path)?
-                        } else {
-                            0.0
-                        };
-                        (w, h)
-                    }
-                };
-                Ok((per_axis(extents), None))
-            }
+            // An image's box is always authored (`layout`, "Intrinsic sizes"); load refuses one
+            // that is not.
+            LayoutItem::Image { .. } => Ok(([None, None], None)),
             LayoutItem::Container {
                 placement,
                 padding,
@@ -1748,7 +1720,7 @@ impl<'a> RenderContext<'a> {
     ) -> Result<(), AppError> {
         match args.item {
             LayoutItem::Line { at, to, stroke, .. } => {
-                self.render_line_item(out, at, to, stroke.as_ref(), args.frame, args.path)?;
+                self.render_line_item(out, at, to, stroke, args.frame, args.path)?;
             }
             LayoutItem::Text {
                 placement,
@@ -1757,20 +1729,13 @@ impl<'a> RenderContext<'a> {
                 alignment,
                 ..
             } => {
-                let resolved_weight = match font_weight {
-                    Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
-                    None => None,
-                };
-                let resolved_color = match color {
-                    Some(dyn_val) => Some(resolve_dynamic_value_color(dyn_val, self.data)?),
-                    None => None,
-                };
+                let resolved_weight = self.resolve_font_weight(font_weight.as_ref())?;
                 self.render_text_item(
                     out,
                     TextRenderArgs {
                         placement,
                         font_weight: resolved_weight,
-                        color: resolved_color.as_ref(),
+                        color: color.as_ref(),
                         alignment,
                         pbox: args.pbox,
                         text_fit: args.measured_node.text.as_ref().unwrap(),
@@ -1780,27 +1745,23 @@ impl<'a> RenderContext<'a> {
             LayoutItem::Qr {
                 value,
                 placement,
-                params,
+                error_correction,
+                quiet_zone,
                 ..
             } => {
                 let payload = self.resolve_item_text(value)?;
-                self.render_qr_item(out, payload, placement, params, args.pbox)?;
+                if !payload.is_empty() {
+                    let svg_xml = build_qr_svg(payload.as_bytes(), *error_correction, *quiet_zone)?;
+                    self.render_qr_item(out, svg_xml, placement, args.pbox)?;
+                }
             }
             LayoutItem::Image {
-                name,
                 src,
                 placement,
                 fit,
                 ..
             } => {
-                self.render_image_item(
-                    out,
-                    name.as_deref(),
-                    src.as_deref(),
-                    placement,
-                    fit,
-                    args.pbox,
-                )?;
+                self.render_image_item(out, src, placement, fit, args.pbox, args.path)?;
             }
             LayoutItem::Container {
                 placement,
@@ -1918,20 +1879,15 @@ impl<'a> RenderContext<'a> {
     fn render_qr_item(
         &self,
         out: &mut String,
-        payload: String,
+        svg_xml: String,
         placement: &Placement,
-        params: &Option<crate::models::QrParams>,
         pbox: PlacedBox,
     ) -> Result<(), AppError> {
-        if payload.is_empty() {
-            return Ok(());
-        }
         let top = pbox.y + pbox.h;
         let dx = format_length(pbox.x, self.unit)?;
         let dy = format_length(pbox.frame.1 - top, self.unit)?;
         let box_width = format_length(pbox.w, self.unit)?;
         let box_height = format_length(pbox.h, self.unit)?;
-        let svg_xml = build_qr_svg(payload.as_bytes(), params)?;
         let svg_xml = escape_typst_string(&svg_xml);
 
         let content = format!(
@@ -1951,53 +1907,23 @@ impl<'a> RenderContext<'a> {
 
     /// The image an item names, or `None` when its source resolves to the empty string (layout spec,
     /// "The image item": such an image draws nothing).
-    fn resolve_image(
-        &self,
-        src: Option<&str>,
-        name: Option<&str>,
-    ) -> Result<Option<(Vec<u8>, helpers::ImageFmt)>, AppError> {
-        let source = match (src, name) {
-            (Some(src), _) => interpolate(
-                src,
-                self.data,
-                self.env.settings,
-                self.env.datetime,
-                self.instants,
-            )?,
-            (_, Some(name)) => match self.data.get(name) {
-                None => String::new(),
-                Some(JsonValue::Array(_)) => return Err(AppError::field_value_not_scalar(name)),
-                Some(value) => value_to_string(value),
-            },
-            (None, None) => {
-                return Err(AppError::unsupported_layout_item(
-                    Reason::ImageSourceMissing,
-                    "image requires src or name",
-                ))
-            }
-        };
-        if source.is_empty() {
-            return Ok(None);
-        }
-        let image = if src.is_some() {
-            resolve_image_asset(&assets_root(), &source)?
-        } else {
-            parse_image_data_uri(&source)?
-        };
-        Ok(Some(image))
-    }
-
     fn render_image_item(
         &self,
         out: &mut String,
-        name: Option<&str>,
-        src: Option<&str>,
+        src: &str,
         placement: &Placement,
         fit: &Fit,
         pbox: PlacedBox,
+        path: &str,
     ) -> Result<(), AppError> {
-        let Some((bytes, fmt)) = self.resolve_image(src, name)? else {
+        let resolved_src = self.resolve_item_text(src)?;
+        if resolved_src.is_empty() {
             return Ok(());
+        }
+        let (bytes, fmt) = if resolved_src.starts_with("data:") {
+            parse_image_data_uri(&resolved_src, path)?
+        } else {
+            resolve_image_asset(&assets_root(), &resolved_src, path)?
         };
         let top = pbox.y + pbox.h;
         let vpath = self.images.borrow_mut().add(fmt.ext(), bytes);
@@ -2026,16 +1952,13 @@ impl<'a> RenderContext<'a> {
         out: &mut String,
         at: &Position,
         to: &Position,
-        stroke: Option<&Stroke>,
+        stroke: &Stroke,
         frame: (f32, f32),
         path: &str,
     ) -> Result<(), AppError> {
         let start_point = self.resolve_point(at, frame, path)?;
         let end_point = self.resolve_point(to, frame, path)?;
         self.check_line(&start_point, &end_point, frame, path)?;
-        let Some(stroke) = stroke else {
-            return Ok(());
-        };
         let (start_x, start_y) = to_page_coords(&start_point, frame.1);
         let (end_x, end_y) = to_page_coords(&end_point, frame.1);
         let dx = end_x - start_x;
@@ -2046,8 +1969,7 @@ impl<'a> RenderContext<'a> {
         let dy = format_length(dy, self.unit)?;
         let zero = format_length(0.0, self.unit)?;
         let thickness = format_length(stroke.thickness, self.unit)?;
-        let resolved_color = resolve_dynamic_value_color(&stroke.color, self.data)?;
-        let color = format!("rgb(\"{}\")", resolved_color.hex());
+        let color = format!("rgb(\"{}\")", stroke.color.hex());
 
         let content = format!(
             "#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {thickness} + {color})"
@@ -2066,14 +1988,6 @@ impl<'a> RenderContext<'a> {
         out: &mut String,
         args: ContainerRenderArgs<'_>,
     ) -> Result<(), AppError> {
-        if matches!(args.shape, Shape::Circle)
-            && (args.pbox.w - args.pbox.h).abs() > crate::resolver::BOUNDS_EPSILON
-        {
-            return Err(AppError::unsupported_layout_item(
-                Reason::CircleBoxNotSquare,
-                format!("circle container at '{}' is not square", args.path),
-            ));
-        }
         let rotation = crate::resolver::rotation_of(args.placement);
 
         let top = args.pbox.y + args.pbox.h;
@@ -2112,17 +2026,13 @@ impl<'a> RenderContext<'a> {
         };
 
         let fill = match args.background {
-            Some(bg) => {
-                let resolved_bg = resolve_dynamic_value_color(bg, self.data)?;
-                format!("rgb(\"{}\")", resolved_bg.hex())
-            }
+            Some(bg) => format!("rgb(\"{}\")", bg.hex()),
             None => "none".to_string(),
         };
         let stroke = match args.stroke {
             Some(st) => {
                 let thickness = format_length(st.thickness, self.unit)?;
-                let resolved_st_color = resolve_dynamic_value_color(&st.color, self.data)?;
-                let color = format!("rgb(\"{}\")", resolved_st_color.hex());
+                let color = format!("rgb(\"{}\")", st.color.hex());
                 format!("{thickness} + {color}")
             }
             None => "none".to_string(),
@@ -2146,7 +2056,7 @@ impl<'a> RenderContext<'a> {
                     AppError::internal(format!("failed to build typst source: {err}"))
                 })?;
             }
-            Shape::Ellipse | Shape::Circle => {
+            Shape::Ellipse => {
                 if args.stroke.is_some() || args.background.is_some() {
                     let frame_content = format!(
                         "#ellipse(width: {box_width}, height: {box_height}, fill: {fill}, stroke: {stroke})"
@@ -2220,11 +2130,36 @@ mod tests {
             defaults: Default::default(),
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
         let geometry_values = HashMap::new();
         let (measured, _) =
             ctx.measure_items(items, frame, [true, true], &geometry_values, "layout")?;
         ctx.render_items(items, &measured, frame, &geometry_values, None, "layout")
+    }
+
+    /// Measure and draw read a weight through one helper: a literal as written, a reference as its
+    /// resolved value, and an item without a weight as `None`. An absent value is a 500: load
+    /// requires a referenced parameter's default.
+    #[test]
+    fn a_text_weight_resolves_through_one_helper() {
+        let data = HashMap::from([("heft".to_string(), json!(700))]);
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+            defaults: Default::default(),
+        };
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
+        assert_eq!(ctx.resolve_font_weight(None).unwrap(), None);
+        let literal = DynamicValue::Literal(300);
+        assert_eq!(ctx.resolve_font_weight(Some(&literal)).unwrap(), Some(300));
+        let heft = DynamicValue::param_ref("heft");
+        assert_eq!(ctx.resolve_font_weight(Some(&heft)).unwrap(), Some(700));
+        let gone = DynamicValue::param_ref("gone");
+        let err = ctx.resolve_font_weight(Some(&gone)).unwrap_err();
+        assert_eq!(err.status().as_u16(), 500);
     }
 
     /// Build a one-text-item source. `size_w` of `None` means an auto width, which routes through
@@ -2678,7 +2613,7 @@ layout:
                 defaults: Default::default(),
             };
             let images = RefCell::new(super::ImageCollector::default());
-            let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+            let ctx = super::RenderContext::new("mm", &data, &env, &images);
             let item = LayoutItem::Text {
                 value: "Widget A-42 Storage".to_string(),
                 placement: Placement::sized(
@@ -2751,7 +2686,7 @@ layout:
             defaults: Default::default(),
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
 
         let auto_text = LayoutItem::Text {
             value: "hello".to_string(),
@@ -2839,7 +2774,7 @@ layout:
             defaults: Default::default(),
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
 
         let text = LayoutItem::Text {
             value: "hi".to_string(),
@@ -2928,7 +2863,7 @@ layout:
             defaults: Default::default(),
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
         let geometry_values = HashMap::new();
         let (measured, max_req_w) = ctx
             .measure_items(
@@ -3165,7 +3100,7 @@ layout:
                     max: Some(60.0),
                 }
                 .into(),
-                height: Dimension::Fixed(40.0).into(),
+                height: 40.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3338,29 +3273,6 @@ layout:
         );
     }
 
-    #[test]
-    fn a_strokeless_line_still_fails_its_render_checks() {
-        // Same template as a_container_with_no_room_left_fails_cleanly_at_render but with stroke removed.
-        // A strokeless line draws nothing yet still runs endpoint resolution and bounds checks.
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n";
-        let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
-        let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
-        assert_eq!(
-            template.validate(),
-            Ok(()),
-            "strokeless variant also admitted at load"
-        );
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let err = render_single_label(&template, &data, &no_settings(), &no_datetime())
-            .expect_err("a strokeless degenerate line in a zero-width container must still fail");
-        assert_eq!(
-            err.reason(),
-            Some("line_degenerate"),
-            "expected line_degenerate for strokeless line, got: {}",
-            err.message_text()
-        );
-    }
-
     /// A cap below the container's own padding leaves no inner box at all. When child items are
     /// inactive, the inner dimensions clamp at zero rather than going negative, emitting no
     /// negative dimensions.
@@ -3469,11 +3381,9 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
-                params: Some(crate::models::QrParams {
-                    error_correction: None,
-                    module_size: Some(1.0),
-                    quiet_zone: None,
-                }),
+                error_correction: crate::models::ErrorCorrection::M,
+                module_size: Some(1.0),
+                quiet_zone: 0.0,
                 when: None,
             },
             100.0,
@@ -3694,11 +3604,9 @@ layout:
                 max_h: None,
                 rotate: None,
             },
-            params: Some(crate::models::QrParams {
-                error_correction: None,
-                module_size: Some(2.0),
-                quiet_zone: None,
-            }),
+            error_correction: crate::models::ErrorCorrection::M,
+            module_size: Some(2.0),
+            quiet_zone: 0.0,
             when: None,
         };
         let (capped, pushed) = measured_extent_of(qr(Some(30.0)), 100.0);
@@ -3803,11 +3711,9 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
-                params: Some(crate::models::QrParams {
-                    error_correction: None,
-                    module_size: Some(1.0),
-                    quiet_zone: None,
-                }),
+                error_correction: crate::models::ErrorCorrection::M,
+                module_size: Some(1.0),
+                quiet_zone: 0.0,
                 when: None,
             },
             80.0,
@@ -3833,7 +3739,9 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
-                params: None,
+                error_correction: crate::models::ErrorCorrection::M,
+                module_size: None,
+                quiet_zone: 0.0,
                 when: None,
             },
             80.0,
@@ -3888,7 +3796,7 @@ layout:
                     max: Some(100.0),
                 }
                 .into(),
-                height: Dimension::Fixed(8.0).into(),
+                height: 8.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3944,7 +3852,7 @@ layout:
                     max: Some(100.0),
                 }
                 .into(),
-                height: Dimension::Fixed(30.0).into(),
+                height: 30.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -3990,7 +3898,7 @@ layout:
             shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.3,
-                color: DynamicValue::Literal(Color::black()),
+                color: Color::black(),
             }),
             background: None,
             rounded: None,
@@ -4019,7 +3927,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(80.0).into(),
-                height: Dimension::Fixed(40.0).into(),
+                height: 40.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -4035,7 +3943,7 @@ layout:
                 shape: Shape::Rect,
                 stroke: Some(Stroke {
                     thickness: 0.3,
-                    color: DynamicValue::Literal(Color::black()),
+                    color: Color::black(),
                 }),
                 background: None,
                 rounded: None,
@@ -4114,7 +4022,9 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(14.0), SizeValue::fixed(14.0)]),
                 ),
-                params: None,
+                error_correction: crate::models::ErrorCorrection::M,
+                module_size: None,
+                quiet_zone: 0.0,
                 when: None,
             }],
         );
@@ -4137,7 +4047,9 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(14.0), SizeValue::fixed(14.0)]),
                 ),
-                params: None,
+                error_correction: crate::models::ErrorCorrection::M,
+                module_size: None,
+                quiet_zone: 0.0,
                 when: None,
             }]
         };
@@ -4220,7 +4132,7 @@ layout:
             shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.3,
-                color: DynamicValue::Literal(Color::black()),
+                color: Color::black(),
             }),
             background: None,
             rounded: None,
@@ -4242,7 +4154,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(80.0).into(),
-                height: Dimension::Fixed(40.0).into(),
+                height: 40.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -4274,7 +4186,7 @@ layout:
                     min: Some(DynamicValue::Literal(10.0)),
                     max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(HEIGHT_MM).into(),
+                height: HEIGHT_MM.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -4313,7 +4225,7 @@ layout:
                 min: Some(DynamicValue::Literal(10.0)),
                 max: Some(DynamicValue::Literal(200.0)),
             },
-            height: Dimension::Fixed(height_mm).into(),
+            height: height_mm.into(),
             media_width: None,
         };
         let Layout::Items(items) = &mut t.layout;
@@ -4510,7 +4422,7 @@ layout:
                 defaults: Default::default(),
             };
             let images = RefCell::new(super::ImageCollector::default());
-            let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+            let ctx = super::RenderContext::new("mm", &data, &env, &images);
 
             let item = LayoutItem::Text {
                 value: text.to_string(),
@@ -4749,7 +4661,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(10.0).into(),
+                height: 10.0.into(),
                 media_width: None,
             },
             params: IndexMap::from([(
@@ -4800,7 +4712,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(30.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::from([(
@@ -4838,16 +4750,18 @@ layout:
                         Position([20.0, 0.0]),
                         Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
                     ),
-                    params: None,
+                    error_correction: crate::models::ErrorCorrection::M,
+                    module_size: None,
+                    quiet_zone: 0.0,
                     when: None,
                 },
                 LayoutItem::Line {
                     at: Position([0.0, 1.0]),
                     to: Position([30.0, 1.0]),
-                    stroke: Some(Stroke {
+                    stroke: Stroke {
                         thickness: 0.2,
-                        color: DynamicValue::Literal(Color::black()),
-                    }),
+                        color: Color::black(),
+                    },
                     when: None,
                 },
                 LayoutItem::Container {
@@ -4859,7 +4773,7 @@ layout:
                     shape: Shape::Rect,
                     stroke: Some(Stroke {
                         thickness: 0.2,
-                        color: DynamicValue::Literal(Color::black()),
+                        color: Color::black(),
                     }),
                     background: None,
                     rounded: Some(0.4),
@@ -4956,13 +4870,12 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Image {
-                name: Some("logo".to_string()),
-                src: None,
+                src: "{logo}".to_owned(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
@@ -5031,8 +4944,7 @@ layout:
                     },
                 )]),
                 layout: Layout::Items(vec![LayoutItem::Image {
-                    name: Some("logo".to_string()),
-                    src: None,
+                    src: "{logo}".to_owned(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
@@ -5065,18 +4977,18 @@ layout:
     #[test]
     fn one_code_two_reasons_for_unrelated_failures() {
         let template = image_single_template();
-        let data = HashMap::from([("logo".to_string(), json!("not a data uri"))]);
+        let data = HashMap::from([("logo".to_string(), json!("data:image/png;base64,@@@"))]);
         let image_err = render_single_label(&template, &data, &no_settings(), &no_datetime())
-            .expect_err("a non-data-URI image payload must not render");
+            .expect_err("an undecodable image payload must not render");
 
         let geometry_err = render_test_items(
             &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
-                stroke: Some(Stroke {
+                stroke: Stroke {
                     thickness: 0.2,
-                    color: DynamicValue::Literal(Color::black()),
-                }),
+                    color: Color::black(),
+                },
                 when: None,
             }],
             (10.0, 12.0),
@@ -5089,11 +5001,34 @@ layout:
         assert_eq!(geometry_err.reason(), Some("line_endpoint_out_of_frame"));
     }
 
+    /// layout spec, "Render failures locate the item": an image that fails inside a repeat
+    /// names its instance's path.
+    #[test]
+    fn an_image_render_failure_names_the_instance_path() {
+        let yaml = "name: T\nunit: mm\ndpi: 100\nformat: { type: single, width: 60, height: 20 }\nparams:\n  - name: logos\n    type: list\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [60, 20]\n    flow: { direction: row }\n    items:\n      - type: container\n        repeat: logos\n        size: [20, 20]\n        items:\n          - type: image\n            src: \"{logos}\"\n            at: [0, 0]\n            size: [20, 20]\n";
+        let template = crate::parse::parse_template(yaml).expect("parse");
+        template.validate().expect("validate");
+        let data = HashMap::from([(
+            "logos".to_string(),
+            json!([
+                format!("data:image/png;base64,{PNG_1X1_B64}"),
+                "data:image/png;base64,@@@"
+            ]),
+        )]);
+        let err = render_single_label(&template, &data, &no_settings(), &no_datetime())
+            .expect_err("an undecodable image payload must not render");
+        assert_eq!(err.reason(), Some("image_data_invalid"));
+        let message = err.message_text();
+        assert!(
+            message.contains("layout[0].items[0]#1.items[0]"),
+            "expected the second instance's image path in: {message}"
+        );
+    }
+
     fn image_single_template_with_src(src: &str) -> TemplateContent {
         let mut template = image_single_template();
         template.layout = Layout::Items(vec![LayoutItem::Image {
-            name: None,
-            src: Some(src.to_string()),
+            src: src.to_string(),
             placement: Placement::sized(
                 Position([0.0, 0.0]),
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
@@ -5169,7 +5104,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(10.0).into(),
+                height: 10.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -5225,9 +5160,6 @@ layout:
             "brother_24mm_qr",
             "brother_24mm_weights",
             "brother_9mm",
-            "container_circle_content",
-            "container_circle_gated",
-            "container_circle_param",
             "container_default_rect",
             "container_ellipse_padded",
             "container_ellipse_square",
@@ -5346,7 +5278,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(40.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -5372,7 +5304,9 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
                     ),
-                    params: None,
+                    error_correction: crate::models::ErrorCorrection::M,
+                    module_size: None,
+                    quiet_zone: 0.0,
                     when: None,
                 },
             ]),
@@ -5397,7 +5331,7 @@ layout:
             dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(60.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -5510,7 +5444,7 @@ layout:
             dpi: 96,
             format: TemplateFormat::Single {
                 width: crate::models::Dimension::Fixed(40.0).into(),
-                height: crate::models::Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::from([
@@ -5565,8 +5499,7 @@ layout:
                     when: None,
                 },
                 LayoutItem::Image {
-                    name: None,
-                    src: Some("{logo}".into()),
+                    src: "{logo}".into(),
                     placement: Placement::sized(
                         Position([0.0, 10.0]),
                         Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
@@ -5607,7 +5540,7 @@ layout:
             dpi: 96,
             format: TemplateFormat::Single {
                 width: crate::models::Dimension::Fixed(40.0).into(),
-                height: crate::models::Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params: IndexMap::from([(
@@ -6832,7 +6765,7 @@ layout:
             }
         }
 
-        // Cover a supplied pitch at 0.5, 0.99, 1.2 and 1.5 over one to three lines
+        // The compiled label emits the same leading for an authored pitch at 0.5, 0.99, 1.2 and 1.5
         let env = super::RenderEnv {
             settings: &no_settings(),
             datetime: &no_datetime(),
@@ -6841,30 +6774,18 @@ layout:
         for spacing in [0.5, 0.99, 1.2, 1.5] {
             for lines in 1..=3usize {
                 let body = (0..lines).map(|_| "Hxy").collect::<Vec<_>>().join("\n");
-                let mut params = IndexMap::new();
-                params.insert(
-                    "pitch".to_string(),
-                    ParamSpec {
-                        param_type: ParamType::Number,
-                        default: None,
-                        min: None,
-                        max: None,
-                        description: None,
-                        default_instant: None,
-                    },
-                );
                 let template = TemplateContent {
-                    name: "SuppliedBlockHeight".to_string(),
+                    name: "AuthoredBlockHeight".to_string(),
                     description: String::new(),
                     categories: Vec::new(),
                     unit: "mm".to_string(),
                     dpi: 200,
                     format: TemplateFormat::Single {
                         width: Dimension::Fixed(100.0).into(),
-                        height: Dimension::Fixed(100.0).into(),
+                        height: 100.0.into(),
                         media_width: None,
                     },
-                    params,
+                    params: IndexMap::new(),
                     layout: Layout::Items(vec![LayoutItem::Text {
                         value: body,
                         placement: Placement::sized(
@@ -6875,16 +6796,14 @@ layout:
                         font_weight: None,
                         color: None,
                         wrap: false,
-                        line_spacing: Some(DynamicValue::Ref("pitch".to_string())),
+                        line_spacing: Some(spacing),
                         alignment: crate::models::Alignment::default(),
                         overflow: Overflow::Ellipsis,
                         when: None,
                     }]),
                 };
-                let mut data = HashMap::new();
-                data.insert("pitch".to_string(), serde_json::json!(spacing));
-                let compiled = super::compile_label_source(&template, &data, &env)
-                    .expect("compile supplied agreement");
+                let compiled = super::compile_label_source(&template, &HashMap::new(), &env)
+                    .expect("compile authored agreement");
                 let rendered = typst_block_height_pt(lines, 20.0, Some(spacing));
                 let predicted = super::helpers::block_height_with_spacing_for_test(
                     400,
@@ -6895,7 +6814,7 @@ layout:
                 let drift = (rendered - predicted).abs() / rendered;
                 assert!(
                     drift < 0.01,
-                    "supplied {lines} line(s) at pitch {spacing}: predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
+                    "authored {lines} line(s) at pitch {spacing}: predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
                     drift * 100.0
                 );
                 let expected_leading = super::helpers::derived_leading_pt(400, 20.0, Some(spacing))
@@ -6981,7 +6900,7 @@ layout:
                 dpi: 180,
                 format: TemplateFormat::Single {
                     width: Dimension::Fixed(100.0).into(),
-                    height: Dimension::Fixed(60.0).into(),
+                    height: 60.0.into(),
                     media_width: None,
                 },
                 params: IndexMap::new(),
@@ -6995,7 +6914,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
-                    line_spacing: spacing.map(DynamicValue::Literal),
+                    line_spacing: spacing,
                     alignment: crate::models::Alignment {
                         horizontal: HorizontalAlign::Left,
                         vertical: VerticalAlign::Top,
@@ -7048,7 +6967,7 @@ layout:
             dpi: 180,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(100.0).into(),
-                height: Dimension::Fixed(16.0).into(),
+                height: 16.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -7065,7 +6984,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
-                line_spacing: spacing.map(DynamicValue::Literal),
+                line_spacing: spacing,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -7102,7 +7021,7 @@ layout:
                 dpi: 180,
                 format: TemplateFormat::Single {
                     width: Dimension::Fixed(60.0).into(),
-                    height: Dimension::Fixed(20.0).into(),
+                    height: 20.0.into(),
                     media_width: None,
                 },
                 params: IndexMap::new(),
@@ -7116,7 +7035,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
-                    line_spacing: spacing.map(DynamicValue::Literal),
+                    line_spacing: spacing,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -7174,10 +7093,10 @@ layout:
                     items: vec![LayoutItem::Line {
                         at: Position([0.0, 6.0]),
                         to: Position([20.0, 6.0]),
-                        stroke: Some(Stroke {
+                        stroke: Stroke {
                             thickness: 0.2,
-                            color: DynamicValue::Literal(Color::black()),
-                        }),
+                            color: Color::black(),
+                        },
                         when: None,
                     }],
                 }],
@@ -7208,10 +7127,10 @@ layout:
         let item = LayoutItem::Line {
             at: Position([-5.0, 6.0]),
             to: Position([-3.0, 6.0]),
-            stroke: Some(Stroke {
+            stroke: Stroke {
                 thickness: 0.2,
-                color: DynamicValue::Literal(Color::black()),
-            }),
+                color: Color::black(),
+            },
             when: None,
         };
         let (extent, text_count) = measured_extent_of(item, 80.0);
@@ -7251,10 +7170,10 @@ layout:
             &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([-0.0, 6.0]),
-                stroke: Some(Stroke {
+                stroke: Stroke {
                     thickness: 0.2,
-                    color: DynamicValue::Literal(Color::black()),
-                }),
+                    color: Color::black(),
+                },
                 when: None,
             }],
             (40.0, 12.0),
@@ -7279,7 +7198,7 @@ layout:
                     min: Some(DynamicValue::Literal(5.0)),
                     max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::new(),
@@ -7302,10 +7221,10 @@ layout:
                 LayoutItem::Line {
                     at,
                     to,
-                    stroke: Some(Stroke {
+                    stroke: Stroke {
                         thickness: 0.2,
-                        color: DynamicValue::Literal(Color::black()),
-                    }),
+                        color: Color::black(),
+                    },
                     when: None,
                 },
             ]),
@@ -7340,10 +7259,10 @@ layout:
             &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
-                stroke: Some(Stroke {
+                stroke: Stroke {
                     thickness: 0.2,
-                    color: DynamicValue::Literal(Color::black()),
-                }),
+                    color: Color::black(),
+                },
                 when: None,
             }],
             (10.0, 12.0),
@@ -7370,7 +7289,7 @@ layout:
                 min: Some(DynamicValue::Literal(20.0)),
                 max: Some(DynamicValue::Literal(100.0)),
             },
-            height: Dimension::Fixed(12.0).into(),
+            height: 12.0.into(),
             media_width: None,
         };
         assert_eq!(template.validate(), Ok(()), "not comparable at load time");
@@ -7555,7 +7474,7 @@ layout:
                     min: Some(DynamicValue::Literal(10.0)),
                     max: Some(DynamicValue::Literal(60.0)),
                 },
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::from([(
@@ -7615,13 +7534,13 @@ layout:
                     min: Some(DynamicValue::Literal(10.0)),
                     max: Some(DynamicValue::Ref("target_width".to_string())),
                 },
-                height: Dimension::Fixed(12.0).into(),
+                height: 12.0.into(),
                 media_width: None,
             },
             params: IndexMap::from([(
                 "target_width".to_string(),
                 ParamSpec {
-                    param_type: ParamType::Length,
+                    param_type: ParamType::Number,
                     description: None,
                     default: Some(crate::models::ParamValue::Float(100.0)),
                     min: Some(10.0),
@@ -7638,11 +7557,9 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
-                params: Some(crate::models::QrParams {
-                    error_correction: None,
-                    module_size: Some(0.5),
-                    quiet_zone: None,
-                }),
+                error_correction: crate::models::ErrorCorrection::M,
+                module_size: Some(0.5),
+                quiet_zone: 0.0,
                 when: None,
             }]),
         };
@@ -7721,7 +7638,7 @@ params:
   - name: message
     type: string
   - name: target_width
-    type: length
+    type: number
     default: 60
 format:
   type: single
@@ -7883,7 +7800,7 @@ layout:
     value: "{v_text}"
     at: [0, 0]
     size: [content, content]
-    params: { module_size: 0.5 }
+    module_size: 0.5
     when: { orientation: v }
 "#;
         let template = parse_and_validate(yaml).unwrap();
@@ -7933,7 +7850,7 @@ layout:
 
     #[test]
     fn an_empty_qr_takes_no_room_and_draws_nothing() {
-        let qr = "      - type: qr\n        value: \"{code}\"\n        size: [content, content]\n        params: { module_size: 0.5 }\n";
+        let qr = "      - type: qr\n        value: \"{code}\"\n        size: [content, content]\n        module_size: 0.5\n";
         assert_eq!(
             render_empty(&empty_content_label(qr)),
             render_empty(&empty_content_label(""))
@@ -8017,7 +7934,7 @@ unit: mm
 dpi: 200
 params:
   - name: target_width
-    type: length
+    type: number
     default: 60
 format:
   type: single
@@ -8049,7 +7966,7 @@ unit: mm
 dpi: 200
 params:
   - name: target_width
-    type: length
+    type: number
     default: 60
 format:
   type: single
@@ -8085,7 +8002,7 @@ unit: mm
 dpi: 200
 params:
   - name: target_width
-    type: length
+    type: number
     default: 60
 format:
   type: single
@@ -8128,7 +8045,7 @@ unit: mm
 dpi: 200
 params:
   - name: target_width
-    type: length
+    type: number
     default: 60
   - name: show_extra
     type: boolean
@@ -8557,7 +8474,7 @@ layout:
                 datetime: &resolver,
                 defaults: Default::default(),
             };
-            super::RenderContext::new("mm", 180, &resolved.data, &env, &images)
+            super::RenderContext::new("mm", &resolved.data, &env, &images)
                 .with_instants(&resolved.instants)
                 .is_item_active(&items[0])
         };
@@ -8632,9 +8549,8 @@ layout:
             datetime: &dt_resolved,
             defaults: Default::default(),
         };
-        let ctx =
-            super::RenderContext::new(&template.unit, template.dpi, &resolved.data, &env, &images)
-                .with_instants(&resolved.instants);
+        let ctx = super::RenderContext::new(&template.unit, &resolved.data, &env, &images)
+            .with_instants(&resolved.instants);
         let Layout::Items(items) = &template.layout;
         assert!(
             ctx.is_item_active(&items[0]),
@@ -8680,27 +8596,6 @@ layout:
     }
 
     #[test]
-    fn text_with_shrinking_to_laid_out_against_resolved_box() {
-        let yaml = r#"
-name: Shrinking To Overflow
-unit: mm
-dpi: 200
-format: { type: single, width: 100, height: 20 }
-layout:
-  - type: text
-    value: "A long text that cannot fit within 10mm"
-    at: [-20, 0]
-    to: [90, 20]
-    overflow: fail
-    font_size: 14
-"#;
-        let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
-            .unwrap_err();
-        assert_eq!(err.reason(), Some("text_does_not_fit"));
-    }
-
-    #[test]
     fn parameter_resolved_authored_size_zero_errors_with_size_invalid() {
         let yaml = r#"
 name: Zero Size
@@ -8708,7 +8603,7 @@ unit: mm
 dpi: 200
 params:
   - name: w
-    type: length
+    type: number
     default: 10
 format: { type: single, width: 100, height: 20 }
 layout:
@@ -8736,7 +8631,7 @@ unit: mm
 dpi: 200
 params:
   - name: w
-    type: length
+    type: number
     default: 10
 format: { type: single, width: 100, height: 20 }
 layout:
@@ -8761,7 +8656,7 @@ unit: mm
 dpi: 200
 params:
   - name: target_width
-    type: length
+    type: number
     default: 100
 format:
   type: single
@@ -8794,7 +8689,7 @@ unit: mm
 dpi: 200
 params:
   - name: target_width
-    type: length
+    type: number
     default: 100
 format:
   type: single
@@ -8830,7 +8725,7 @@ layout:
                 shape: Shape::Rect,
                 stroke: Some(Stroke {
                     thickness: 1.0,
-                    color: DynamicValue::Literal(Color::black()),
+                    color: Color::black(),
                 }),
                 background: None,
                 rounded: None,
@@ -8844,7 +8739,7 @@ layout:
         )
         .expect("render");
         assert!(source.contains(
-            "#box(width: 30mm, height: 10mm, fill: none, stroke: 1mm + rgb(\"#000000ff\"), radius: 0mm, clip: true)"
+            "#box(width: 30mm, height: 10mm, fill: none, stroke: 1mm + rgb(\"#000000\"), radius: 0mm, clip: true)"
         ));
         assert!(!source.contains("#rotate(90deg, origin: center)[#box(width: 30mm"));
     }
@@ -8861,7 +8756,7 @@ layout:
             shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.5,
-                color: DynamicValue::Literal(Color::from_rgba(255, 0, 0, 255)),
+                color: Color::from_rgb(255, 0, 0),
             }),
             background: None,
             rounded: None,
@@ -8872,7 +8767,7 @@ layout:
         };
         let src = render_test_items(&[stroke_only], (20.0, 10.0)).expect("render stroke only");
         assert!(
-            src.contains("#box(width: 20mm, height: 10mm, fill: none, stroke: 0.5mm + rgb(\"#ff0000ff\"), radius: 0mm, clip: true)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: none, stroke: 0.5mm + rgb(\"#ff0000\"), radius: 0mm, clip: true)"),
             "got: {src}"
         );
 
@@ -8885,7 +8780,7 @@ layout:
             when: None,
             shape: Shape::Rect,
             stroke: None,
-            background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 128, 255))),
+            background: Some(Color::from_rgb(0, 0, 128)),
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
@@ -8894,7 +8789,7 @@ layout:
         };
         let src = render_test_items(&[bg_only], (20.0, 10.0)).expect("render bg only");
         assert!(
-            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#000080ff\"), stroke: none, radius: 0mm, clip: true)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#000080\"), stroke: none, radius: 0mm, clip: true)"),
             "got: {src}"
         );
 
@@ -8908,9 +8803,9 @@ layout:
             shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.2,
-                color: DynamicValue::Literal(Color::from_rgba(0, 255, 0, 255)),
+                color: Color::from_rgb(0, 255, 0),
             }),
-            background: Some(DynamicValue::Literal(Color::from_rgba(255, 255, 0, 255))),
+            background: Some(Color::from_rgb(255, 255, 0)),
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
@@ -8919,7 +8814,7 @@ layout:
         };
         let src = render_test_items(&[both], (20.0, 10.0)).expect("render both");
         assert!(
-            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ffff00ff\"), stroke: 0.2mm + rgb(\"#00ff00ff\"), radius: 0mm, clip: true)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ffff00\"), stroke: 0.2mm + rgb(\"#00ff00\"), radius: 0mm, clip: true)"),
             "got: {src}"
         );
 
@@ -8934,7 +8829,7 @@ layout:
             shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.2,
-                color: DynamicValue::Literal(Color::black()),
+                color: Color::black(),
             }),
             background: None,
             rounded: Some(8.0),
@@ -8946,7 +8841,7 @@ layout:
         let src =
             render_test_items(&[rounded_clamped], (20.0, 10.0)).expect("render rounded clamped");
         assert!(
-            src.contains("#box(width: 20mm, height: 10mm, fill: none, stroke: 0.2mm + rgb(\"#000000ff\"), radius: 5mm, clip: true)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: none, stroke: 0.2mm + rgb(\"#000000\"), radius: 5mm, clip: true)"),
             "got: {src}"
         );
 
@@ -8959,7 +8854,7 @@ layout:
             when: None,
             shape: Shape::Rect,
             stroke: None,
-            background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 0, 255))),
+            background: Some(Color::from_rgb(0, 0, 0)),
             rounded: Some(1.5),
             padding: Padding::ZERO,
             flow: None,
@@ -8969,7 +8864,7 @@ layout:
         let src = render_test_items(&[rounded_fill_no_stroke], (20.0, 10.0))
             .expect("render rounded fill no stroke");
         assert!(
-            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#000000ff\"), stroke: none, radius: 1.5mm, clip: true)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#000000\"), stroke: none, radius: 1.5mm, clip: true)"),
             "got: {src}"
         );
 
@@ -9000,30 +8895,19 @@ layout:
         let line = LayoutItem::Line {
             at: Position([0.0, 0.0]),
             to: Position([10.0, 5.0]),
-            stroke: Some(Stroke {
+            stroke: Stroke {
                 thickness: 0.4,
-                color: DynamicValue::Literal(Color::from_rgba(0x80, 0, 0x80, 0xff)),
-            }),
+                color: Color::from_rgb(0x80, 0, 0x80),
+            },
             when: None,
         };
         let src = render_test_items(&[line], (20.0, 10.0)).expect("render line");
         assert!(
             src.contains(
-                "#line(start: (0mm, 0mm), end: (10mm, -5mm), stroke: 0.4mm + rgb(\"#800080ff\"))"
+                "#line(start: (0mm, 0mm), end: (10mm, -5mm), stroke: 0.4mm + rgb(\"#800080\"))"
             ),
             "got: {src}"
         );
-
-        // Line with omitted stroke emits no #line
-        let strokeless_line = LayoutItem::Line {
-            at: Position([0.0, 0.0]),
-            to: Position([10.0, 5.0]),
-            stroke: None,
-            when: None,
-        };
-        let src_strokeless =
-            render_test_items(&[strokeless_line], (20.0, 10.0)).expect("render strokeless line");
-        assert!(!src_strokeless.contains("#line"), "got: {src_strokeless}");
 
         // Container with child holds child in single box
         let container_with_child = LayoutItem::Container {
@@ -9035,9 +8919,9 @@ layout:
             shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.5,
-                color: DynamicValue::Literal(Color::black()),
+                color: Color::black(),
             }),
-            background: Some(DynamicValue::Literal(Color::from_rgba(255, 0, 0, 255))),
+            background: Some(Color::from_rgb(255, 0, 0)),
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
@@ -9060,178 +8944,8 @@ layout:
         };
         let src = render_test_items(&[container_with_child], (20.0, 10.0))
             .expect("render container with child");
-        assert!(src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ff0000ff\"), stroke: 0.5mm + rgb(\"#000000ff\"), radius: 0mm, clip: true)["));
+        assert!(src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ff0000\"), stroke: 0.5mm + rgb(\"#000000\"), radius: 0mm, clip: true)["));
         assert!(src.contains("child_text"));
-    }
-
-    #[test]
-    fn circle_render_time_squareness_check() {
-        // 1. Param-dependent circle that resolves non-square fails with circle_box_not_square
-        let yaml = r#"
-name: CircleParamTest
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 50 }
-params:
-  - name: w
-    type: length
-    default: 12
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: ["{w}", 12]
-    items: []
-"#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        assert!(template.validate().is_ok());
-
-        // When w=12, square -> success
-        let mut data_ok = HashMap::new();
-        data_ok.insert("w".to_string(), serde_json::json!(12.0));
-        assert!(render_single_label(&template, &data_ok, &no_settings(), &no_datetime()).is_ok());
-
-        // When w=14, not square -> 422 circle_box_not_square
-        let mut data_bad = HashMap::new();
-        data_bad.insert("w".to_string(), serde_json::json!(14.0));
-        let err =
-            render_single_label(&template, &data_bad, &no_settings(), &no_datetime()).unwrap_err();
-        assert_eq!(err.reason(), Some("circle_box_not_square"));
-        assert_eq!(err.status(), 422);
-        assert!(err.message_text().contains("layout[0]"));
-
-        // 2. Inactive non-square circle (when is false) succeeds
-        let yaml_when = r#"
-name: CircleWhenTest
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 50 }
-params:
-  - name: w
-    type: length
-    default: 14
-  - name: show
-    type: enum
-    values: [yes, no]
-    default: no
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: ["{w}", 12]
-    when: { show: yes }
-    items: []
-"#;
-        let template_when = crate::parse::parse_template(yaml_when).unwrap();
-        let mut data_inactive = HashMap::new();
-        data_inactive.insert("w".to_string(), serde_json::json!(14.0));
-        data_inactive.insert("show".to_string(), serde_json::json!("no"));
-        assert!(render_single_label(
-            &template_when,
-            &data_inactive,
-            &no_settings(),
-            &no_datetime()
-        )
-        .is_ok());
-
-        // 3. Content-derived circle that resolves non-square fails with circle_box_not_square
-        let yaml_content = r#"
-name: CircleContentTest
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 50 }
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: [content, content]
-    items:
-      - type: text
-        value: "Long text item"
-        at: [0, 0]
-        size: [30, 10]
-        font_size: 10
-"#;
-        let template_content = crate::parse::parse_template(yaml_content).unwrap();
-        let err = render_single_label(
-            &template_content,
-            &HashMap::new(),
-            &no_settings(),
-            &no_datetime(),
-        )
-        .unwrap_err();
-        assert_eq!(err.reason(), Some("circle_box_not_square"));
-        assert!(err.message_text().contains("layout[0]"));
-
-        // 4. Batch render reports circle_box_not_square in failures for failing row while rendering valid row
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let template_def = crate::templates::TemplateDefinition {
-            id: "CircleParamTest".to_string(),
-            content: template,
-        };
-        let render_env = super::resolve_environment(&template_def, &settings, &datetime).unwrap();
-        let batch_env = crate::batch::BatchEnv {
-            render: &render_env,
-            render_opts: super::ImageRenderOptions::default(),
-        };
-        let labels = vec![
-            crate::models::LabelInput { data: data_ok },
-            crate::models::LabelInput { data: data_bad },
-        ];
-        let err = crate::batch::render_batch(
-            &template_def,
-            &labels,
-            crate::batch::BatchMode::Download,
-            None,
-            0,
-            &batch_env,
-            500,
-        )
-        .unwrap_err();
-        assert_eq!(err.status(), 422);
-        assert_eq!(err.code(), "BatchInvalid");
-        let failures = &err.details().as_ref().unwrap()["failures"];
-        assert_eq!(failures[0]["index"], 1);
-        assert_eq!(failures[0]["code"], "UnsupportedLayoutItem");
-        assert_eq!(failures[0]["details"]["reason"], "circle_box_not_square");
-        assert!(failures[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("layout[0]"));
-
-        // 5. Epsilon boundary: <= 0.0001 succeeds, > 0.0001 fails
-        let yaml_eps = r#"
-name: CircleEpsTest
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 50 }
-params:
-  - name: w
-    type: length
-    default: 10
-layout:
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: ["{w}", 10]
-    items: []
-"#;
-        let template_eps = crate::parse::parse_template(yaml_eps).unwrap();
-
-        let mut data_eps_ok = HashMap::new();
-        data_eps_ok.insert("w".to_string(), serde_json::json!(10.00009));
-        assert!(
-            render_single_label(&template_eps, &data_eps_ok, &no_settings(), &no_datetime())
-                .is_ok()
-        );
-
-        let mut data_eps_bad = HashMap::new();
-        data_eps_bad.insert("w".to_string(), serde_json::json!(10.00011));
-        let err = render_single_label(&template_eps, &data_eps_bad, &no_settings(), &no_datetime())
-            .unwrap_err();
-        assert_eq!(err.reason(), Some("circle_box_not_square"));
-        assert!(err.message_text().contains("layout[0]"));
     }
 
     #[test]
@@ -9246,9 +8960,9 @@ layout:
             shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.5,
-                color: DynamicValue::Literal(Color::black()),
+                color: Color::black(),
             }),
-            background: Some(DynamicValue::Literal(Color::from_rgba(255, 0, 0, 255))),
+            background: Some(Color::from_rgb(255, 0, 0)),
             rounded: Some(2.0),
             padding: Padding::ZERO,
             flow: None,
@@ -9256,7 +8970,7 @@ layout:
             items: vec![],
         };
         let src = render_test_items(&[rect_item], (20.0, 10.0)).expect("render rect");
-        assert!(src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ff0000ff\"), stroke: 0.5mm + rgb(\"#000000ff\"), radius: 2mm, clip: true)[]"));
+        assert!(src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ff0000\"), stroke: 0.5mm + rgb(\"#000000\"), radius: 2mm, clip: true)[]"));
         assert!(!src.contains("#rect"));
 
         // 2. shape: ellipse emits #ellipse then #box with clip: true (unstroked and unrounded)
@@ -9269,9 +8983,9 @@ layout:
             shape: Shape::Ellipse,
             stroke: Some(Stroke {
                 thickness: 0.5,
-                color: DynamicValue::Literal(Color::black()),
+                color: Color::black(),
             }),
-            background: Some(DynamicValue::Literal(Color::from_rgba(0, 255, 0, 255))),
+            background: Some(Color::from_rgb(0, 255, 0)),
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
@@ -9279,7 +8993,7 @@ layout:
             items: vec![],
         };
         let src_ellipse = render_test_items(&[ellipse_item], (30.0, 20.0)).expect("render ellipse");
-        assert!(src_ellipse.contains("#ellipse(width: 30mm, height: 20mm, fill: rgb(\"#00ff00ff\"), stroke: 0.5mm + rgb(\"#000000ff\"))"));
+        assert!(src_ellipse.contains("#ellipse(width: 30mm, height: 20mm, fill: rgb(\"#00ff00\"), stroke: 0.5mm + rgb(\"#000000\"))"));
         assert!(src_ellipse.contains("#box(width: 30mm, height: 20mm, clip: true)[]"));
         assert!(
             src_ellipse.find("#ellipse").unwrap()
@@ -9289,38 +9003,7 @@ layout:
             "ellipse paint must precede child box"
         );
 
-        // 3. shape: circle emits #ellipse on a square box
-        let circle_item = LayoutItem::Container {
-            placement: Placement::sized(
-                Position([0.0, 0.0]),
-                Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
-            ),
-            when: None,
-            shape: Shape::Circle,
-            stroke: Some(Stroke {
-                thickness: 0.5,
-                color: DynamicValue::Literal(Color::black()),
-            }),
-            background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 255, 255))),
-            rounded: None,
-            padding: Padding::ZERO,
-            flow: None,
-            repeat: None,
-            items: vec![],
-        };
-        let src_circle = render_test_items(&[circle_item], (20.0, 20.0)).expect("render circle");
-        assert!(src_circle.contains("#ellipse(width: 20mm, height: 20mm, fill: rgb(\"#0000ffff\"), stroke: 0.5mm + rgb(\"#000000ff\"))"));
-        assert!(src_circle.contains("#box(width: 20mm, height: 20mm, clip: true)[]"));
-        assert!(!src_circle.contains("#circle"));
-        assert!(
-            src_circle.find("#ellipse").unwrap()
-                < src_circle
-                    .find("#box(width: 20mm, height: 20mm, clip: true)")
-                    .unwrap(),
-            "circle ellipse paint must precede child box"
-        );
-
-        // 4. Strokeless and fill-less ellipse emits no #ellipse, just the clip box
+        // 3. Strokeless and fill-less ellipse emits no #ellipse, just the clip box
         let strokeless_ellipse = LayoutItem::Container {
             placement: Placement::sized(
                 Position([0.0, 0.0]),
@@ -9341,7 +9024,7 @@ layout:
         assert!(!src_strokeless_el.contains("#ellipse"));
         assert!(src_strokeless_el.contains("#box(width: 30mm, height: 20mm, clip: true)[]"));
 
-        // 5. Nested containers of mixed shapes compile and render to PNG
+        // 4. Nested containers of mixed shapes compile and render to PNG
         let yaml_nested = r#"
 name: MixedNestedShapes
 unit: mm
@@ -9357,7 +9040,7 @@ layout:
     items:
       - type: container
         at: [5, 5]
-        shape: circle
+        shape: ellipse
         size: [50, 50]
         stroke: { thickness: 0.5, color: blue }
         background: '#e0e0ff'
@@ -9479,86 +9162,6 @@ layout:
     }
 
     #[test]
-    fn circle_dynamic_width_frame_sourced_extent_checked_at_final_frame() {
-        // Fill width under width: {min:10,max:60} – the frame follows label sizing, which is
-        // decided per render. Probing at max_w (60) would misclassify.
-        let yaml_oval = r#"
-name: DynOval
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: { min: 10, max: 60 }
-  height: 60
-layout:
-  - type: text
-    value: hi
-    at: [0, 0]
-    size: [20, 5]
-    font_size: 8
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: [fill, 60]
-    items: []
-"#;
-        let template_oval = crate::parse::parse_template(yaml_oval).unwrap();
-        // load succeeds – frame source defers to render
-        assert!(template_oval.validate().is_ok());
-        let err = render_single_label_image(
-            &template_oval,
-            &HashMap::new(),
-            &crate::render::resolve_environment(&template_oval, &no_settings(), &no_datetime())
-                .unwrap(),
-            super::ImageRenderOptions::default(),
-        )
-        .unwrap_err();
-        assert_eq!(err.reason(), Some("circle_box_not_square"));
-        assert!(err.message_text().contains("layout[1]"));
-
-        // Square counterpart – fill 20 in final 20-wide label is square and must render.
-        let yaml_circle = r#"
-name: DynCircle
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: { min: 10, max: 60 }
-  height: 20
-layout:
-  - type: text
-    value: hi
-    at: [0, 0]
-    size: [20, 5]
-    font_size: 8
-  - type: container
-    at: [0, 0]
-    shape: circle
-    size: [fill, 20]
-    items: []
-"#;
-        let template_circle = crate::parse::parse_template(yaml_circle).unwrap();
-        assert!(template_circle.validate().is_ok());
-        let png = render_single_label_image(
-            &template_circle,
-            &HashMap::new(),
-            &crate::render::resolve_environment(&template_circle, &no_settings(), &no_datetime())
-                .unwrap(),
-            super::ImageRenderOptions::default(),
-        )
-        .expect("square circle must render");
-        assert_eq!(&png[1..4], b"PNG");
-        let pdf = render_single_label_pdf(
-            &template_circle,
-            &HashMap::new(),
-            &crate::render::resolve_environment(&template_circle, &no_settings(), &no_datetime())
-                .unwrap(),
-        )
-        .expect("square circle pdf");
-        assert_eq!(&pdf[0..4], b"%PDF");
-    }
-
-    #[test]
     fn shape_paint_renders_png_and_pdf() {
         let yaml = r#"
 name: Shape Paint Test
@@ -9575,7 +9178,7 @@ layout:
     stroke:
       thickness: 0.5
       color: '#ff0000'
-    background: '#00ff0080'
+    background: '#00ff00'
     rounded: 3.0
     items:
       - type: line
@@ -9613,51 +9216,6 @@ layout:
         .expect("render pdf");
         assert!(!pdf.is_empty());
         assert_eq!(&pdf[0..4], b"%PDF");
-    }
-
-    #[test]
-    fn raster_image_dimensions_rejects_mismatched_mime_format() {
-        let jpeg_bytes = [
-            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01,
-            0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06,
-            0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d,
-            0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12, 0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d,
-            0x1a, 0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28,
-            0x37, 0x29, 0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32,
-            0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01,
-            0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
-            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
-            0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xda, 0x00, 0x08, 0x01,
-            0x01, 0x00, 0x00, 0x3f, 0x00, 0xbf, 0x00, 0xff, 0xd9,
-        ];
-        let res = super::helpers::raster_image_dimensions(
-            &jpeg_bytes,
-            super::helpers::ImageFmt::Png,
-            200,
-            "mm",
-            "layout[0]",
-        );
-        assert!(res.is_err());
-        assert_eq!(res.unwrap_err().reason(), Some("intrinsic_size_undefined"));
-    }
-
-    #[test]
-    fn shrinking_to_extent_is_cap_inert() {
-        let yaml = r#"
-name: Shrinking To Cap Inert
-unit: mm
-dpi: 200
-format: { type: single, width: 100, height: 20 }
-layout:
-  - type: container
-    at: [-20, 0]
-    to: [90, 20]
-    max_w: 5
-    items: []
-"#;
-        let template = parse_and_validate(yaml).unwrap();
-        let source = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver());
-        assert!(source.is_ok());
     }
 
     #[test]
@@ -9709,17 +9267,6 @@ layout:
         data.insert("msg".to_string(), serde_json::json!(""));
         let png = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap();
         assert!(!png.is_empty());
-    }
-
-    #[test]
-    fn svg_absolute_units_pc_and_q_parse_correctly() {
-        let svg_pc = r#"<svg xmlns="http://www.w3.org/2000/svg" width="6pc" height="12pc" viewBox="0 0 100 200"></svg>"#;
-        let w = super::helpers::svg_axis_intrinsic(svg_pc, 0, "mm", 200, "layout[0]").unwrap();
-        assert!((w - 25.4).abs() < 1e-3);
-
-        let svg_q = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100q" height="200q" viewBox="0 0 100 200"></svg>"#;
-        let w_q = super::helpers::svg_axis_intrinsic(svg_q, 0, "mm", 200, "layout[0]").unwrap();
-        assert!((w_q - 25.0).abs() < 1e-3);
     }
 
     /// Proves that flow container primary and secondary overruns fail with `item_out_of_frame`
@@ -10275,7 +9822,7 @@ layout:
             .defaults,
         )
         .unwrap();
-        let ctx = super::RenderContext::new("mm", 200, &resolved_omitted.data, &env, &images)
+        let ctx = super::RenderContext::new("mm", &resolved_omitted.data, &env, &images)
             .with_instants(&resolved_omitted.instants);
         assert!(
             ctx.is_item_active(&items[0]),
@@ -10301,7 +9848,7 @@ layout:
             .defaults,
         )
         .unwrap();
-        let ctx_bf = super::RenderContext::new("mm", 200, &resolved_bf.data, &env, &images)
+        let ctx_bf = super::RenderContext::new("mm", &resolved_bf.data, &env, &images)
             .with_instants(&resolved_bf.instants);
         assert!(ctx_bf.is_item_active(&items[0]));
         assert!(!ctx_bf.is_item_active(&items[1]));
@@ -10355,7 +9902,7 @@ layout:
             .defaults,
         )
         .unwrap();
-        let ctx1 = super::RenderContext::new("mm", 200, &resolved1.data, &env, &images)
+        let ctx1 = super::RenderContext::new("mm", &resolved1.data, &env, &images)
             .with_instants(&resolved1.instants);
         assert!(
             ctx1.is_item_active(&items1[0]),
@@ -10422,12 +9969,12 @@ layout:
     #[test]
     fn a_suffixed_length_default_is_refused_at_load() {
         let yaml = r#"
-name: Test Length Coercion
+name: Test Suffixed Default
 unit: mm
 dpi: 200
 params:
   - name: w
-    type: length
+    type: number
     default: "80mm"
 format: { type: single, width: 100, height: 20 }
 layout:
@@ -10516,7 +10063,7 @@ layout:
             .defaults,
         )
         .unwrap();
-        let ctx = super::RenderContext::new("in", 300, &resolved.data, &env, &images)
+        let ctx = super::RenderContext::new("in", &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(
             !ctx.is_item_active(&items[0]),
@@ -10540,9 +10087,7 @@ layout:
             ),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            color: Some(DynamicValue::Literal(
-                crate::models::Color::from_str("red").unwrap(),
-            )),
+            color: Some(crate::models::Color::from_str("red").unwrap()),
             wrap: false,
             line_spacing: None,
             alignment: Alignment::default(),
@@ -10551,8 +10096,8 @@ layout:
         };
         let src_named = render_test_items(&[named_item], (50.0, 20.0)).expect("render named");
         assert!(
-            src_named.contains("fill: rgb(\"#ff0000ff\")"),
-            "red must emit rgb(\"#ff0000ff\"), got: {src_named}"
+            src_named.contains("fill: rgb(\"#ff0000\")"),
+            "red must emit rgb(\"#ff0000\"), got: {src_named}"
         );
 
         // 2. Hex color emits fill: rgb(...) with exact same components
@@ -10564,9 +10109,7 @@ layout:
             ),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            color: Some(DynamicValue::Literal(
-                crate::models::Color::from_str("#ff4136").unwrap(),
-            )),
+            color: Some(crate::models::Color::from_str("#ff4136").unwrap()),
             wrap: false,
             line_spacing: None,
             alignment: Alignment::default(),
@@ -10575,8 +10118,8 @@ layout:
         };
         let src_hex = render_test_items(&[hex_item], (50.0, 20.0)).expect("render hex");
         assert!(
-            src_hex.contains("fill: rgb(\"#ff4136ff\")"),
-            "#ff4136 must emit rgb(\"#ff4136ff\"), got: {src_hex}"
+            src_hex.contains("fill: rgb(\"#ff4136\")"),
+            "#ff4136 must emit rgb(\"#ff4136\"), got: {src_hex}"
         );
 
         // 3. No color emits no fill: argument at all
@@ -10604,21 +10147,7 @@ layout:
     }
 
     #[test]
-    fn text_color_null_and_absent_render_black_e2e() {
-        let yaml_null = r#"
-name: ColorNullText
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "BLACK"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 14
-    color: null
-"#;
-        let template_null = crate::parse::parse_template(yaml_null).unwrap();
+    fn text_color_absent_renders_black_e2e() {
         let settings = no_settings();
         let datetime = no_datetime();
         let env = super::RenderEnv {
@@ -10627,27 +10156,6 @@ layout:
             defaults: Default::default(),
         };
         let data = HashMap::new();
-        let compiled_null = super::compile_label_source(&template_null, &data, &env).unwrap();
-        assert!(
-            !compiled_null.source.contains("fill:"),
-            "explicit color: null must emit no fill: in Typst, got: {}",
-            compiled_null.source
-        );
-
-        let png_null = super::render_single_label(&template_null, &data, &settings, &datetime)
-            .expect("render template with color: null");
-        let img_null = image::load_from_memory(&png_null)
-            .expect("decode png")
-            .to_rgba8();
-        let dark_pixels_null = img_null
-            .pixels()
-            .filter(|p| p[0] < 200 && p[0] == p[1] && p[1] == p[2])
-            .count();
-        assert!(
-            dark_pixels_null > 0,
-            "explicit color: null must render black text glyphs"
-        );
-
         let yaml_absent = r#"
 name: ColorAbsentText
 unit: mm
@@ -10684,167 +10192,6 @@ layout:
     }
 
     #[test]
-    fn emitted_typst_source_padded_color_literals() {
-        let yaml = r#"
-name: PaddedColorTest
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 20]
-    background: " #F0F "
-    stroke:
-      thickness: 0.2
-      color: " navy "
-    items:
-      - type: text
-        value: "Hello"
-        at: [0, 0]
-        size: [50, 20]
-        font_size: 10
-        color: " red "
-"#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        let crate::models::Layout::Items(items) = &template.layout;
-        let src = render_test_items(items, (50.0, 20.0)).expect("render padded template items");
-        assert!(
-            src.contains("fill: rgb(\"#ff00ffff\")"),
-            "container background must emit rgb(\"#ff00ffff\"), got: {src}"
-        );
-        assert!(
-            src.contains("rgb(\"#000080ff\")"),
-            "container stroke must emit rgb(\"#000080ff\"), got: {src}"
-        );
-        assert!(
-            src.contains("fill: rgb(\"#ff0000ff\")"),
-            "text color must emit rgb(\"#ff0000ff\"), got: {src}"
-        );
-    }
-
-    #[test]
-    fn padded_color_reference_loads_and_renders() {
-        let yaml = r#"
-name: PaddedColorRef
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: " {brand} "
-"#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        let crate::models::Layout::Items(items) = &template.layout;
-        match &items[0] {
-            crate::models::LayoutItem::Text { color, .. } => {
-                assert_eq!(
-                    color,
-                    &Some(crate::models::DynamicValue::Ref("brand".to_string()))
-                );
-            }
-            _ => panic!("expected text"),
-        }
-
-        let mut data = HashMap::new();
-        data.insert("brand".to_string(), serde_json::json!("red"));
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let res = super::render_single_label(&template, &data, &settings, &datetime);
-        assert!(res.is_ok(), "padded reference must render successfully");
-    }
-
-    #[test]
-    fn color_param_with_whitespace_renders_resolved_color() {
-        let yaml = r#"
-name: WhiteSpaceColorParam
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{brand}"
-"#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        let settings = no_settings();
-        let datetime = no_datetime();
-
-        let mut data = HashMap::new();
-        data.insert("brand".to_string(), serde_json::json!(" navy "));
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-            defaults: Default::default(),
-        };
-        let compiled = super::compile_label_source(&template, &data, &env).unwrap();
-        assert!(
-            compiled.source.contains("fill: rgb(\"#000080ff\")"),
-            "resolved ' navy ' must emit rgb(\"#000080ff\"), got: {}",
-            compiled.source
-        );
-        let rendered = super::render_single_label(&template, &data, &settings, &datetime)
-            .expect("padded brand must render");
-        let img = image::load_from_memory(&rendered)
-            .expect("valid png")
-            .to_rgba8();
-        let navy_pixels = img
-            .pixels()
-            .filter(|p| p[2] < 200 && p[0] < p[2] && p[1] < p[2])
-            .count();
-        assert!(
-            navy_pixels > 0,
-            "padded ' navy ' parameter must render navy text glyphs"
-        );
-    }
-
-    #[test]
-    fn color_param_with_whitespace_chained_ref_fails_with_chained_message() {
-        let yaml = r#"
-name: ChainedColorParam
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{brand}"
-"#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        let settings = no_settings();
-        let datetime = no_datetime();
-
-        let mut data = HashMap::new();
-        data.insert("brand".to_string(), serde_json::json!(" {other} "));
-        let err = super::render_single_label(&template, &data, &settings, &datetime).unwrap_err();
-        assert_eq!(err.reason(), Some(Reason::ColorParamInvalid.as_slug()));
-        assert!(
-            err.message_text().contains("references cannot be chained"),
-            "expected chained-reference message, got: {}",
-            err.message_text()
-        );
-    }
-
-    #[test]
     fn color_changes_no_layout_metrics() {
         use std::str::FromStr;
         let make_item = |color: Option<&str>| LayoutItem::Text {
@@ -10858,7 +10205,7 @@ layout:
                 max: 24.0,
             },
             font_weight: None,
-            color: color.map(|s| DynamicValue::Literal(crate::models::Color::from_str(s).unwrap())),
+            color: color.map(|s| crate::models::Color::from_str(s).unwrap()),
             wrap: true,
             line_spacing: None,
             alignment: Alignment::default(),
@@ -10875,7 +10222,7 @@ layout:
             defaults: Default::default(),
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
         let geometry_values = HashMap::new();
 
         let item_no_color = make_item(None);
@@ -10928,161 +10275,6 @@ layout:
     }
 
     #[test]
-    fn parameter_referenced_color_renders_on_background_and_stroke() {
-        let yaml = r#"
-name: ParamShapes
-unit: mm
-dpi: 200
-params:
-  - name: brand
-    type: string
-  - name: line_color
-    type: string
-  - name: palette
-    type: enum
-    values: [red, green, blue]
-format:
-  type: single
-  width: 60
-  height: 40
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 30]
-    background: "{brand}"
-    stroke:
-      thickness: 0.3
-      color: "{brand}"
-    items:
-      - type: text
-        value: "Inside"
-        at: [5, 5]
-        size: [40, 20]
-        font_size: 10
-        color: "{palette}"
-  - type: line
-    at: [0, 35]
-    to: [50, 35]
-    stroke:
-      thickness: 0.5
-      color: "{line_color}"
-"#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        let Layout::Items(items) = &template.layout;
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-            defaults: Default::default(),
-        };
-
-        // 1. Scenario: A referenced colour renders on a shape and on a stroke (#c0392b and navy)
-        let data = HashMap::from([
-            ("brand".to_string(), serde_json::json!("#c0392b")),
-            ("line_color".to_string(), serde_json::json!("navy")),
-            ("palette".to_string(), serde_json::json!("green")),
-        ]);
-        let resolved = super::resolve_parameters(
-            &template,
-            &data,
-            &crate::render::resolve_environment(&template, &settings, &datetime)
-                .unwrap()
-                .defaults,
-        )
-        .unwrap();
-        let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
-        let (meas, _) = ctx
-            .measure_items(items, (60.0, 40.0), [true, true], &HashMap::new(), "layout")
-            .unwrap();
-        let src = ctx
-            .render_items(items, &meas, (60.0, 40.0), &HashMap::new(), None, "layout")
-            .unwrap();
-
-        // Container background is #c0392b (#c0392bff), stroke is #c0392b (#c0392bff)
-        assert!(
-            src.contains("fill: rgb(\"#c0392bff\")"),
-            "container fill must be #c0392b, got: {src}"
-        );
-        assert!(
-            src.contains("stroke: 0.3mm + rgb(\"#c0392bff\")"),
-            "container stroke must be #c0392b, got: {src}"
-        );
-        // Line stroke is navy (#000080ff)
-        assert!(
-            src.contains("stroke: 0.5mm + rgb(\"#000080ff\")"),
-            "line stroke must be navy, got: {src}"
-        );
-        // Child text is green (#008000ff)
-        assert!(
-            src.contains("fill: rgb(\"#008000ff\")"),
-            "text fill must be green, got: {src}"
-        );
-
-        // 2. Scenario: An enum parameter drives the colour on a container background (red, green, blue)
-        let enum_yaml = r#"
-name: EnumBg
-unit: mm
-dpi: 200
-params:
-  - name: palette
-    type: enum
-    values: [red, green, blue]
-format: { type: single, width: 50, height: 30 }
-layout:
-  - type: container
-    at: [0, 0]
-    size: [50, 30]
-    background: "{palette}"
-    items: []
-"#;
-        let template_enum = crate::parse::parse_template(enum_yaml).unwrap();
-        let Layout::Items(items_enum) = &template_enum.layout;
-        for (enum_val, expected_hex) in [
-            ("red", "#ff0000ff"),
-            ("green", "#008000ff"),
-            ("blue", "#0000ffff"),
-        ] {
-            let data_enum = HashMap::from([("palette".to_string(), serde_json::json!(enum_val))]);
-            let resolved_enum = super::resolve_parameters(
-                &template_enum,
-                &data_enum,
-                &crate::render::resolve_environment(&template_enum, &settings, &datetime)
-                    .unwrap()
-                    .defaults,
-            )
-            .unwrap();
-            let images_enum = std::cell::RefCell::new(super::ImageCollector::default());
-            let ctx_enum =
-                super::RenderContext::new("mm", 200, &resolved_enum.data, &env, &images_enum);
-            let (meas_enum, _) = ctx_enum
-                .measure_items(
-                    items_enum,
-                    (50.0, 30.0),
-                    [true, true],
-                    &HashMap::new(),
-                    "layout",
-                )
-                .unwrap();
-            let src_enum = ctx_enum
-                .render_items(
-                    items_enum,
-                    &meas_enum,
-                    (50.0, 30.0),
-                    &HashMap::new(),
-                    None,
-                    "layout",
-                )
-                .unwrap();
-            assert!(
-                src_enum.contains(&format!("fill: rgb(\"{expected_hex}\")")),
-                "enum value '{enum_val}' on container background must render {expected_hex}, got: {src_enum}"
-            );
-        }
-    }
-
-    #[test]
     fn cross_field_paint_equality_emitted_typst() {
         // 1. Text item with color: red inside container with background: red emits identical paint value
         let nested_yaml = r#"
@@ -11115,7 +10307,7 @@ layout:
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let data = HashMap::new();
         let geometry = HashMap::new();
-        let ctx = super::RenderContext::new("mm", 200, &data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
         let (meas, _) = ctx
             .measure_items(items, (50.0, 30.0), [true, true], &geometry, "layout")
             .unwrap();
@@ -11123,22 +10315,23 @@ layout:
             .render_items(items, &meas, (50.0, 30.0), &geometry, None, "layout")
             .unwrap();
 
-        // Both container #box and child #text emit exact same rgb("#ff0000ff")
+        // Both container #box and child #text emit exact same rgb("#ff0000")
         assert!(
-            src.contains("#box(width: 50mm, height: 30mm, fill: rgb(\"#ff0000ff\")"),
-            "container box must carry rgb(\"#ff0000ff\"), got: {src}"
+            src.contains("#box(width: 50mm, height: 30mm, fill: rgb(\"#ff0000\")"),
+            "container box must carry rgb(\"#ff0000\"), got: {src}"
         );
         assert!(
-            src.contains("#text(size: 10pt, fill: rgb(\"#ff0000ff\"))"),
-            "text must carry rgb(\"#ff0000ff\"), got: {src}"
+            src.contains("#text(size: 10pt, fill: rgb(\"#ff0000\"))"),
+            "text must carry rgb(\"#ff0000\"), got: {src}"
         );
 
-        // 2. CSS Level 1 colors vs rendering engine constants: red, green, gray, yellow
+        // 2. Each colour name emits its stated value, not the rendering engine's constant
         for (name, expected_hex) in [
-            ("red", "#ff0000ff"),
-            ("green", "#008000ff"),
-            ("gray", "#808080ff"),
-            ("yellow", "#ffff00ff"),
+            ("black", "#000000"),
+            ("white", "#ffffff"),
+            ("red", "#ff0000"),
+            ("green", "#008000"),
+            ("blue", "#0000ff"),
         ] {
             let item = LayoutItem::Text {
                 value: "Test".to_string(),
@@ -11148,7 +10341,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                color: Some(DynamicValue::Literal(name.parse().unwrap())),
+                color: Some(name.parse().unwrap()),
                 wrap: false,
                 line_spacing: None,
                 alignment: Alignment::default(),
@@ -11161,163 +10354,6 @@ layout:
                 "name '{name}' must emit CSS value '{expected_hex}', got: {src}"
             );
         }
-    }
-
-    #[test]
-    fn sheet_multi_slot_color_rendering() {
-        let yaml = r#"
-name: SheetColor
-unit: mm
-dpi: 200
-format:
-  type: sheet
-  paper_width: 50
-  paper_height: 50
-  label_width: 20
-  label_height: 20
-  positions:
-    - [0, 0]
-    - [25, 0]
-params:
-  - name: bg
-    type: string
-  - name: stroke_col
-    type: string
-  - name: txt_col
-    type: string
-layout:
-  - type: container
-    at: [0, 0]
-    size: [20, 20]
-    background: "{bg}"
-    stroke:
-      thickness: 0.5
-      color: "{stroke_col}"
-    items:
-      - type: text
-        value: "Label"
-        at: [0, 0]
-        size: [20, 20]
-        font_size: 8
-        color: "{txt_col}"
-"#;
-        let template_content = crate::parse::parse_template(yaml).unwrap();
-        let template = TemplateDefinition {
-            id: "sheet_color".to_string(),
-            content: template_content,
-        };
-        let Layout::Items(items) = &template.layout;
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-            defaults: Default::default(),
-        };
-
-        // Render slot 0 with bg: red, stroke: yellow, txt: white
-        let data_slot0 = HashMap::from([
-            ("bg".to_string(), serde_json::json!("red")),
-            ("stroke_col".to_string(), serde_json::json!("yellow")),
-            ("txt_col".to_string(), serde_json::json!("white")),
-        ]);
-        let resolved_slot0 = super::resolve_parameters(
-            &template,
-            &data_slot0,
-            &crate::render::resolve_environment(&template, &settings, &datetime)
-                .unwrap()
-                .defaults,
-        )
-        .unwrap();
-        let images_slot0 = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx_slot0 =
-            super::RenderContext::new("mm", 200, &resolved_slot0.data, &env, &images_slot0);
-        let (meas_slot0, _) = ctx_slot0
-            .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
-            .unwrap();
-        let src_slot0 = ctx_slot0
-            .render_items(
-                items,
-                &meas_slot0,
-                (20.0, 20.0),
-                &HashMap::new(),
-                None,
-                "layout",
-            )
-            .unwrap();
-
-        // Render slot 1 with bg: navy, stroke: teal, txt: lime
-        let data_slot1 = HashMap::from([
-            ("bg".to_string(), serde_json::json!("navy")),
-            ("stroke_col".to_string(), serde_json::json!("teal")),
-            ("txt_col".to_string(), serde_json::json!("lime")),
-        ]);
-        let resolved_slot1 = super::resolve_parameters(
-            &template,
-            &data_slot1,
-            &crate::render::resolve_environment(&template, &settings, &datetime)
-                .unwrap()
-                .defaults,
-        )
-        .unwrap();
-        let images_slot1 = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx_slot1 =
-            super::RenderContext::new("mm", 200, &resolved_slot1.data, &env, &images_slot1);
-        let (meas_slot1, _) = ctx_slot1
-            .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
-            .unwrap();
-        let src_slot1 = ctx_slot1
-            .render_items(
-                items,
-                &meas_slot1,
-                (20.0, 20.0),
-                &HashMap::new(),
-                None,
-                "layout",
-            )
-            .unwrap();
-
-        // Slot 0 carries red bg (#ff0000ff), yellow stroke (#ffff00ff), and white text (#ffffffff)
-        assert!(
-            src_slot0.contains("fill: rgb(\"#ff0000ff\")"),
-            "slot 0 must carry red bg, got: {src_slot0}"
-        );
-        assert!(
-            src_slot0.contains("stroke: 0.5mm + rgb(\"#ffff00ff\")"),
-            "slot 0 must carry yellow stroke, got: {src_slot0}"
-        );
-        assert!(
-            src_slot0.contains("fill: rgb(\"#ffffffff\")"),
-            "slot 0 must carry white text, got: {src_slot0}"
-        );
-
-        // Slot 1 carries navy bg (#000080ff), teal stroke (#008080ff), and lime text (#00ff00ff)
-        assert!(
-            src_slot1.contains("fill: rgb(\"#000080ff\")"),
-            "slot 1 must carry navy bg, got: {src_slot1}"
-        );
-        assert!(
-            src_slot1.contains("stroke: 0.5mm + rgb(\"#008080ff\")"),
-            "slot 1 must carry teal stroke, got: {src_slot1}"
-        );
-        assert!(
-            src_slot1.contains("fill: rgb(\"#00ff00ff\")"),
-            "slot 1 must carry lime text, got: {src_slot1}"
-        );
-
-        // And render_sheet_pages compiles the multi-slot sheet with painted containers and text to PDF
-        let labels = vec![
-            crate::models::LabelInput { data: data_slot0 },
-            crate::models::LabelInput { data: data_slot1 },
-        ];
-        let pdf = super::render_sheet_pages(
-            &template,
-            &labels,
-            0,
-            &crate::render::resolve_environment(&template, &settings, &datetime).unwrap(),
-        )
-        .unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
     }
 
     #[test]
@@ -11350,7 +10386,7 @@ layout:
             defaults: Default::default(),
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &data, &env, &images);
         let items = vec![text_item];
         let geometry_values = HashMap::new();
         let (measured, _) = ctx
@@ -11404,7 +10440,7 @@ layout:
                     dpi: 200,
                     format: crate::models::TemplateFormat::Single {
                         width: crate::models::Dimension::Fixed(50.0).into(),
-                        height: crate::models::Dimension::Fixed(20.0).into(),
+                        height: 20.0.into(),
                         media_width: None,
                     },
                     params,
@@ -11455,7 +10491,7 @@ layout:
             r#"invalid value for parameter 'count': ["foo","bar"] is not an integer"#
         );
 
-        // 4. Number & Length
+        // 4. Number
         let err = run_strict("ratio", crate::models::ParamType::Number).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
@@ -11463,15 +10499,6 @@ layout:
         assert_eq!(
             err.message_text(),
             r#"invalid value for parameter 'ratio': ["foo","bar"] is not a number"#
-        );
-
-        let err = run_strict("size", crate::models::ParamType::Length).unwrap_err();
-        assert_eq!(err.status().as_u16(), 400);
-        assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("param_value_invalid"));
-        assert_eq!(
-            err.message_text(),
-            r#"invalid value for parameter 'size': ["foo","bar"] is not a number"#
         );
 
         // 5. Enum
@@ -11553,7 +10580,7 @@ layout:
             dpi: 200,
             format: crate::models::TemplateFormat::Single {
                 width: crate::models::Dimension::Fixed(50.0).into(),
-                height: crate::models::Dimension::Fixed(20.0).into(),
+                height: 20.0.into(),
                 media_width: None,
             },
             params,
@@ -11710,7 +10737,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11808,7 +10835,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11913,7 +10940,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -12025,7 +11052,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved_empty.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved_empty.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -12062,7 +11089,7 @@ layout:
         )
         .unwrap();
         let images_def = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx_def = super::RenderContext::new("mm", 200, &resolved_def.data, &env, &images_def);
+        let ctx_def = super::RenderContext::new("mm", &resolved_def.data, &env, &images_def);
         let (meas_def, _) = ctx_def
             .measure_items(
                 items,
@@ -12139,7 +11166,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -12218,7 +11245,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(items, (50.0, 25.0), [true, true], &HashMap::new(), "layout")
             .unwrap();
@@ -12295,7 +11322,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -12373,7 +11400,7 @@ layout:
         )
         .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(items, (25.0, 50.0), [true, true], &HashMap::new(), "layout")
             .unwrap();

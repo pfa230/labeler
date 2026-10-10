@@ -153,7 +153,7 @@ describe("Print screen", () => {
       params: [
         { name: "message", type: "string", control: "text", description: "Single line" },
         { name: "notes", type: "string", control: "textarea", multiline: true, default: "", description: "Notes" },
-        { name: "target_width", type: "length", control: "number", default: 80, min: 25, max: 200, description: "Target width" },
+        { name: "target_width", type: "number", control: "number", default: 80, min: 25, max: 200, description: "Target width" },
         { name: "show_border", type: "boolean", control: "checkbox", default: false, description: "Show border" },
         { name: "orientation", type: "enum", control: "select", values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
       ],

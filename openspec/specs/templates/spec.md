@@ -8,7 +8,7 @@ Defines the template file format (top-level keys, `unit`, `dpi`, `format`, `cate
 
 ### Requirement: Template file keys
 
-A template SHALL be a YAML mapping with exactly these top-level keys. Every mapping in a template, at any depth, SHALL reject a key it does not define, and every key written as `null`, with an error naming the key's path; a template carrying one is invalid.
+A template SHALL be a YAML mapping with exactly these top-level keys. Every mapping in a template, at any depth, SHALL reject a key it does not define, and every key written as `null`, with an error naming the key's path; a template carrying one is invalid. A number written as NaN (`.nan`) SHALL be refused wherever it appears, naming its path.
 
 | Key | Type | Required | Constraint |
 |---|---|---|---|
@@ -27,6 +27,11 @@ A template SHALL be a YAML mapping with exactly these top-level keys. Every mapp
 
 - **WHEN** a template declares `options:` or `id:` alongside the keys above, or writes `description: null`
 - **THEN** it is invalid, with an error naming that key
+
+#### Scenario: A NaN is refused
+
+- **WHEN** a template writes `format: { type: single, width: .nan, height: 10 }` or an item's `size: [.nan, 10]`
+- **THEN** it is invalid, with an error naming `format.width` or the item's `size[0]`
 
 ### Requirement: Label format
 

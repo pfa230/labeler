@@ -22,6 +22,7 @@ pub struct HealthResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct VariableValue {
     pub value: String,
 }
@@ -91,17 +92,6 @@ pub enum ParamControl {
     List,
 }
 
-/// For an optional key that may be omitted but not written as `null`: with `#[serde(default)]`,
-/// omission gives `None`, while `null` reaches `T`'s deserializer and fails, so the body is
-/// malformed (`errors` spec). A plain `Option<T>` reads `null` as omission.
-pub(crate) fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
-
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ParamType {
@@ -109,7 +99,6 @@ pub enum ParamType {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         multiline: bool,
     },
-    Length,
     Integer,
     Number,
     Boolean,
@@ -126,7 +115,6 @@ impl ParamType {
     pub fn type_name(&self) -> &'static str {
         match self {
             ParamType::String { .. } => "string",
-            ParamType::Length => "length",
             ParamType::Integer => "integer",
             ParamType::Number => "number",
             ParamType::Boolean => "boolean",
@@ -250,7 +238,7 @@ impl<T: Serialize> Serialize for DynamicValue<T> {
 
 impl<'de, T> Deserialize<'de> for DynamicValue<T>
 where
-    T: Deserialize<'de> + std::str::FromStr,
+    T: Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -260,7 +248,7 @@ where
 
         impl<'de, T> serde::de::Visitor<'de> for DynamicValueVisitor<T>
         where
-            T: Deserialize<'de> + std::str::FromStr,
+            T: Deserialize<'de>,
         {
             type Value = DynamicValue<T>;
 
@@ -300,28 +288,20 @@ where
                     .map(DynamicValue::Literal)
             }
 
+            /// A string is a reference only when it is exactly `{name}`; any other string is a
+            /// literal only if `T` itself reads strings, so a numeric `T` refuses `"20"`.
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                let trimmed = v.trim();
-                if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
-                    let inner = trimmed[1..trimmed.len() - 1].trim();
-                    return Ok(DynamicValue::Ref(inner.to_string()));
-                }
-                if let Ok(val) = trimmed.parse::<T>() {
-                    return Ok(DynamicValue::Literal(val));
-                }
-                if let Some(num_str) = trimmed
-                    .strip_suffix("mm")
-                    .or_else(|| trimmed.strip_suffix("in"))
-                {
-                    if let Ok(val) = num_str.trim().parse::<T>() {
-                        return Ok(DynamicValue::Literal(val));
+                if let Some(name) = v.strip_prefix('{').and_then(|v| v.strip_suffix('}')) {
+                    if crate::interpolation::is_valid_ident(name) {
+                        return Ok(DynamicValue::Ref(name.to_string()));
                     }
                 }
                 T::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
                     .map(DynamicValue::Literal)
+                    .map_err(|_: E| E::invalid_value(serde::de::Unexpected::Str(v), &self))
             }
         }
 
@@ -388,63 +368,6 @@ pub enum SizeValue {
     Dynamic(DynamicValue<f32>),
 }
 
-impl<'de> Deserialize<'de> for SizeValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct SizeValueVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for SizeValueVisitor {
-            type Value = SizeValue;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("'content', 'fill', a number, or a '{param_name}' reference")
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                match v.trim() {
-                    "content" => Ok(SizeValue::Content),
-                    "fill" => Ok(SizeValue::Fill),
-                    _ => DynamicValue::<f32>::deserialize(
-                        serde::de::IntoDeserializer::into_deserializer(v),
-                    )
-                    .map(SizeValue::Dynamic),
-                }
-            }
-
-            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
-                    .map(SizeValue::Dynamic)
-            }
-
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
-                    .map(SizeValue::Dynamic)
-            }
-
-            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
-                    .map(SizeValue::Dynamic)
-            }
-        }
-
-        deserializer.deserialize_any(SizeValueVisitor)
-    }
-}
-
 impl SizeValue {
     pub fn fixed(val: f32) -> Self {
         SizeValue::Dynamic(DynamicValue::Literal(val))
@@ -475,8 +398,7 @@ impl From<DynamicValue<f32>> for SizeValue {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Size(pub [SizeValue; 2]);
 
 /// Orthogonal rotation interpreted from the wire `rotate` degrees (counter-clockwise).
@@ -669,18 +591,69 @@ pub enum Dimension {
     Dynamic { min: Option<f32>, max: Option<f32> },
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum FontSize {
     Fixed(f32),
     Range { min: f32, max: f32 },
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct QrParams {
-    pub error_correction: Option<String>,
-    pub module_size: Option<f32>,
-    pub quiet_zone: Option<f32>,
+/// A number or a `{min, max}` range. Written by hand because an untagged enum reports an unknown
+/// range key only as "did not match any variant".
+impl<'de> Deserialize<'de> for FontSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Range {
+            min: f32,
+            max: f32,
+        }
+
+        struct FontSizeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for FontSizeVisitor {
+            type Value = FontSize;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a number or a {min, max} range")
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(FontSize::Fixed(v as f32))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(FontSize::Fixed(v as f32))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(FontSize::Fixed(v as f32))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let Range { min, max } =
+                    Range::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(FontSize::Range { min, max })
+            }
+        }
+
+        deserializer.deserialize_any(FontSizeVisitor)
+    }
+}
+
+/// A `qr` item's error correction level (`layout`, "The qr item"): exactly `L`, `M`, `Q` or `H`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum ErrorCorrection {
+    L,
+    #[default]
+    M,
+    Q,
+    H,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -702,6 +675,7 @@ pub enum VerticalAlign {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Alignment {
     #[serde(default)]
     pub horizontal: HorizontalAlign,
@@ -742,44 +716,30 @@ pub enum Shape {
     #[default]
     Rect,
     Ellipse,
-    Circle,
 }
 
+/// A literal colour (`layout`, "The colour vocabulary"): one of five lowercase names or `#rrggbb`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Color {
-    spelling: String,
-    rgba: [u8; 4],
+    rgb: [u8; 3],
 }
 
 impl Color {
     pub fn black() -> Self {
-        Self {
-            spelling: "black".to_string(),
-            rgba: [0, 0, 0, 255],
-        }
+        Self { rgb: [0, 0, 0] }
     }
 
     #[cfg(test)]
-    pub fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self {
-            spelling: format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, a),
-            rgba: [r, g, b, a],
-        }
+    pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { rgb: [r, g, b] }
     }
 
-    pub fn spelling(&self) -> &str {
-        &self.spelling
-    }
-
-    pub fn rgba(&self) -> [u8; 4] {
-        self.rgba
+    pub fn rgb(&self) -> [u8; 3] {
+        self.rgb
     }
 
     pub fn hex(&self) -> String {
-        format!(
-            "#{:02x}{:02x}{:02x}{:02x}",
-            self.rgba[0], self.rgba[1], self.rgba[2], self.rgba[3]
-        )
+        format!("#{:02x}{:02x}{:02x}", self.rgb[0], self.rgb[1], self.rgb[2])
     }
 }
 
@@ -787,92 +747,28 @@ impl std::str::FromStr for Color {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let spelling = s.to_owned();
-        let value = s.trim();
-        if value.is_empty() {
-            return Err("colour cannot be empty".to_string());
-        }
-        if let Some(hex_part) = value.strip_prefix('#') {
-            let hex_bytes = hex_part.as_bytes();
-            for &b in hex_bytes {
-                if !b.is_ascii_hexdigit() {
-                    return Err(format!("invalid hex character in colour '{value}'"));
-                }
-            }
-            let double_hex = |b: u8| -> u8 {
-                let val = match b {
-                    b'0'..=b'9' => b - b'0',
-                    b'a'..=b'f' => b - b'a' + 10,
-                    b'A'..=b'F' => b - b'A' + 10,
-                    _ => unreachable!(),
+        let rgb = match s {
+            "black" => [0x00, 0x00, 0x00],
+            "white" => [0xff, 0xff, 0xff],
+            "red" => [0xff, 0x00, 0x00],
+            "green" => [0x00, 0x80, 0x00],
+            "blue" => [0x00, 0x00, 0xff],
+            _ => {
+                let digits = s
+                    .strip_prefix('#')
+                    .filter(|d| d.len() == 6 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown colour '{s}': expected black, white, red, green, blue or '#rrggbb'"
+                        )
+                    })?;
+                let byte = |i: usize| {
+                    u8::from_str_radix(&digits[i..i + 2], 16).expect("six checked hex digits")
                 };
-                (val << 4) | val
-            };
-            let parse_byte = |slice: &[u8]| -> u8 {
-                let s_str = std::str::from_utf8(slice).unwrap();
-                u8::from_str_radix(s_str, 16).unwrap()
-            };
-
-            let rgba = match hex_bytes.len() {
-                3 => {
-                    let r = double_hex(hex_bytes[0]);
-                    let g = double_hex(hex_bytes[1]);
-                    let b = double_hex(hex_bytes[2]);
-                    [r, g, b, 255]
-                }
-                4 => {
-                    let r = double_hex(hex_bytes[0]);
-                    let g = double_hex(hex_bytes[1]);
-                    let b = double_hex(hex_bytes[2]);
-                    let a = double_hex(hex_bytes[3]);
-                    [r, g, b, a]
-                }
-                6 => {
-                    let r = parse_byte(&hex_bytes[0..2]);
-                    let g = parse_byte(&hex_bytes[2..4]);
-                    let b = parse_byte(&hex_bytes[4..6]);
-                    [r, g, b, 255]
-                }
-                8 => {
-                    let r = parse_byte(&hex_bytes[0..2]);
-                    let g = parse_byte(&hex_bytes[2..4]);
-                    let b = parse_byte(&hex_bytes[4..6]);
-                    let a = parse_byte(&hex_bytes[6..8]);
-                    [r, g, b, a]
-                }
-                _ => {
-                    return Err(format!(
-                        "invalid hex colour '{value}': expected 3, 4, 6, or 8 hexadecimal digits"
-                    ))
-                }
-            };
-            Ok(Color { spelling, rgba })
-        } else {
-            let rgba = match value.to_ascii_lowercase().as_str() {
-                "black" => Some([0x00, 0x00, 0x00, 0xff]),
-                "silver" => Some([0xc0, 0xc0, 0xc0, 0xff]),
-                "gray" => Some([0x80, 0x80, 0x80, 0xff]),
-                "white" => Some([0xff, 0xff, 0xff, 0xff]),
-                "maroon" => Some([0x80, 0x00, 0x00, 0xff]),
-                "red" => Some([0xff, 0x00, 0x00, 0xff]),
-                "purple" => Some([0x80, 0x00, 0x80, 0xff]),
-                "fuchsia" => Some([0xff, 0x00, 0xff, 0xff]),
-                "green" => Some([0x00, 0x80, 0x00, 0xff]),
-                "lime" => Some([0x00, 0xff, 0x00, 0xff]),
-                "olive" => Some([0x80, 0x80, 0x00, 0xff]),
-                "yellow" => Some([0xff, 0xff, 0x00, 0xff]),
-                "navy" => Some([0x00, 0x00, 0x80, 0xff]),
-                "blue" => Some([0x00, 0x00, 0xff, 0xff]),
-                "teal" => Some([0x00, 0x80, 0x80, 0xff]),
-                "aqua" => Some([0x00, 0xff, 0xff, 0xff]),
-                _ => None,
-            };
-            if let Some(rgba) = rgba {
-                Ok(Color { spelling, rgba })
-            } else {
-                Err(format!("unknown colour '{value}'"))
+                [byte(0), byte(2), byte(4)]
             }
-        }
+        };
+        Ok(Color { rgb })
     }
 }
 
@@ -887,9 +783,7 @@ impl<'de> Deserialize<'de> for Color {
             type Value = Color;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str(
-                    "a hex colour string ('#rgb', '#rgba', '#rrggbb', '#rrggbbaa') or one of the sixteen CSS Level 1 colour names",
-                )
+                formatter.write_str("one of black, white, red, green, blue, or a '#rrggbb' string")
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
@@ -904,6 +798,12 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
+/// The weights `text` accepts (`text`, "Text item keys"): a multiple of 100 from 100 to 900. The
+/// one rule for a literal `font_weight`, a referenced parameter's default and a supplied value.
+pub fn font_weight_ok(weight: i64) -> bool {
+    (100..=900).contains(&weight) && weight % 100 == 0
+}
+
 #[derive(Debug, Clone)]
 pub enum LayoutItem {
     Text {
@@ -911,9 +811,9 @@ pub enum LayoutItem {
         placement: Placement,
         font_size: FontSize,
         font_weight: Option<DynamicValue<u16>>,
-        color: Option<DynamicValue<Color>>,
+        color: Option<Color>,
         wrap: bool,
-        line_spacing: Option<DynamicValue<f32>>,
+        line_spacing: Option<f32>,
         alignment: Alignment,
         overflow: Overflow,
         when: Option<BTreeMap<String, String>>,
@@ -921,12 +821,13 @@ pub enum LayoutItem {
     Qr {
         value: String,
         placement: Placement,
-        params: Option<QrParams>,
+        error_correction: ErrorCorrection,
+        module_size: Option<f32>,
+        quiet_zone: f32,
         when: Option<BTreeMap<String, String>>,
     },
     Image {
-        name: Option<String>,
-        src: Option<String>,
+        src: String,
         placement: Placement,
         fit: Fit,
         when: Option<BTreeMap<String, String>>,
@@ -934,7 +835,7 @@ pub enum LayoutItem {
     Line {
         at: Position,
         to: Position,
-        stroke: Option<Stroke>,
+        stroke: Stroke,
         when: Option<BTreeMap<String, String>>,
     },
     Container {
@@ -942,7 +843,7 @@ pub enum LayoutItem {
         when: Option<BTreeMap<String, String>>,
         shape: Shape,
         stroke: Option<Stroke>,
-        background: Option<DynamicValue<Color>>,
+        background: Option<Color>,
         rounded: Option<f32>,
         padding: Padding,
         flow: Option<Flow>,
@@ -999,10 +900,12 @@ impl Default for Padding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Stroke {
     pub thickness: f32,
-    pub color: DynamicValue<Color>,
+    #[serde(default = "Color::black")]
+    pub color: Color,
 }
 
 #[derive(Debug, Clone)]
@@ -1022,7 +925,7 @@ pub enum TemplateFormat {
     },
     Single {
         width: DynamicDimension,
-        height: DynamicDimension,
+        height: DynamicValue<f32>,
         #[serde(default)]
         media_width: Option<f32>,
     },
@@ -1090,6 +993,38 @@ where
     T: Deserialize<'de>,
 {
     T::deserialize(deserializer).map(Some)
+}
+
+/// A required JSON value that neither is `null` nor holds a key written as `null` at any depth:
+/// `serde_json::Value` reads `null` as a value, so without this a body of `{"value": null}` or
+/// `{"value": {"short": null}}` would reach the handler instead of failing as `json_malformed`.
+pub fn non_null_value<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Err(serde::de::Error::invalid_type(
+            serde::de::Unexpected::Unit,
+            &"a value other than null",
+        ));
+    }
+    if holds_null_key(&value) {
+        return Err(serde::de::Error::custom("a key inside the value is null"));
+    }
+    Ok(value)
+}
+
+/// Whether an object inside `value`, at any depth, has a key whose value is `null`. A `null` array
+/// element is not a key, so only the objects inside an array are searched.
+fn holds_null_key(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map
+            .values()
+            .any(|child| child.is_null() || holds_null_key(child)),
+        Value::Array(items) => items.iter().any(holds_null_key),
+        _ => false,
+    }
 }
 
 /// A printer's render overrides; an absent field is negotiated with the printer.
@@ -1275,28 +1210,6 @@ mod rotation_tests {
 }
 
 #[cfg(test)]
-mod size_value_tests {
-    use super::SizeValue;
-
-    /// `content` and `fill` are the wire vocabulary, so they must read as their own keywords.
-    #[test]
-    fn size_value_reads_its_keywords() {
-        for (value, json) in [
-            (SizeValue::Content, "\"content\""),
-            (SizeValue::Fill, "\"fill\""),
-            (SizeValue::fixed(10.0), "10.0"),
-            (SizeValue::param_ref("w"), "\"{w}\""),
-        ] {
-            assert_eq!(
-                serde_json::from_str::<SizeValue>(json).unwrap(),
-                value,
-                "reading {json}"
-            );
-        }
-    }
-}
-
-#[cfg(test)]
 mod placement_tests {
     use super::{resolve_coord, Position};
 
@@ -1325,65 +1238,18 @@ mod color_tests {
     use super::Color;
 
     #[test]
-    fn all_16_css_names_resolve_to_stated_values() {
-        let cases = [
-            ("black", [0x00, 0x00, 0x00, 0xff], "#000000ff"),
-            ("silver", [0xc0, 0xc0, 0xc0, 0xff], "#c0c0c0ff"),
-            ("gray", [0x80, 0x80, 0x80, 0xff], "#808080ff"),
-            ("white", [0xff, 0xff, 0xff, 0xff], "#ffffffff"),
-            ("maroon", [0x80, 0x00, 0x00, 0xff], "#800000ff"),
-            ("red", [0xff, 0x00, 0x00, 0xff], "#ff0000ff"),
-            ("purple", [0x80, 0x00, 0x80, 0xff], "#800080ff"),
-            ("fuchsia", [0xff, 0x00, 0xff, 0xff], "#ff00ffff"),
-            ("green", [0x00, 0x80, 0x00, 0xff], "#008000ff"),
-            ("lime", [0x00, 0xff, 0x00, 0xff], "#00ff00ff"),
-            ("olive", [0x80, 0x80, 0x00, 0xff], "#808000ff"),
-            ("yellow", [0xff, 0xff, 0x00, 0xff], "#ffff00ff"),
-            ("navy", [0x00, 0x00, 0x80, 0xff], "#000080ff"),
-            ("blue", [0x00, 0x00, 0xff, 0xff], "#0000ffff"),
-            ("teal", [0x00, 0x80, 0x80, 0xff], "#008080ff"),
-            ("aqua", [0x00, 0xff, 0xff, 0xff], "#00ffffff"),
-        ];
-        assert_eq!(cases.len(), 16);
-        for (name, expected_rgba, canonical_hex) in cases {
+    fn the_five_names_resolve_to_stated_values() {
+        for (name, rgb, hex) in [
+            ("black", [0x00, 0x00, 0x00], "#000000"),
+            ("white", [0xff, 0xff, 0xff], "#ffffff"),
+            ("red", [0xff, 0x00, 0x00], "#ff0000"),
+            ("green", [0x00, 0x80, 0x00], "#008000"),
+            ("blue", [0x00, 0x00, 0xff], "#0000ff"),
+        ] {
             let color: Color = name.parse().unwrap();
-            assert_eq!(color.spelling(), name);
-            assert_eq!(color.rgba(), expected_rgba, "failed for name '{name}'");
-            assert_eq!(color.hex(), canonical_hex, "failed hex for '{name}'");
+            assert_eq!(color.rgb(), rgb, "failed for name '{name}'");
+            assert_eq!(color.hex(), hex, "failed hex for '{name}'");
         }
-    }
-
-    #[test]
-    fn names_are_case_insensitive_and_preserve_spelling() {
-        for spelling in ["red", "Red", "RED", "rEd"] {
-            let color: Color = spelling.parse().unwrap();
-            assert_eq!(color.spelling(), spelling);
-            assert_eq!(color.rgba(), [0xff, 0x00, 0x00, 0xff]);
-            assert_eq!(color.hex(), "#ff0000ff");
-        }
-    }
-
-    #[test]
-    fn hex_forms_and_short_forms_parse_with_doubling_and_alpha() {
-        let f0f: Color = "#f0f".parse().unwrap();
-        assert_eq!(f0f.spelling(), "#f0f");
-        assert_eq!(f0f.rgba(), [0xff, 0x00, 0xff, 0xff]);
-        assert_eq!(f0f.hex(), "#ff00ffff");
-
-        let f0f8: Color = "#F0F8".parse().unwrap();
-        assert_eq!(f0f8.spelling(), "#F0F8");
-        assert_eq!(f0f8.rgba(), [0xff, 0x00, 0xff, 0x88]);
-        assert_eq!(f0f8.hex(), "#ff00ff88");
-
-        let ff00ff: Color = "#ff00ff".parse().unwrap();
-        assert_eq!(ff00ff.spelling(), "#ff00ff");
-        assert_eq!(ff00ff.rgba(), [0xff, 0x00, 0xff, 0xff]);
-        assert_eq!(ff00ff.hex(), "#ff00ffff");
-
-        let ff00ff80: Color = "#FF00FF80".parse().unwrap();
-        assert_eq!(ff00ff80.spelling(), "#FF00FF80");
-        assert_eq!(ff00ff80.rgba(), [0xff, 0x00, 0xff, 0x80]);
-        assert_eq!(ff00ff80.hex(), "#ff00ff80");
     }
 
     #[test]
@@ -1409,22 +1275,17 @@ mod color_tests {
     }
 
     #[test]
-    fn deserialized_color_keeps_the_exact_authored_string() {
-        let spellings = [
-            "red",
-            "Red",
-            "#ff0000",
-            "#F0F",
-            "#00000080",
-            "#f0f8",
-            "navy",
-        ];
-        for spelling in spellings {
-            let color: Color = spelling.parse().unwrap();
-            let de: Color = serde_json::from_str(&format!("\"{spelling}\"")).unwrap();
-            assert_eq!(de.spelling(), spelling);
-            assert_eq!(de.rgba(), color.rgba());
+    fn a_colour_is_one_of_five_names_or_six_digit_hex() {
+        let mut misses: Vec<String> = ["RED", " red ", "#f0f", "#ff00ff80", "navy"]
+            .into_iter()
+            .filter(|s| s.parse::<Color>().is_ok())
+            .map(|s| format!("'{s}' parses"))
+            .collect();
+        let mixed_case: Color = "#FF00ff".parse().unwrap();
+        if mixed_case.hex() != "#ff00ff" {
+            misses.push(format!("'#FF00ff' is {}", mixed_case.hex()));
         }
+        assert!(misses.is_empty(), "{}", misses.join("\n"));
     }
 
     #[test]
@@ -1433,25 +1294,5 @@ mod color_tests {
         assert!(serde_json::from_str::<Color>("true").is_err());
         assert!(serde_json::from_str::<Color>("[255, 0, 0]").is_err());
         assert!(serde_json::from_str::<Color>("{\"r\": 255}").is_err());
-    }
-}
-
-#[cfg(test)]
-mod dynamic_value_tests {
-    use super::DynamicValue;
-
-    #[test]
-    fn shared_visitor_parses_length_suffixes_and_infinity() {
-        let v80: DynamicValue<f32> = serde_yaml_ng::from_str("\"80mm\"").unwrap();
-        assert_eq!(v80, DynamicValue::Literal(80.0));
-
-        let v80_in: DynamicValue<f32> = serde_yaml_ng::from_str("\"80in\"").unwrap();
-        assert_eq!(v80_in, DynamicValue::Literal(80.0));
-
-        let vinf: DynamicValue<f32> = serde_yaml_ng::from_str("\"infmm\"").unwrap();
-        assert_eq!(vinf, DynamicValue::Literal(f32::INFINITY));
-
-        let vref: DynamicValue<f32> = serde_yaml_ng::from_str("\"{width}\"").unwrap();
-        assert_eq!(vref, DynamicValue::Ref("width".to_string()));
     }
 }

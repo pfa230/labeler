@@ -1,62 +1,17 @@
+use serde::de::IntoDeserializer;
 use serde::Deserialize;
+use serde_yaml_ng::{Mapping, Value};
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, DynamicValue, Fit, FlowOverflow, FontSize, Overflow, Position, QrParams,
-    SheetPosition,
+    Alignment, Color, DynamicValue, ErrorCorrection, Fit, FlowOverflow, FontSize, Overflow,
+    Position, SheetPosition, Stroke,
 };
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RawColor(pub String);
-
-impl<'de> Deserialize<'de> for RawColor {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct RawColorVisitor;
-        impl<'de> serde::de::Visitor<'de> for RawColorVisitor {
-            type Value = RawColor;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a colour string")
-            }
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(RawColor(v.to_string()))
-            }
-        }
-        deserializer.deserialize_str(RawColorVisitor)
-    }
-}
-
-/// `RawColor` deliberately fails `FromStr` unconditionally so that `DynamicValueVisitor::visit_str`
-/// bypasses its `trimmed.parse::<T>()` fast-path and falls through to `RawColor::deserialize`,
-/// preserving exact untrimmed string literal values (e.g. `" red "`, `" #ff0000 "`)
-/// so that the declared string reaches the model and the read-back keeps its padding.
-impl std::str::FromStr for RawColor {
-    type Err = &'static str;
-
-    fn from_str(_s: &str) -> Result<Self, Self::Err> {
-        Err("raw colour strings are parsed via deserialization to preserve exact spelling")
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StrokeRaw {
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub thickness: Option<Option<f32>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub color: Option<Option<DynamicValue<RawColor>>>,
-}
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RawParamType {
     String,
-    Length,
     Integer,
     Number,
     Boolean,
@@ -65,52 +20,28 @@ pub enum RawParamType {
     List,
 }
 
-/// Every attribute a `datetime` parameter forbids is `Option<Option<T>>`: the outer layer is
-/// presence (`None` = the key is absent) and the inner is the value (`Some(None)` = the key is
-/// written and empty). Presence is what the datetime rules key off, and the inner type is what
-/// keeps a malformed value a load-time error rather than a silently dropped field.
+/// One `params:` entry. Every attribute of every type is a field here, so serde names a bad key or
+/// value by its own path; which attributes a type admits is checked in conversion.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct RawParamSpec {
+pub struct RawParamEntry {
+    pub name: String,
     #[serde(rename = "type")]
     pub param_type: RawParamType,
-    #[serde(default, deserialize_with = "deserialize_present")]
+    #[serde(default)]
     pub default: Option<serde_yaml_ng::Value>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub min: Option<Option<f64>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub max: Option<Option<f64>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub multiline: Option<Option<bool>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub values: Option<Option<Vec<String>>>,
-    /// Untyped on purpose: `format` is rejected on every parameter type, so any value at all must
-    /// reach the pointed error message rather than a serde type error.
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub format: Option<serde_yaml_ng::Value>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub time: Option<Option<bool>>,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+    #[serde(default)]
+    pub multiline: Option<bool>,
+    #[serde(default)]
+    pub values: Option<Vec<String>>,
+    #[serde(default)]
+    pub time: Option<bool>,
     #[serde(default)]
     pub description: Option<String>,
-}
-
-fn deserialize_present<'de, D>(deserializer: D) -> Result<Option<serde_yaml_ng::Value>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    serde_yaml_ng::Value::deserialize(deserializer).map(Some)
-}
-
-/// Presence-preserving and still typed: absent stays `None` via `#[serde(default)]`, an explicit
-/// null becomes `Some(None)`, and a value of the wrong type is a deserialization error.
-pub(crate) fn deserialize_present_typed<'de, D, T>(
-    deserializer: D,
-) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 pub type Dynamic<T> = DynamicValue<T>;
@@ -141,46 +72,114 @@ where
         }
     }
 
-    let map = Option::<BTreeMap<String, WhenScalar>>::deserialize(deserializer)?;
-    Ok(map.map(|m| m.into_iter().map(|(k, v)| (k, v.to_string())).collect()))
+    let map = BTreeMap::<String, WhenScalar>::deserialize(deserializer)?;
+    Ok(Some(
+        map.into_iter().map(|(k, v)| (k, v.to_string())).collect(),
+    ))
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-#[serde(untagged, deny_unknown_fields)]
+/// `format.width`: a number or reference, or a `{min, max}` range. Written by
+/// hand because an untagged enum reports an unknown range key only as "did not match any variant".
+#[derive(Debug, Clone, PartialEq)]
 pub enum RawDimension {
     Dynamic {
-        #[serde(default)]
         min: Option<Dynamic<f32>>,
-        #[serde(default)]
         max: Option<Dynamic<f32>>,
     },
     Fixed(Dynamic<f32>),
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RawTemplateFormat {
-    Sheet {
-        paper_width: f32,
-        paper_height: f32,
-        label_width: f32,
-        label_height: f32,
-        positions: Vec<SheetPosition>,
-    },
-    Single {
-        width: RawDimension,
-        height: RawDimension,
-        #[serde(default)]
-        media_width: Option<f32>,
-    },
+impl<'de> Deserialize<'de> for RawDimension {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Range {
+            #[serde(default)]
+            min: Option<Dynamic<f32>>,
+            #[serde(default)]
+            max: Option<Dynamic<f32>>,
+        }
+
+        struct RawDimensionVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RawDimensionVisitor {
+            type Value = RawDimension;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a number, a '{param_name}' reference, or a {min, max} range")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Dynamic::<f32>::deserialize(v.into_deserializer()).map(RawDimension::Fixed)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Dynamic::<f32>::deserialize(v.into_deserializer()).map(RawDimension::Fixed)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Dynamic::<f32>::deserialize(v.into_deserializer()).map(RawDimension::Fixed)
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Dynamic::<f32>::deserialize(v.into_deserializer()).map(RawDimension::Fixed)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let Range { min, max } =
+                    Range::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(RawDimension::Dynamic { min, max })
+            }
+        }
+
+        deserializer.deserialize_any(RawDimensionVisitor)
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct RawParamEntry {
-    pub name: String,
-    #[serde(flatten)]
-    pub spec: RawParamSpec,
+pub struct SheetFormatRaw {
+    pub paper_width: f32,
+    pub paper_height: f32,
+    pub label_width: f32,
+    pub label_height: f32,
+    pub positions: Vec<SheetPosition>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SingleFormatRaw {
+    pub width: RawDimension,
+    pub height: Dynamic<f32>,
+    #[serde(default)]
+    pub media_width: Option<f32>,
+}
+
+/// Tagged by `type`; deserialized through `take_type` so a bad value names its key.
+#[derive(Debug, Clone)]
+pub enum RawTemplateFormat {
+    Sheet(SheetFormatRaw),
+    Single(SingleFormatRaw),
+}
+
+impl<'de> Deserialize<'de> for RawTemplateFormat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let (kind, rest) = take_type::<D::Error>(Mapping::deserialize(deserializer)?)?;
+        match kind.as_str() {
+            "sheet" => Ok(RawTemplateFormat::Sheet(from_mapping(rest)?)),
+            "single" => Ok(RawTemplateFormat::Single(from_mapping(rest)?)),
+            other => Err(unknown_type(other, &["sheet", "single"])),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,78 +200,98 @@ pub struct TemplateDefinitionRaw {
 
 pub type RawTemplate = TemplateDefinitionRaw;
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+/// Tagged by `type`. A boxed item's placement keys and its own keys deserialize separately, each
+/// through `from_mapping`, because serde's derived tag and `flatten` both buffer the mapping and
+/// lose the path to a bad value inside it.
+#[derive(Debug)]
 pub enum LayoutItemRaw {
-    Text(TextRaw),
-    Qr(QrRaw),
-    Image(ImageRaw),
+    Text(PlacementRaw, TextRaw),
+    Qr(PlacementRaw, QrRaw),
+    Image(PlacementRaw, ImageRaw),
     Line(LineRaw),
-    Container(ContainerRaw),
+    Container(PlacementRaw, ContainerRaw),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum RawLineSpacing {
-    Float(f32),
-    Ref(String),
-    Invalid(String),
-}
-
-impl<'de> Deserialize<'de> for RawLineSpacing {
+impl<'de> Deserialize<'de> for LayoutItemRaw {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        use serde_yaml_ng::Value;
-        let v = Value::deserialize(deserializer)?;
-        match v {
-            Value::Number(n) => {
-                if let Some(f) = n.as_f64() {
-                    Ok(RawLineSpacing::Float(f as f32))
-                } else if let Some(i) = n.as_i64() {
-                    Ok(RawLineSpacing::Float(i as f32))
-                } else {
-                    Ok(RawLineSpacing::Invalid(format!("{n}")))
-                }
+        let (kind, mut rest) = take_type::<D::Error>(Mapping::deserialize(deserializer)?)?;
+        if kind == "line" {
+            return Ok(LayoutItemRaw::Line(from_mapping(rest)?));
+        }
+        let mut placement = Mapping::new();
+        for key in PLACEMENT_KEYS {
+            if let Some(value) = rest.remove(key) {
+                placement.insert(Value::from(key), value);
             }
-            Value::String(s) => {
-                if s.starts_with('{') && s.ends_with('}') && s.len() >= 2 {
-                    let inner = &s[1..s.len() - 1];
-                    if !inner.contains('{') && !inner.contains('}') && !inner.trim().is_empty() {
-                        Ok(RawLineSpacing::Ref(inner.trim().to_string()))
-                    } else {
-                        Ok(RawLineSpacing::Invalid(format!("\"{s}\"")))
-                    }
-                } else {
-                    Ok(RawLineSpacing::Invalid(format!("\"{s}\"")))
-                }
-            }
-            Value::Bool(b) => Ok(RawLineSpacing::Invalid(format!("{b}"))),
-            Value::Sequence(_) => Ok(RawLineSpacing::Invalid("an array".to_string())),
-            Value::Mapping(_) => Ok(RawLineSpacing::Invalid("a mapping".to_string())),
-            Value::Null => Ok(RawLineSpacing::Invalid("null".to_string())),
-            Value::Tagged(t) => Ok(RawLineSpacing::Invalid(format!("{t:?}"))),
+        }
+        let placement = from_mapping(placement)?;
+        match kind.as_str() {
+            "text" => Ok(LayoutItemRaw::Text(placement, from_mapping(rest)?)),
+            "qr" => Ok(LayoutItemRaw::Qr(placement, from_mapping(rest)?)),
+            "image" => Ok(LayoutItemRaw::Image(placement, from_mapping(rest)?)),
+            "container" => Ok(LayoutItemRaw::Container(placement, from_mapping(rest)?)),
+            other => Err(unknown_type(
+                other,
+                &["text", "qr", "image", "line", "container"],
+            )),
         }
     }
+}
+
+/// Remove and read the `type` tag of a tagged mapping, returning it with the remaining keys.
+fn take_type<E: serde::de::Error>(mut mapping: Mapping) -> Result<(String, Mapping), E> {
+    let tag = mapping
+        .remove("type")
+        .ok_or_else(|| E::missing_field("type"))?;
+    let kind = String::deserialize(tag).map_err(|err| E::custom(format!("type: {err}")))?;
+    Ok((kind, mapping))
+}
+
+fn unknown_type<E: serde::de::Error>(kind: &str, expected: &[&str]) -> E {
+    let expected = expected
+        .iter()
+        .map(|kind| format!("`{kind}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    E::custom(format!(
+        "type: unknown variant `{kind}`, expected one of {expected}"
+    ))
+}
+
+/// Deserialize `mapping` as `T`, prefixing an error with its path inside `mapping`, so each nesting
+/// level contributes one `<path>: ` segment to the message.
+fn from_mapping<T, E>(mapping: Mapping) -> Result<T, E>
+where
+    T: serde::de::DeserializeOwned,
+    E: serde::de::Error,
+{
+    serde_path_to_error::deserialize(Value::Mapping(mapping)).map_err(|err| {
+        let path = err.path().to_string();
+        let inner = err.into_inner();
+        if path == "." {
+            E::custom(inner)
+        } else {
+            E::custom(format!("{path}: {inner}"))
+        }
+    })
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextRaw {
     pub value: String,
-    #[serde(flatten)]
-    pub placement: PlacementRaw,
     pub font_size: FontSize,
     #[serde(default)]
     pub font_weight: Option<Dynamic<u16>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub color: Option<Option<DynamicValue<RawColor>>>,
+    #[serde(default)]
+    pub color: Option<Color>,
     #[serde(default)]
     pub wrap: bool,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub line_spacing: Option<Option<RawLineSpacing>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub multiline: Option<serde_yaml_ng::Value>,
+    #[serde(default)]
+    pub line_spacing: Option<f32>,
     #[serde(default)]
     pub alignment: Alignment,
     #[serde(default)]
@@ -285,10 +304,12 @@ pub struct TextRaw {
 #[serde(deny_unknown_fields)]
 pub struct QrRaw {
     pub value: String,
-    #[serde(flatten)]
-    pub placement: PlacementRaw,
     #[serde(default)]
-    pub params: Option<QrParams>,
+    pub error_correction: ErrorCorrection,
+    #[serde(default)]
+    pub module_size: Option<f32>,
+    #[serde(default)]
+    pub quiet_zone: f32,
     #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, String>>,
 }
@@ -296,12 +317,7 @@ pub struct QrRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageRaw {
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub src: Option<String>,
-    #[serde(flatten)]
-    pub placement: PlacementRaw,
+    pub src: String,
     #[serde(default)]
     pub fit: Fit,
     #[serde(default, deserialize_with = "deserialize_when_map")]
@@ -314,8 +330,7 @@ pub struct LineRaw {
     #[serde(default)]
     pub at: Position,
     pub to: Position,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub stroke: Option<Option<StrokeRaw>>,
+    pub stroke: Stroke,
     #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, String>>,
 }
@@ -338,24 +353,22 @@ pub struct FlowRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerRaw {
-    #[serde(flatten)]
-    pub placement: PlacementRaw,
     #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, String>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub shape: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub stroke: Option<Option<StrokeRaw>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub background: Option<Option<DynamicValue<RawColor>>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub rounded: Option<Option<f32>>,
+    #[serde(default)]
+    pub shape: Option<String>,
+    #[serde(default)]
+    pub stroke: Option<Stroke>,
+    #[serde(default)]
+    pub background: Option<Color>,
+    #[serde(default)]
+    pub rounded: Option<f32>,
     #[serde(default)]
     pub padding: Option<PaddingRaw>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub flow: Option<Option<FlowRaw>>,
-    #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub repeat: Option<Option<String>>,
+    #[serde(default)]
+    pub flow: Option<FlowRaw>,
+    #[serde(default)]
+    pub repeat: Option<String>,
     pub items: Vec<LayoutItemRaw>,
 }
 
@@ -370,7 +383,6 @@ pub enum PaddingRaw {
 pub enum RawSizeValue {
     Content,
     Fill,
-    Auto,
     Dynamic(DynamicValue<f32>),
 }
 
@@ -385,50 +397,41 @@ impl<'de> Deserialize<'de> for RawSizeValue {
             type Value = RawSizeValue;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter
-                    .write_str("'content', 'fill', 'auto', a number, or a '{param_name}' reference")
+                formatter.write_str("'content', 'fill', a number, or a '{param_name}' reference")
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                let trimmed = v.trim();
-                if trimmed == "content" {
-                    return Ok(RawSizeValue::Content);
+                match v {
+                    "content" => Ok(RawSizeValue::Content),
+                    "fill" => Ok(RawSizeValue::Fill),
+                    _ => DynamicValue::<f32>::deserialize(v.into_deserializer())
+                        .map(RawSizeValue::Dynamic)
+                        .map_err(|_: E| E::invalid_value(serde::de::Unexpected::Str(v), &self)),
                 }
-                if trimmed == "fill" {
-                    return Ok(RawSizeValue::Fill);
-                }
-                if trimmed == "auto" {
-                    return Ok(RawSizeValue::Auto);
-                }
-                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
-                    .map(RawSizeValue::Dynamic)
             }
 
             fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
-                    .map(RawSizeValue::Dynamic)
+                DynamicValue::<f32>::deserialize(v.into_deserializer()).map(RawSizeValue::Dynamic)
             }
 
             fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
-                    .map(RawSizeValue::Dynamic)
+                DynamicValue::<f32>::deserialize(v.into_deserializer()).map(RawSizeValue::Dynamic)
             }
 
             fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
-                    .map(RawSizeValue::Dynamic)
+                DynamicValue::<f32>::deserialize(v.into_deserializer()).map(RawSizeValue::Dynamic)
             }
         }
 
@@ -449,6 +452,9 @@ impl<'de> Deserialize<'de> for RawSize {
     }
 }
 
+/// The keys `LayoutItemRaw` routes to `PlacementRaw` rather than to the item's own struct.
+const PLACEMENT_KEYS: [&str; 6] = ["at", "size", "to", "max_w", "max_h", "rotate"];
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlacementRaw {
@@ -464,88 +470,4 @@ pub struct PlacementRaw {
     pub max_h: Option<f32>,
     #[serde(default)]
     pub rotate: Option<f32>,
-}
-
-#[cfg(test)]
-mod raw_tests {
-    use super::*;
-
-    #[test]
-    fn text_raw_color_deserialization() {
-        let make_yaml = |color_str: &str| {
-            format!(
-                r#"
-value: "Hello"
-font_size: 12
-color: {color_str}
-"#
-            )
-        };
-
-        // Valid literal named color
-        let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("red")).unwrap();
-        assert_eq!(
-            raw.color,
-            Some(Some(DynamicValue::Literal(RawColor("red".to_string()))))
-        );
-
-        // Valid hex color
-        let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("\"#ff4136\"")).unwrap();
-        assert_eq!(
-            raw.color,
-            Some(Some(DynamicValue::Literal(RawColor("#ff4136".to_string()))))
-        );
-
-        // Valid reference
-        let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("\"{brand}\"")).unwrap();
-        assert_eq!(
-            raw.color,
-            Some(Some(DynamicValue::Ref("brand".to_string())))
-        );
-
-        // Non-string types rejected at deserialization
-        for bad in ["16711680", "true", "[255, 0, 0]"] {
-            let res = serde_yaml_ng::from_str::<TextRaw>(&make_yaml(bad));
-            assert!(res.is_err(), "expected non-string '{bad}' to be rejected");
-        }
-
-        // Absent color is None
-        let raw_no_color: TextRaw =
-            serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\n").unwrap();
-        assert_eq!(raw_no_color.color, None);
-
-        // Null color is Some(None)
-        let raw_null_color: TextRaw =
-            serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\ncolor: null\n").unwrap();
-        assert_eq!(raw_null_color.color, Some(None));
-    }
-
-    #[test]
-    fn test_raw_line_spacing() {
-        let parse =
-            |s: &str| -> RawLineSpacing { serde_yaml_ng::from_str::<RawLineSpacing>(s).unwrap() };
-
-        assert_eq!(parse("1.2"), RawLineSpacing::Float(1.2));
-        assert_eq!(parse("2"), RawLineSpacing::Float(2.0));
-        assert_eq!(
-            parse("\"{pitch}\""),
-            RawLineSpacing::Ref("pitch".to_string())
-        );
-        assert_eq!(
-            parse("\"{ pitch }\""),
-            RawLineSpacing::Ref("pitch".to_string())
-        );
-
-        assert!(matches!(parse("\"1.2\""), RawLineSpacing::Invalid(_)));
-        assert!(matches!(parse("\"1.2mm\""), RawLineSpacing::Invalid(_)));
-        assert!(matches!(parse("\"1.2em\""), RawLineSpacing::Invalid(_)));
-        assert!(matches!(
-            parse("\"{{ pitch }}\""),
-            RawLineSpacing::Invalid(_)
-        ));
-        assert!(matches!(parse("\"{}\""), RawLineSpacing::Invalid(_)));
-        assert!(matches!(parse("true"), RawLineSpacing::Invalid(_)));
-        assert!(matches!(parse("[1.2]"), RawLineSpacing::Invalid(_)));
-        assert!(matches!(parse("null"), RawLineSpacing::Invalid(_)));
-    }
 }

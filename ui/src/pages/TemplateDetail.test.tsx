@@ -244,7 +244,7 @@ describe("Template detail", () => {
       params: [
         {
           name: "target_width",
-          type: "length",
+          type: "number",
           control: "number",
           default: 80,
           min: 25,
