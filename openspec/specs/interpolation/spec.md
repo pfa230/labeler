@@ -62,7 +62,7 @@ Every interpolated string SHALL be parsed when the template loads; a malformed t
 
 ### Requirement: A bare token names a declared parameter
 
-A bare token SHALL name a parameter the template declares in `params:`, or the template SHALL fail validation at load (`template contains '{sku}': undeclared parameter 'sku'`). It resolves to that parameter's resolved value (request value or default, owned by `parameters`); there is no fallback to another source. A parameter of any type may be named. A value absent at render SHALL be `422 UnsupportedLayoutItem` with reason `missing_field` naming the parameter.
+A bare token SHALL name a parameter the template declares in `params:`, or the template SHALL fail validation at load (`template contains '{sku}': undeclared parameter 'sku'`). It resolves to that parameter's resolved value (request value or default, owned by `parameters`); there is no fallback to another source. A parameter of any type may be named. An absent value (`parameters`) SHALL print nothing, with or without a reader.
 
 Inside a container repeating a list parameter, the bare repeated name is one element; that scope is owned by `layout`.
 
@@ -76,10 +76,10 @@ Inside a container repeating a list parameter, the bare repeated name is one ele
 - **WHEN** a `text` `value:`, a `qr` `value:` or an `image` `src:` reads `{sku}` and the template declares no `sku`
 - **THEN** the template fails validation naming `sku`
 
-#### Scenario: An absent value fails at render
+#### Scenario: An absent value prints nothing
 
-- **WHEN** a template declaring `id: { type: string }` with no default renders `"{id}"` and the request carries no `id`
-- **THEN** the response is `422 UnsupportedLayoutItem` with reason `missing_field` naming `id`
+- **WHEN** a template declaring `id: { type: string }` with no default renders `"#{id}"` and the request carries no `id`
+- **THEN** the label reads `#`
 
 ### Requirement: Value stringification
 

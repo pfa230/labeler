@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Covers a template's `params:` declarations and types, declared defaults and how they resolve, the request `data` a label may carry and how each value is coerced, when a parameter is required, the parameter list the service publishes for clients, and the placeholder values a thumbnail renders with.
+Covers a template's `params:` declarations and types, declared defaults and how they resolve, the request `data` a label may carry and how each value is coerced, what an absent parameter reads as, the parameter list the service publishes for clients, and the placeholder values a thumbnail renders with.
 
 ## Requirements
 
@@ -214,7 +214,7 @@ On `POST /api/render/label`, `POST /api/render` and `POST /api/print`, every key
 
 The value a token reads for a declared parameter SHALL come from the label's `data`, or failing that from its default, and from nothing else. A parameter that neither supplies is absent: an `enum` is not its first value, and a `datetime` is not the render instant. A `boolean` is never absent, because it always has a default.
 
-An absent parameter read by an active item's token, or by an active container's `repeat:`, SHALL be `422 UnsupportedLayoutItem` with reason `missing_field` naming it. A parameter read only by inactive items SHALL NOT be required. An absent parameter in a `when:` makes that predicate false (`layout`). A parameter reference in a dimension resolves its parameter under the `layout` rules, not this one.
+An absent parameter SHALL read as empty: a token naming it prints nothing, with or without a reader (`interpolation`), and an active container's `repeat:` over it draws no instance (`layout`). An absent parameter in a `when:` makes that predicate false (`layout`). A parameter reference from a layout attribute is never absent, because its parameter declares a default (see "Parameter references from layout attributes").
 
 #### Scenario: An omitted boolean is false
 
@@ -226,19 +226,19 @@ An absent parameter read by an active item's token, or by an active container's 
 - **WHEN** `outline: { type: enum, values: [yes] }` gates a container with `when: { outline: yes }` and the render omits `outline`
 - **THEN** the label renders without that container
 
-#### Scenario: An omitted list a container repeats fails
+#### Scenario: An omitted list draws no instance
 
 - **WHEN** `tags: { type: list }` with no default is named by an active container's `repeat:` and the render omits `tags`
-- **THEN** the response is `422 UnsupportedLayoutItem` with reason `missing_field` naming `tags`
+- **THEN** the label renders without any instance of that container
 
-#### Scenario: A parameter only an inactive branch reads is not required
+#### Scenario: An omitted string prints nothing
 
-- **WHEN** only an inactive container's `text` reads `{caption}` and the render omits `caption`
-- **THEN** the label renders
+- **WHEN** `caption: { type: string }` declares no default, an active `text` prints `"[{caption}]"`, and the render omits `caption`
+- **THEN** the text reads `[]`
 
 ### Requirement: Parameter references from layout attributes
 
-A layout or `format` attribute that takes a parameter reference SHALL write it as exactly `"{name}"`: the whole string is one bare token of the interpolation grammar, with no reader and no whitespace inside the braces. The reference SHALL name a declared parameter of an allowed type, checked at load. A refusal names the parameter and the context, and the rule holds inside a `repeat:` subtree as well:
+A layout or `format` attribute that takes a parameter reference SHALL write it as exactly `"{name}"`: the whole string is one bare token of the interpolation grammar, with no reader and no whitespace inside the braces. The reference SHALL name a declared parameter of an allowed type that declares a `default`, checked at load. A refusal names the parameter and the context, and the rule holds inside a `repeat:` subtree as well:
 
 | Attribute | Allowed types |
 | --- | --- |
@@ -251,6 +251,11 @@ A value a label supplies for a parameter that a `font_weight` references SHALL b
 
 - **WHEN** `tags: { type: list }` is referenced as a `format` width
 - **THEN** the template is refused naming `tags` and the context
+
+#### Scenario: A referenced parameter needs a default
+
+- **WHEN** an item carries `size: ["{w}", 10]` and `w: { type: number }` declares no default
+- **THEN** the template is refused naming `w` and the item's `size`
 
 #### Scenario: A spaced reference is not a reference
 

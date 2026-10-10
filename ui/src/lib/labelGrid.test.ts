@@ -11,7 +11,7 @@ import {
 } from "./labelGrid";
 
 function row(id: string, data: Record<string, string>): LabelGridRow {
-  return { id, origin: "csv", data, validation: {} };
+  return { id, origin: "csv", data };
 }
 
 describe("labelGrid logic", () => {
@@ -35,18 +35,9 @@ describe("labelGrid logic", () => {
     ]);
   });
 
-  it("sheetPreviewBlock returns spec messages in priority order", () => {
-    expect(sheetPreviewBlock([2], 2)).toBe("Fix row 2 to preview the sheet.");
-    expect(sheetPreviewBlock([2, 5], 10)).toBe("Fix rows 2, 5 to preview the sheet.");
-    expect(sheetPreviewBlock([], 501)).toBe(
-      "Over the 500-label limit; reduce the batch to preview the sheet.",
-    );
-    // Invalid rows take precedence over the cap
-    expect(sheetPreviewBlock([2], 501)).toBe("Fix row 2 to preview the sheet.");
-    expect(sheetPreviewBlock([2, 5], 600)).toBe("Fix rows 2, 5 to preview the sheet.");
-    // Valid and within cap
-    expect(sheetPreviewBlock([], 500)).toBeUndefined();
-    expect(sheetPreviewBlock([], 10)).toBeUndefined();
+  it("sheetPreviewBlock blocks only a batch over the cap", () => {
+    expect(sheetPreviewBlock(500)).toBeUndefined();
+    expect(sheetPreviewBlock(501)).toBe("Over the 500-label limit; reduce the batch to preview the sheet.");
   });
 
   it("sourceRowForExpandedIndex maps an expanded index back to its source row", () => {

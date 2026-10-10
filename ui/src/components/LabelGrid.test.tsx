@@ -7,8 +7,8 @@ import type { Param } from "../api/types";
 
 const selectionBaseProps = {
   rows: [
-    { id: "r1", origin: "csv" as const, data: { title: "a" }, validation: {} },
-    { id: "r2", origin: "csv" as const, data: { title: "b" }, validation: {} },
+    { id: "r1", origin: "csv" as const, data: { title: "a" } },
+    { id: "r2", origin: "csv" as const, data: { title: "b" } },
   ] satisfies LabelGridRow[],
   fields: ["title"],
   onRowsChange: vi.fn(),
@@ -18,12 +18,11 @@ const selectionBaseProps = {
 
 function sampleRows(): LabelGridRow[] {
   return [
-    { id: "a", origin: "csv", data: { sku: "1", notes: "first" }, validation: {} },
+    { id: "a", origin: "csv", data: { sku: "1", notes: "first" } },
     {
       id: "b",
       origin: "csv",
       data: { sku: "2", notes: "second" },
-      validation: {},
       annotation: { status: "failed", message: "boom" },
     },
   ];
@@ -48,8 +47,8 @@ describe("LabelGrid selection and row actions", () => {
 
   it("shows the annotation message for a failed row and ok for success", () => {
     const rowsWithStatus: LabelGridRow[] = [
-      { id: "a", origin: "csv", data: { sku: "1" }, validation: {}, annotation: { status: "ok" } },
-      { id: "b", origin: "csv", data: { sku: "2" }, validation: {}, annotation: { status: "failed", message: "boom" } },
+      { id: "a", origin: "csv", data: { sku: "1" }, annotation: { status: "ok" } },
+      { id: "b", origin: "csv", data: { sku: "2" }, annotation: { status: "failed", message: "boom" } },
     ];
     render(
       <LabelGrid
@@ -121,7 +120,6 @@ describe("4.1 Always-on rendering at rest across control types", () => {
         listField: ["a", "b"],
         imageField: "data:image/png;base64,abc",
       },
-      validation: {},
     };
 
     const specs: Record<string, GridCellParam> = {
@@ -138,7 +136,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
     };
 
     const fields = Object.keys(specs);
-    const cellInput = (_r: LabelGridRow, f: string): GridCellParam | undefined => specs[f];
+    const cellInput = (f: string): GridCellParam | undefined => specs[f];
 
     render(
       <LabelGrid
@@ -217,9 +215,8 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       id: "r1",
       origin: "csv",
       data: { tags: ["RED", "BLUE"], title: "Widget" },
-      validation: {},
     };
-    const cellInput = (_r: LabelGridRow, f: string): GridCellParam | undefined => {
+    const cellInput = (f: string): GridCellParam | undefined => {
       if (f === "tags") return { name: "tags", control: "list" };
       return { name: "title", control: "text" };
     };
@@ -256,121 +253,6 @@ describe("4.1 Always-on rendering at rest across control types", () => {
     expect(screen.getByText("Widget")).toBeInTheDocument();
     expect(screen.queryByLabelText("edit tags")).toBeNull();
     expect(screen.queryByLabelText("edit title")).toBeNull();
-  });
-});
-
-describe("4.2 Invalid cells repairability", () => {
-  it("eligible invalid cell renders operable control alongside visual ⚠ error marker", () => {
-    const invalidRow: LabelGridRow = {
-      id: "r1",
-      origin: "csv",
-      data: { name: "", size: "" },
-      validation: { field: { name: "required", size: "required" } },
-    };
-    const specs: Record<string, GridCellParam> = {
-      name: { name: "name", control: "text" },
-      size: { name: "size", control: "select", values: ["S", "M", "L"] },
-    };
-
-    render(
-      <LabelGrid
-        rows={[invalidRow]}
-        fields={["name", "size"]}
-        cellInput={(_r, f) => specs[f]}
-        onRowsChange={() => {}}
-        onDuplicate={() => {}}
-        onRemove={() => {}}
-      />,
-    );
-
-    // Both operable controls exist
-    const nameInput = screen.getByLabelText("edit name");
-    const sizeSelect = screen.getByLabelText("edit size");
-    expect(nameInput).toBeInTheDocument();
-    expect(sizeSelect).toBeInTheDocument();
-
-    // Alongside visual ⚠ error markers
-    expect(screen.getByLabelText("name required")).toHaveTextContent("⚠ required");
-    expect(screen.getByLabelText("size required")).toHaveTextContent("⚠ required");
-  });
-
-  it("initially invalid text cell can be filled to commit a valid value", async () => {
-    let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { name: "" }, validation: { field: { name: "required" } } },
-    ];
-    const onRowsChange = vi.fn<LabelGridProps["onRowsChange"]>((next) => {
-      currentRows = next;
-    });
-
-    render(
-      <LabelGrid
-        rows={currentRows}
-        fields={["name"]}
-        cellInput={(_r, f) => ({ name: f, control: "text" })}
-        onRowsChange={onRowsChange}
-        onDuplicate={() => {}}
-        onRemove={() => {}}
-      />,
-    );
-
-    const nameInput = screen.getByLabelText("edit name");
-    expect(screen.getByLabelText("name required")).toBeInTheDocument();
-
-    fireEvent.change(nameInput, { target: { value: "Widget A" } });
-    await waitFor(() => expect(onRowsChange).toHaveBeenCalled());
-
-    expect(currentRows[0].data.name).toBe("Widget A");
-    expect(onRowsChange.mock.calls.at(-1)![1]).toEqual({ indexes: [0] });
-  });
-
-  it("clearing then refilling a required text restores the row and retains operable control throughout", async () => {
-    let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { name: "Initial" }, validation: {} },
-    ];
-    const onRowsChange = vi.fn((next: LabelGridRow[]) => {
-      currentRows = next;
-    });
-
-    const { rerender } = render(
-      <LabelGrid
-        rows={currentRows}
-        fields={["name"]}
-        cellInput={(_r, f) => ({ name: f, control: "text" })}
-        onRowsChange={onRowsChange}
-        onDuplicate={() => {}}
-        onRemove={() => {}}
-      />,
-    );
-
-    const nameInput = screen.getByLabelText("edit name") as HTMLInputElement;
-    expect(nameInput.value).toBe("Initial");
-
-    // Clear the field
-    fireEvent.change(nameInput, { target: { value: "" } });
-    await waitFor(() => expect(onRowsChange).toHaveBeenCalledTimes(1));
-    expect(currentRows[0].data.name).toBe("");
-
-    // Re-render with validation error
-    rerender(
-      <LabelGrid
-        rows={[{ id: "r1", origin: "csv", data: { name: "" }, validation: { field: { name: "required" } } }]}
-        fields={["name"]}
-        cellInput={(_r, f) => ({ name: f, control: "text" })}
-        onRowsChange={onRowsChange}
-        onDuplicate={() => {}}
-        onRemove={() => {}}
-      />,
-    );
-
-    // Control is still operable and error marker is visible
-    const clearedInput = screen.getByLabelText("edit name") as HTMLInputElement;
-    expect(clearedInput).toBeInTheDocument();
-    expect(screen.getByLabelText("name required")).toHaveTextContent("⚠ required");
-
-    // Refill the field
-    fireEvent.change(clearedInput, { target: { value: "Restored" } });
-    await waitFor(() => expect(onRowsChange).toHaveBeenCalledTimes(2));
-    expect(currentRows[0].data.name).toBe("Restored");
   });
 });
 
@@ -425,9 +307,8 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
       id: "r1",
       origin: "csv",
       data: { note: "text", choice: "a" },
-      validation: {},
     };
-    const cellInput = (_r: LabelGridRow, f: string): GridCellParam => ({
+    const cellInput = (f: string): GridCellParam => ({
       name: f,
       control: f === "note" ? "textarea" : "select",
       values: f === "choice" ? ["a", "b"] : undefined,
@@ -468,9 +349,8 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
       id: "r1",
       origin: "csv",
       data: { note: "line1\nline2", count: "5", choice: "x" },
-      validation: {},
     };
-    const cellInput = (_r: LabelGridRow, f: string): GridCellParam => {
+    const cellInput = (f: string): GridCellParam => {
       if (f === "note") return { name: f, control: "textarea" };
       if (f === "count") return { name: f, control: "integer" };
       return { name: f, control: "select", values: ["x", "y"] };
@@ -516,7 +396,7 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
 describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () => {
   it("editable text holding multiline value shows first line with +N and submits newline unaltered until explicit edit", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { title: "first\nsecond\nthird" }, validation: {} },
+      { id: "r1", origin: "csv", data: { title: "first\nsecond\nthird" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -526,7 +406,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["title"]}
-        cellInput={(_r, f) => ({ name: f, control: "text" })}
+        cellInput={(f) => ({ name: f, control: "text" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -556,7 +436,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["title"]}
-        cellInput={(_r, f) => ({ name: f, control: "text" })}
+        cellInput={(f) => ({ name: f, control: "text" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -568,7 +448,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
   it("date holding offset-bearing RFC 3339 instant shows operable empty date control plus text adornment and preserves value until explicit pick", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { shipDate: "2026-09-01T12:00:00Z" }, validation: {} },
+      { id: "r1", origin: "csv", data: { shipDate: "2026-09-01T12:00:00Z" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -578,7 +458,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["shipDate"]}
-        cellInput={(_r, f) => ({ name: f, control: "date" })}
+        cellInput={(f) => ({ name: f, control: "date" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -608,7 +488,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["shipDate"]}
-        cellInput={(_r, f) => ({ name: f, control: "date" })}
+        cellInput={(f) => ({ name: f, control: "date" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -620,7 +500,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
   it("integer holding non-numeric shows empty control plus text adornment with explicit change boundary", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { qty: "abc" }, validation: {} },
+      { id: "r1", origin: "csv", data: { qty: "abc" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -630,7 +510,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["qty"]}
-        cellInput={(_r, f) => ({ name: f, control: "integer" })}
+        cellInput={(f) => ({ name: f, control: "integer" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -657,7 +537,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["qty"]}
-        cellInput={(_r, f) => ({ name: f, control: "integer" })}
+        cellInput={(f) => ({ name: f, control: "integer" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -675,11 +555,10 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
             id: "r1",
             origin: "csv",
             data: { on: " true\u0085", off: " 0 ", blank: "  ", bom: "\uFEFFtrue" },
-            validation: {},
           },
         ]}
         fields={["on", "off", "blank", "bom"]}
-        cellInput={(_r, f) => ({ name: f, control: "checkbox", default: f === "blank" ? true : undefined })}
+        cellInput={(f) => ({ name: f, control: "checkbox", default: f === "blank" ? true : undefined })}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -697,7 +576,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
   it("checkbox holding malformed value shows an unchecked control plus text adornment with explicit change boundary", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { flag: "maybe" }, validation: {} },
+      { id: "r1", origin: "csv", data: { flag: "maybe" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -707,7 +586,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["flag"]}
-        cellInput={(_r, f) => ({ name: f, control: "checkbox" })}
+        cellInput={(f) => ({ name: f, control: "checkbox" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -733,7 +612,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["flag"]}
-        cellInput={(_r, f) => ({ name: f, control: "checkbox" })}
+        cellInput={(f) => ({ name: f, control: "checkbox" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -755,10 +634,9 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
         listCol: ["a", "b"],
         imageCol: "data:img",
       },
-      validation: {},
     };
 
-    const cellInput = (_r: LabelGridRow, f: string): GridCellParam | undefined => {
+    const cellInput = (f: string): GridCellParam | undefined => {
       if (f === "operable") return { name: f, control: "text" };
       if (f === "missingEntry") return undefined;
       if (f === "listCol") return { name: f, control: "list" };
@@ -820,6 +698,22 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 });
 
 describe("4.5 Regression checks on existing grid behavior", () => {
+  it("labels a column and its cells with the description, else the name", () => {
+    const specs: Record<string, GridCellParam> = {
+      sku: { name: "sku", control: "text", description: "Stock code" },
+      notes: { name: "notes", control: "text" },
+    };
+    render(
+      <LabelGrid rows={sampleRows()} fields={["sku", "notes"]} cellInput={(f) => specs[f]} onRowsChange={() => {}} onDuplicate={() => {}} onRemove={() => {}} />,
+    );
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toContain("Stock code");
+    expect(headers).toContain("notes");
+    expect(headers).not.toContain("sku");
+    expect(screen.getAllByLabelText("edit Stock code")).toHaveLength(2);
+    expect(screen.getAllByLabelText("edit notes")).toHaveLength(2);
+  });
+
   it("renders columns in the exact order specified by the fields array", () => {
     const fields = ["sku", "orientation", "tags", "notes"];
     render(
@@ -849,35 +743,6 @@ describe("4.5 Regression checks on existing grid behavior", () => {
     expect(tagsIdx).toBeLessThan(notesIdx);
   });
 
-  it("preserves per-row editability: one row editable, another row inert with '—'", () => {
-    const mixedRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { notes: "active note" }, validation: {} },
-      { id: "r2", origin: "csv", data: { notes: "inactive note" }, validation: {} },
-    ];
-    const cellInput = (r: LabelGridRow, f: string): GridCellParam | undefined => {
-      if (r.id === "r1" && f === "notes") return { name: f, control: "text" };
-      return undefined; // inactive on r2
-    };
-
-    render(
-      <LabelGrid
-        rows={mixedRows}
-        fields={["notes"]}
-        cellInput={cellInput}
-        onRowsChange={() => {}}
-        onDuplicate={() => {}}
-        onRemove={() => {}}
-      />,
-    );
-
-    // Row 1 has operable input
-    expect(screen.getByLabelText("edit notes")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("active note")).toBeInTheDocument();
-
-    // Row 2 renders plain em-dash
-    expect(screen.getByText("—")).toBeInTheDocument();
-  });
-
   it("select retains out-of-range value in options and commits held value without change", async () => {
     const spec: Param = {
       name: "size",
@@ -886,7 +751,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       values: ["small", "medium", "large"],
     };
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { size: "enormous" }, validation: {} },
+      { id: "r1", origin: "csv", data: { size: "enormous" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -896,7 +761,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       <LabelGrid
         rows={currentRows}
         fields={["size"]}
-        cellInput={(_r, f) => (f === "size" ? spec : undefined)}
+        cellInput={(f) => (f === "size" ? spec : undefined)}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -919,7 +784,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
     expect(currentRows[0].data.size).toBe("medium");
   });
 
-  it("unset select shows (none) and submits no key via pruneDataForSubmit", () => {
+  it("unset select shows its blank option and submits no key", () => {
     const spec: Param = {
       name: "size",
       type: "enum",
@@ -930,14 +795,13 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       id: "r1",
       origin: "csv",
       data: { size: "" },
-      validation: {},
     };
 
     render(
       <LabelGrid
         rows={[row]}
         fields={["size"]}
-        cellInput={(_r, f) => (f === "size" ? spec : undefined)}
+        cellInput={(f) => (f === "size" ? spec : undefined)}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -946,10 +810,34 @@ describe("4.5 Regression checks on existing grid behavior", () => {
 
     const select = screen.getByLabelText("edit size") as HTMLSelectElement;
     expect(select.value).toBe("");
-    expect(select.querySelector('option[value=""]')?.textContent).toBe("(none)");
+    expect(select.querySelector('option[value=""]')?.textContent).toBe("");
 
     const pruned = pruneDataForSubmit(row.data, [spec]);
     expect(pruned).not.toHaveProperty("size");
+  });
+
+  const gridWith = (spec: Param, data: LabelGridRow["data"]) =>
+    render(
+      <LabelGrid
+        rows={[{ id: "r1", origin: "csv", data }]}
+        fields={[spec.name]}
+        cellInput={(f) => (f === spec.name ? spec : undefined)}
+        onRowsChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+  it("labels the blank select option with the default", () => {
+    gridWith({ name: "size", type: "enum", control: "select", values: ["a", "b"], default: "b" }, {});
+    const select = screen.getByLabelText("edit size") as HTMLSelectElement;
+    expect(select.options[0].value).toBe("");
+    expect(select.options[0].textContent).toBe("(default: b)");
+  });
+
+  it("marks no numeric cell invalid on its own", () => {
+    gridWith({ name: "qty", type: "integer", control: "integer", min: 1, max: 5 }, { qty: "9" });
+    expect(screen.getByLabelText("edit qty")).not.toHaveAttribute("aria-invalid");
   });
 
   it("commits through onRowsChange with updated rows and accurate change indexes", async () => {

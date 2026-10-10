@@ -196,19 +196,6 @@ impl AppError {
         )
     }
 
-    /// A parameter an active item reads has no value and no default; `field` names it.
-    pub fn missing_field(field: &str) -> Self {
-        let mut extra = serde_json::Map::new();
-        extra.insert("field".to_string(), Value::from(field));
-        Self::reasoned(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            CODE_UNSUPPORTED_LAYOUT,
-            Reason::MissingField,
-            format!("Missing required field '{field}'"),
-            Some(extra),
-        )
-    }
-
     /// A supplied parameter value its type refuses; `element` is a `list` element's position.
     pub fn param_value_invalid(
         param: &str,
@@ -567,15 +554,15 @@ mod tests {
     /// details travel under `details`, never beside `code`.
     #[test]
     fn batch_failure_carries_the_error_details() {
-        let failure = BatchFailure::new(2, AppError::missing_field("sku"));
+        let failure = BatchFailure::new(2, AppError::param_value_invalid("sku", None, "bad sku"));
         let json = serde_json::to_value(&failure).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
                 "index": 2,
-                "code": "UnsupportedLayoutItem",
-                "message": "Missing required field 'sku'",
-                "details": { "reason": "missing_field", "field": "sku" },
+                "code": "InvalidRequest",
+                "message": "bad sku",
+                "details": { "reason": "param_value_invalid", "param": "sku" },
             })
         );
     }

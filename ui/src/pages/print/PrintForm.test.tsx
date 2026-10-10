@@ -291,7 +291,7 @@ describe("PrintForm gating and submission pruning", () => {
     vi.restoreAllMocks();
   });
 
-  it("leaves undefaulted datetime, boolean, and enum empty on mount, seeds literal defaults, and gates only on a printer", async () => {
+  it("leaves undefaulted datetime, boolean, and enum empty on mount, and gates only on a printer", async () => {
     const detailWithTypes: TemplateDetail = {
       params: [
         { name: "printed_on", type: "datetime", control: "datetime", time: true },
@@ -320,7 +320,8 @@ describe("PrintForm gating and submission pruning", () => {
     expect((screen.getByRole("checkbox", { name: "flag" }) as HTMLInputElement).checked).toBe(false);
     expect((screen.getByLabelText("choice") as HTMLSelectElement).value).toBe("");
     expect((screen.getByLabelText("token_field") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("lit_field") as HTMLInputElement).value).toBe("seeded");
+    expect((screen.getByLabelText("lit_field") as HTMLInputElement).value).toBe("");
+    expect(screen.getByText("default: seeded")).toBeInTheDocument();
 
     // The form does not judge completeness: blank fields leave Download enabled, and Print waits
     // only for a printer.
@@ -332,7 +333,7 @@ describe("PrintForm gating and submission pruning", () => {
   });
 });
 
-describe("PrintForm deferring to a declared default", () => {
+describe("PrintForm blank means default", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
@@ -376,150 +377,65 @@ describe("PrintForm deferring to a declared default", () => {
 
   const withParams = (params: Param[]): TemplateDetail => ({ ...tape, id: "def_tpl", params });
 
-  it("omits a deferred name from the submitted data, and sends it once cleared", async () => {
-    const list: Param[] = [
+  it("starts a defaulted field blank with the default as its hint, and omits it", async () => {
+    stubParams();
+    renderForm(withParams([
       { name: "message", type: "string", control: "text" },
       { name: "title", type: "string", control: "text", default: "Untitled" },
-    ];
-    stubParams();
-    renderForm(withParams(list));
-
-    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
-
-    expect(await printFields()).toEqual({ message: "hello" });
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "Use default for title" }));
-
-    expect(await printFields()).toEqual({ message: "hello", title: "Untitled" });
+    ]));
+    expect(((await screen.findByLabelText("title")) as HTMLInputElement).value).toBe("");
+    expect(screen.getByText("default: Untitled")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(await printFields()).toEqual({});
   });
 
-  it("defers a published default no control can hold", async () => {
-    const list: Param[] = [
-      { name: "message", type: "string", control: "text" },
-      { name: "width", type: "number", control: "number", default: 80 },
-      { name: "logo", type: "string", control: "image", default: "data:image/png;base64,AAAA" },
-    ];
+  it("sends a typed value, and omits it again once cleared", async () => {
     stubParams();
-    renderForm(withParams(list));
-
-    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
-
-    for (const name of ["width", "logo"]) {
-      const box = screen.getByRole("checkbox", { name: `Use default for ${name}` }) as HTMLInputElement;
-      expect(box.checked).toBe(true);
-      expect(screen.getByLabelText(name)).toBeDisabled();
-    }
-    const widthBox = screen.getByRole("checkbox", { name: "Use default for width" });
-    expect(widthBox.closest("label")).toHaveTextContent("Use default: 80");
-
-    expect(await printFields()).toEqual({ message: "hello" });
+    renderForm(withParams([{ name: "title", type: "string", control: "text", default: "Untitled" }]));
+    const title = await screen.findByLabelText("title");
+    fireEvent.change(title, { target: { value: "Bolts" } });
+    expect(await printFields()).toEqual({ title: "Bolts" });
+    fireEvent.change(title, { target: { value: "" } });
+    expect(await printFields()).toEqual({});
   });
 
-  it("submits what the control holds once cleared, and discards it on re-checking", async () => {
-    const list: Param[] = [
-      { name: "message", type: "string", control: "text" },
-      { name: "title", type: "string", control: "text", default: "Untitled" },
-    ];
+  it("omits a cleared integer and a cleared undefaulted text", async () => {
     stubParams();
-    renderForm(withParams(list));
-
-    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
-    const box = screen.getByRole("checkbox", { name: "Use default for title" });
-    fireEvent.click(box);
-
-    const title = screen.getByLabelText("title") as HTMLInputElement;
-    expect(title).not.toBeDisabled();
-    fireEvent.change(title, { target: { value: "Kitchen" } });
-    expect(await printFields()).toEqual({ message: "hello", title: "Kitchen" });
-
-    fireEvent.click(box);
-    expect(screen.getByLabelText("title")).toBeDisabled();
-    expect((screen.getByLabelText("title") as HTMLInputElement).value).toBe("Untitled");
-    expect(await printFields()).toEqual({ message: "hello" });
+    renderForm(withParams([
+      { name: "qty", type: "integer", control: "integer" },
+      { name: "note", type: "string", control: "text" },
+    ]));
+    const qty = await screen.findByLabelText("qty");
+    fireEvent.change(qty, { target: { value: "3" } });
+    fireEvent.change(qty, { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("note"), { target: { value: "x" } });
+    fireEvent.change(screen.getByLabelText("note"), { target: { value: "" } });
+    expect(await printFields()).toEqual({});
   });
 
-  it("clears the file chooser's own selection when an image entry is re-checked", async () => {
-    const list: Param[] = [
-      { name: "message", type: "string", control: "text" },
-      { name: "logo", type: "string", control: "image", default: "data:image/png;base64,AAAA" },
-    ];
+  it("starts a defaulted list empty with its hint, omits it untouched, and sends [] once emptied", async () => {
     stubParams();
-    renderForm(withParams(list));
-
-    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
-    const box = screen.getByRole("checkbox", { name: "Use default for logo" });
-    fireEvent.click(box);
-
-    const chooser = screen.getByLabelText("logo") as HTMLInputElement;
-    const file = new File(["png-bytes"], "logo.png", { type: "image/png" });
-    fireEvent.change(chooser, { target: { files: [file] } });
-    await waitFor(() => expect(screen.getByText("image selected")).toBeInTheDocument());
-
-    // jsdom leaves `files` in place, so the chooser's own value is what shows the reset.
-    Object.defineProperty(chooser, "value", {
-      value: "C:\\fakepath\\logo.png",
-      writable: true,
-      configurable: true,
-    });
-
-    fireEvent.click(box);
-    expect(chooser.value).toBe("");
-    expect(await printFields()).toEqual({ message: "hello" });
+    renderForm(withParams([{ name: "tags", type: "list", control: "list", default: ["CONSUMABLE"] }]));
+    expect(await screen.findByText("default: CONSUMABLE")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "tags 1" })).not.toBeInTheDocument();
+    expect(await printFields()).toEqual({});
+    fireEvent.click(screen.getByRole("button", { name: "add tags" }));
+    fireEvent.click(screen.getByRole("button", { name: "remove tags 1" }));
+    expect(await printFields()).toEqual({ tags: [] });
   });
 
-  // A parameter name reserves no words, so one may be called `constructor` or `__proto__`. Both read
-  // as present on any `{}` through the prototype, and `__proto__` cannot even be assigned onto one, so
-  // this asserts the deferral and the submission the names would otherwise silently lose.
-  const ownEntries = (o: Record<string, unknown>) =>
-    Object.keys(o)
-      .sort()
-      .map((k) => [k, Object.getOwnPropertyDescriptor(o, k)!.value]);
-
-  it("defers and submits entries named for Object.prototype members", async () => {
-    const list: Param[] = [
-      { name: "constructor", type: "string", control: "text" },
-      { name: "__proto__", type: "string", control: "text", default: "proto-default" },
-    ];
+  it("omits an untouched undefaulted list", async () => {
     stubParams();
-    renderForm(withParams(list));
-
-    // `constructor` holds nothing: the prototype's own `constructor` must not read as its value.
-    const ctor = (await screen.findByLabelText("constructor")) as HTMLInputElement;
-    expect(ctor.value).toBe("");
-    expect(screen.queryByRole("checkbox", { name: "Use default for constructor" })).toBeNull();
-
-    const protoBox = screen.getByRole("checkbox", { name: "Use default for __proto__" }) as HTMLInputElement;
-    expect(protoBox.checked).toBe(true);
-    const proto = screen.getByLabelText("__proto__") as HTMLInputElement;
-    expect(proto).toBeDisabled();
-    expect(proto.value).toBe("proto-default");
-
-    fireEvent.change(ctor, { target: { value: "hello" } });
-
-    expect(ownEntries(await printFields())).toEqual([["constructor", "hello"]]);
-
-    fireEvent.click(protoBox);
-    expect(screen.getByLabelText("__proto__")).not.toBeDisabled();
-
-    expect(ownEntries(await printFields())).toEqual([
-      ["__proto__", "proto-default"],
-      ["constructor", "hello"],
-    ]);
+    renderForm(withParams([{ name: "tags", type: "list", control: "list" }]));
+    await screen.findByRole("button", { name: "add tags" });
+    expect(await printFields()).toEqual({});
   });
 
-  it("carries neither value nor deferral across a template change", async () => {
-    const listA: Param[] = [
-      { name: "message", type: "string", control: "text" },
-      { name: "title", type: "string", control: "text", default: "A-title" },
-    ];
-    const listB: Param[] = [
-      { name: "message", type: "string", control: "text" },
-      { name: "title", type: "string", control: "text", default: "B-title" },
-    ];
+  it("drops an image read still in flight when the template changes", async () => {
     stubParams();
-
-    const a: TemplateDetail = { ...withParams(listA), id: "tpl_a" };
-    const b: TemplateDetail = { ...withParams(listB), id: "tpl_b" };
+    const photo: Param = { name: "photo", type: "string", control: "image" };
+    const a: TemplateDetail = { ...withParams([photo]), id: "tpl_a" };
+    const b: TemplateDetail = { ...withParams([photo]), id: "tpl_b" };
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const tree = (detail: TemplateDetail) => (
       <QueryClientProvider client={qc}>
@@ -529,43 +445,31 @@ describe("PrintForm deferring to a declared default", () => {
       </QueryClientProvider>
     );
     const { rerender } = render(tree(a));
+    const file = new File(["from-a"], "a.png", { type: "image/png" });
+    fireEvent.change(await screen.findByLabelText("photo"), { target: { files: [file] } });
+    rerender(tree(b)); // before the FileReader finishes
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await printFields()).toEqual({});
+  });
 
-    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Use default for title" }));
-    fireEvent.change(screen.getByLabelText("title"), { target: { value: "Edited" } });
-
+  it("carries no value across a template change", async () => {
+    stubParams();
+    const a: TemplateDetail = { ...withParams([{ name: "title", type: "string", control: "text" }]), id: "tpl_a" };
+    const b: TemplateDetail = { ...withParams([{ name: "title", type: "string", control: "text", default: "B-title" }]), id: "tpl_b" };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (detail: TemplateDetail) => (
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <PrintForm detail={detail} />
+        </ToastProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree(a));
+    fireEvent.change(await screen.findByLabelText("title"), { target: { value: "from A" } });
     rerender(tree(b));
-
-    const box = (await screen.findByRole("checkbox", {
-      name: "Use default for title",
-    })) as HTMLInputElement;
-    expect(box.checked).toBe(true);
-    const title = screen.getByLabelText("title") as HTMLInputElement;
-    expect(title).toBeDisabled();
-    expect(title.value).toBe("B-title");
-    expect(screen.getByLabelText("message")).toHaveValue("");
-  });
-
-  it("widens a bare YYYY-MM-DD default to YYYY-MM-DDT00:00 for datetime control", async () => {
-    const list: Param[] = [
-      { name: "message", type: "string", control: "text" },
-      { name: "event_time", type: "datetime", control: "datetime", default: "2026-03-24" },
-    ];
-    stubParams();
-    const detail: TemplateDetail = { ...withParams(list), id: "tpl_dt" };
-    renderForm(detail);
-
-    const input = (await screen.findByLabelText("event_time")) as HTMLInputElement;
-    expect(input.value).toBe("2026-03-24T00:00");
-  });
-
-  it("submits untouched undefaulted list entry as empty array without touching editor", async () => {
-    const list: Param[] = [{ name: "tags", type: "list", control: "list" }];
-    stubParams();
-    renderForm(withParams(list));
-
-    const data = await printFields();
-    expect(data.tags).toEqual([]);
+    expect((screen.getByLabelText("title") as HTMLInputElement).value).toBe("");
+    expect(screen.getByText("default: B-title")).toBeInTheDocument();
+    expect(await printFields()).toEqual({});
   });
 
   it("submits data with elements in row order after appending twice and typing", async () => {
@@ -637,42 +541,6 @@ describe("PrintForm deferring to a declared default", () => {
     expect(data.tags).toEqual(["A", "C"]);
   });
 
-  it("opens a defaulted list entry with one row, all controls disabled, checkbox checked, and sends no tags key", async () => {
-    const list: Param[] = [{ name: "tags", type: "list", control: "list", default: ["CONSUMABLE"] }];
-    stubParams();
-    renderForm(withParams(list));
-
-    const checkbox = (await screen.findByRole("checkbox", { name: "Use default for tags" })) as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
-    expect(screen.getByText("CONSUMABLE")).toBeInTheDocument();
-
-    const input1 = screen.getByRole("textbox", { name: "tags 1" }) as HTMLInputElement;
-    expect(input1.value).toBe("CONSUMABLE");
-    expect(input1).toBeDisabled();
-    expect(screen.getByRole("button", { name: "add tags" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "remove tags 1" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "move tags 1 earlier" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "move tags 1 later" })).toBeDisabled();
-
-    const data = await printFields();
-    expect(data.tags).toBeUndefined();
-  });
-
-  it("clearing default checkbox makes controls operable and removing row submits empty array", async () => {
-    const list: Param[] = [{ name: "tags", type: "list", control: "list", default: ["CONSUMABLE"] }];
-    stubParams();
-    renderForm(withParams(list));
-
-    const checkbox = await screen.findByRole("checkbox", { name: "Use default for tags" });
-    fireEvent.click(checkbox);
-
-    const removeBtn = screen.getByRole("button", { name: "remove tags 1" });
-    expect(removeBtn).not.toBeDisabled();
-    fireEvent.click(removeBtn);
-
-    const data = await printFields();
-    expect(data.tags).toEqual([]);
-  });
 });
 
 describe("PrintForm empty template", () => {

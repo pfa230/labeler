@@ -15,7 +15,6 @@ export interface LabelGridRow {
   source?: RowSource; // set by M7; absent for csv/manual
   data: Record<string, ParamValue>; // editable fields
   copyGroup?: string; // links rows produced by a duplicate
-  validation: { field?: Record<string, string> };
   annotation?: { status: "ok" | "failed"; message?: string }; // from a print summary
 }
 
@@ -47,20 +46,8 @@ export function resolveLabels(
   return out;
 }
 
-export function sheetPreviewBlock(
-  invalidPositions: number[],
-  total: number,
-): string | undefined {
-  if (invalidPositions.length === 1) {
-    return `Fix row ${invalidPositions[0]} to preview the sheet.`;
-  }
-  if (invalidPositions.length > 1) {
-    return `Fix rows ${invalidPositions.join(", ")} to preview the sheet.`;
-  }
-  if (total > MAX_BATCH_LABELS) {
-    return "Over the 500-label limit; reduce the batch to preview the sheet.";
-  }
-  return undefined;
+export function sheetPreviewBlock(total: number): string | undefined {
+  return total > MAX_BATCH_LABELS ? "Over the 500-label limit; reduce the batch to preview the sheet." : undefined;
 }
 
 // Map an index in the expanded label array back to its source row index (for annotating failures).
@@ -77,7 +64,6 @@ export function duplicateRow(rows: LabelGridRow[], id: string): LabelGridRow[] {
     ...src,
     id: newId(),
     data: { ...src.data },
-    validation: {},
     annotation: undefined,
     copyGroup: group,
   };

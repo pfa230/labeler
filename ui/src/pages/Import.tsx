@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState } from "react";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
-import { datetimeCellError } from "../lib/templateFields";
 import {
   MAX_BATCH_LABELS,
   expandedCount,
@@ -17,7 +16,7 @@ import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { useSheetPreview } from "../lib/sheetPreview";
-import { getOwnKey, pruneDataForSubmit } from "../lib/labelInputs";
+import { pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../api/client";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
@@ -118,31 +117,10 @@ function CsvEditor({
     return [...set].filter((f) => !listNames.has(f));
   }, [csvFields, templateFields, listNames]);
 
-  const cellInput = (_row: LabelGridRow, field: string) =>
-    detail ? params.find((p) => p.name === field) : { name: field, control: "text" as const };
+  const cellInput = (field: string) => (detail ? params.find((p) => p.name === field) : { name: field, control: "text" as const });
 
-  const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
-    const field: Record<string, string> = {};
-    for (const param of params) {
-      if (param.control !== "datetime" && param.control !== "date") continue;
-      const held = getOwnKey(row.data, param.name);
-      const dtErr = datetimeCellError(held !== undefined && held !== null ? String(held) : "");
-      if (dtErr) field[param.name] = dtErr;
-    }
-    return Object.keys(field).length ? { field } : {};
-  };
-
-  const rowInvalid = (row: LabelGridRow): boolean => {
-    const v = validateRow(row);
-    return !!v.field;
-  };
-
-  const viewRows: LabelGridRow[] = rows.map((row) => ({ ...row, validation: validateRow(row) }));
-  const hasErrors = viewRows.some(rowInvalid);
-
-  // Keep selectedRowId pointing at a valid row. Fall back to first valid (or undefined).
-  const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
-  const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
+  // The first row is previewed when none is selected or the selected one was removed.
+  const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : rows[0]?.id;
 
   const dataFor = (r: LabelGridRow) => pruneDataForSubmit(r.data, params);
 
@@ -154,8 +132,7 @@ function CsvEditor({
   const total = expandedCount(rows.length, copies);
   const overCap = total > MAX_BATCH_LABELS;
 
-  const invalidPositions = viewRows.flatMap((row, index) => (rowInvalid(row) ? [index + 1] : []));
-  const blocked = sheetPreviewBlock(invalidPositions, total);
+  const blocked = sheetPreviewBlock(total);
 
   const sheetPreview = useSheetPreview(
     { templateId: detail?.id ?? "", labels: resolveLabels(rows, copies, dataFor), startSlot },
@@ -198,7 +175,6 @@ function CsvEditor({
       id: newId(),
       origin: "csv",
       data: { ...r.data },
-      validation: {},
     }));
     commitRows(built);
     setLoadedSource(raw);
@@ -217,17 +193,9 @@ function CsvEditor({
     if (!detail) return; // no template selected: nothing to render/submit
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     // Imperative submit guards (defense in depth; the buttons are also disabled for these, but the
-    // disabled state lags a blur-commit by one render). Validate the live snapshot and the cap/printer.
+    // disabled state lags a blur-commit by one render). Check the live snapshot against the printer.
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
-    if (snapshot.some(rowInvalid)) {
-      setFormError("Fix the highlighted rows before running.");
-      return;
-    }
-    if (expandedCount(snapshot.length, copies) > MAX_BATCH_LABELS) {
-      setFormError(`Too many labels (over the ${MAX_BATCH_LABELS} limit).`);
-      return;
-    }
     const printTo = mode === "print" ? printer : undefined;
     if (mode === "print" && !printTo) {
       setFormError("Select a printer to print.");
@@ -350,6 +318,32 @@ function CsvEditor({
         </ul>
       )}
 
+      {displayedFields.length > 0 && (
+        <LabelGrid
+          rows={rows}
+          fields={displayedFields}
+          cellInput={cellInput}
+          onRowsChange={(next, { indexes }) => {
+            // Rows may carry a prior run's annotation; clear it on the edited rows.
+            const dirty = new Set(indexes);
+            commitRows(next.map((r, i) => ({ ...r, annotation: dirty.has(i) ? undefined : r.annotation })));
+            setFormError(null); // editing invalidates a prior submit error
+          }}
+          onDuplicate={(id) => {
+            // A structural change invalidates the prior run's per-row results, so clear annotations.
+            commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
+            setFormError(null);
+          }}
+          onRemove={(id) => {
+            commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
+            setFormError(null);
+          }}
+          disabled={busy}
+          selectedRowId={isSheet ? undefined : resolvedSelectedId}
+          onSelectRow={isSheet ? undefined : setSelectedRowId}
+        />
+      )}
+
       {rows.length > 0 && (
         <>
           {detail && (
@@ -418,31 +412,6 @@ function CsvEditor({
           </div>
           )}
 
-          <LabelGrid
-            rows={viewRows}
-            fields={displayedFields}
-            cellInput={cellInput}
-            onRowsChange={(next, { indexes }) => {
-              // viewRows carries derived validation (and rows may carry a prior run's annotation); store
-              // only canonical data: drop validation everywhere and clear annotation on the edited rows.
-              const dirty = new Set(indexes);
-              commitRows(next.map((r, i) => ({ ...r, validation: {}, annotation: dirty.has(i) ? undefined : r.annotation })));
-              setFormError(null); // editing invalidates a prior submit error
-            }}
-            onDuplicate={(id) => {
-              // A structural change invalidates the prior run's per-row results, so clear annotations.
-              commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
-              setFormError(null);
-            }}
-            onRemove={(id) => {
-              commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
-              setFormError(null);
-            }}
-            disabled={busy}
-            selectedRowId={isSheet ? undefined : resolvedSelectedId}
-            onSelectRow={isSheet ? undefined : setSelectedRowId}
-          />
-
           {detail && (
           <PreviewPane name={detail.name} format={isSheet ? "sheet" : "single"} preview={preview} />
           )}
@@ -459,7 +428,7 @@ function CsvEditor({
             <button
               type="button"
               onClick={() => run("print")}
-              disabled={busy || overCap || hasErrors || !printer || stale}
+              disabled={busy || !printer || stale}
               className={buttonBase}
               style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
             >
@@ -468,7 +437,7 @@ function CsvEditor({
             <button
               type="button"
               onClick={() => run("download")}
-              disabled={busy || overCap || hasErrors || stale}
+              disabled={busy || stale}
               className={`${buttonBase} border`}
               style={{ borderColor: "var(--border)", color: "var(--ink)" }}
             >

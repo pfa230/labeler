@@ -29,7 +29,7 @@ Each `code` SHALL be returned with exactly the status below, and with the listed
 | `PayloadTooLarge` | 413 | The request body exceeds the endpoint's size limit, or a batch exceeds the label cap. | |
 | `UnsupportedMediaType` | 415 | `Content-Type` is absent or not a JSON media type on a JSON endpoint. | |
 | `TemplateInvalid` | 422 | The template, not the request, is at fault. | `reason` |
-| `UnsupportedLayoutItem` | 422 | This label's data cannot be laid out or rendered, a value it needs being absent included. | `reason` |
+| `UnsupportedLayoutItem` | 422 | This label's data cannot be laid out or rendered. | `reason` |
 | `BatchInvalid` | 422 | One or more labels of a batch failed. | `failures` |
 | `Internal` | 500 | The service failed for a reason not attributable to the request; the cause goes to the log. | |
 | `Upstream` | 502 | A connection's upstream failed. | `reason` |
@@ -53,7 +53,6 @@ Each `code` SHALL be returned with exactly the status below, and with the listed
 | Slug | Code | Meaning |
 |---|---|---|
 | `template_validation_failed` | TemplateInvalid | The template did not parse or failed validation; the message names the path of the offending key. |
-| `missing_field` | UnsupportedLayoutItem | A parameter an active item reads has no value and no default; `details.field` names it. |
 | `reference_unresolved` | TemplateInvalid | A part of the template that does not come from a label does not resolve against the request's snapshot: a `vars` key the store lacks, a datetime format name the `datetime_formats` setting lacks, or a tokened default whose value its parameter's type refuses (`parameters`); `details.field` names the key, the format name or the parameter. |
 | `qr_payload_invalid` | UnsupportedLayoutItem | A `qr` value cannot be encoded, for example because it is too long. |
 | `coord_out_of_frame` | UnsupportedLayoutItem | A resolved coordinate lies below or left of the frame. |
@@ -116,8 +115,8 @@ A request that renders several labels and has any failing label SHALL return `42
 
 #### Scenario: Two labels fail differently
 
-- **WHEN** a batch's label 0 has an unknown `data` key and label 2 omits a parameter an active item reads that has no default
-- **THEN** `details.failures` is `[{ "index": 0, "code": "InvalidRequest", "message": "…", "details": { "reason": "data_key_unknown" } }, { "index": 2, "code": "UnsupportedLayoutItem", "message": "…", "details": { "reason": "missing_field", "field": "<name>" } }]`
+- **WHEN** a batch's label 0 has an unknown `data` key and label 2's text does not fit its box
+- **THEN** `details.failures` is `[{ "index": 0, "code": "InvalidRequest", "message": "…", "details": { "reason": "data_key_unknown" } }, { "index": 2, "code": "UnsupportedLayoutItem", "message": "…", "details": { "reason": "text_does_not_fit" } }]`
 
 ### Requirement: One fault per answer
 

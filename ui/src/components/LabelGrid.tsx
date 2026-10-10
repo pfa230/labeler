@@ -21,6 +21,7 @@ import {
 import "@svar-ui/react-grid/style.css";
 import type { LabelGridRow } from "../lib/labelGrid";
 import { displayCellText } from "../lib/connectorRows";
+import { blankOptionLabel } from "../lib/labelInputs";
 import type { Param } from "../api/types";
 
 // Which rows an edit touched, by index. Import and Connect clear a prior run's annotation on
@@ -30,12 +31,12 @@ export interface LabelGridRowsChange {
 }
 
 // The part of a parameter a grid cell reads.
-export type GridCellParam = Pick<Param, "name" | "control" | "values" | "min" | "max" | "default">;
+export type GridCellParam = Pick<Param, "name" | "control" | "values" | "min" | "max" | "default" | "description">;
 
 export interface LabelGridProps {
   rows: LabelGridRow[];
   fields: string[];
-  cellInput?: (row: LabelGridRow, field: string) => GridCellParam | undefined;
+  cellInput?: (field: string) => GridCellParam | undefined;
   onRowsChange: (rows: LabelGridRow[], change: LabelGridRowsChange) => void;
   onDuplicate: (id: string) => void;
   onRemove: (id: string) => void;
@@ -49,7 +50,6 @@ interface GridContextValue extends LabelGridProps {
 }
 
 const GRID_LABEL = "label rows";
-const cellErrorStyle = { color: "var(--bad)" } as const;
 const inertStyle = { color: "var(--muted)", opacity: 0.35 } as const;
 const editableControlClass =
   "w-full rounded border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1";
@@ -91,16 +91,6 @@ function parseCheckboxState(val: unknown, start: boolean): boolean | null {
   return null;
 }
 
-function computeNumericInvalid(val: string, min?: number, max?: number, isInteger?: boolean): boolean {
-  if (val === "") return false;
-  const num = Number(val);
-  if (Number.isNaN(num)) return true;
-  if (isInteger && !Number.isInteger(num)) return true;
-  if (min !== undefined && num < min) return true;
-  if (max !== undefined && num > max) return true;
-  return false;
-}
-
 function handleControlKeyDown(e: KeyboardEvent) {
   if (
     e.key === "ArrowUp" ||
@@ -127,7 +117,8 @@ function DataCell({ row, column }: ICellProps) {
     cellRef.current = el;
   }, []);
 
-  const spec = cellInput ? cellInput(labelRow, field) : { name: field, control: "text" as const };
+  const spec = cellInput ? cellInput(field) : { name: field, control: "text" as const };
+  const label = spec?.description || field;
   const isOperable = Boolean(spec && spec.control !== "list" && spec.control !== "image" && !disabled);
 
   // Synchronize aria-readonly on the cell wrapper
@@ -138,8 +129,6 @@ function DataCell({ row, column }: ICellProps) {
     }
   });
 
-  const err = labelRow.validation.field?.[field];
-  const errId = err ? `err-${labelRow.id}-${field}` : undefined;
   const rawVal = labelRow.data[field];
   const strValue = rawVal !== undefined && rawVal !== null ? String(rawVal) : "";
 
@@ -166,13 +155,11 @@ function DataCell({ row, column }: ICellProps) {
     const isMultiline = lines.length > 1;
     const firstLine = lines[0];
     const remaining = lines.length - 1;
-    const title = err && isMultiline
-      ? `${err}\n\n${strValue}`
-      : (err || (isMultiline ? strValue : undefined));
+    const title = isMultiline ? strValue : undefined;
 
     if (isMultiline) {
       return (
-        <span ref={setCellRef} style={err ? cellErrorStyle : undefined} title={title}>
+        <span ref={setCellRef} title={title}>
           <span>{firstLine}</span>{" "}
           <span style={{ color: "var(--muted)", opacity: 0.6 }}>
             +{remaining}
@@ -182,7 +169,7 @@ function DataCell({ row, column }: ICellProps) {
     }
 
     return (
-      <span ref={setCellRef} style={err ? cellErrorStyle : undefined} title={title}>
+      <span ref={setCellRef} title={title}>
         {strValue}
       </span>
     );
@@ -190,7 +177,7 @@ function DataCell({ row, column }: ICellProps) {
 
   if (spec.control === "image") {
     return (
-      <span ref={setCellRef} style={err ? cellErrorStyle : undefined} title={err || undefined}>
+      <span ref={setCellRef}>
         {strValue !== "" ? "image" : ""}
       </span>
     );
@@ -202,18 +189,14 @@ function DataCell({ row, column }: ICellProps) {
     const isUnrepresentable = checkboxState === null;
     const checked = checkboxState === true;
     const adornId = isUnrepresentable ? `adorn-${labelRow.id}-${field}` : undefined;
-    const describedBy = [adornId, errId].filter(Boolean).join(" ") || undefined;
-    const title = err
-      ? (isUnrepresentable ? `${err}\n\n${strValue}` : err)
-      : (isUnrepresentable ? strValue : undefined);
+    const title = isUnrepresentable ? strValue : undefined;
 
     return (
       <div ref={setCellRef} className="flex items-center gap-1.5 w-full" title={title}>
         <input
           type="checkbox"
-          aria-label={`edit ${field}`}
-          aria-describedby={describedBy}
-          aria-invalid={err ? "true" : undefined}
+          aria-label={`edit ${label}`}
+          aria-describedby={adornId}
           checked={checked}
           onChange={() => {}}
           onClick={(e) => {
@@ -235,17 +218,6 @@ function DataCell({ row, column }: ICellProps) {
             {strValue}
           </span>
         )}
-        {err && (
-          <span
-            id={errId}
-            style={cellErrorStyle}
-            aria-label={`${field} ${err}`}
-            title={err}
-            className="text-xs whitespace-nowrap flex-shrink-0"
-          >
-            ⚠ {err}
-          </span>
-        )}
       </div>
     );
   }
@@ -259,14 +231,11 @@ function DataCell({ row, column }: ICellProps) {
     if (strValue !== "" && !options.includes(strValue)) {
       options.push(strValue);
     }
-    const title = err ? (strValue !== "" ? `${err}\n\n${strValue}` : err) : undefined;
 
     return (
-      <div ref={setCellRef} className="flex items-center gap-1.5 w-full" title={title}>
+      <div ref={setCellRef} className="flex items-center gap-1.5 w-full">
         <select
-          aria-label={`edit ${field}`}
-          aria-describedby={errId}
-          aria-invalid={err ? "true" : undefined}
+          aria-label={`edit ${label}`}
           value={strValue}
           onChange={(e) => commitCell(labelRow.id, field, e.target.value)}
           onMouseDown={handleMouseDown}
@@ -278,21 +247,10 @@ function DataCell({ row, column }: ICellProps) {
         >
           {options.map((v) => (
             <option key={v} value={v}>
-              {v === "" ? "(none)" : v}
+              {v === "" ? blankOptionLabel(spec) : v}
             </option>
           ))}
         </select>
-        {err && (
-          <span
-            id={errId}
-            style={cellErrorStyle}
-            aria-label={`${field} ${err}`}
-            title={err}
-            className="text-xs whitespace-nowrap flex-shrink-0"
-          >
-            ⚠ {err}
-          </span>
-        )}
       </div>
     );
   }
@@ -300,20 +258,15 @@ function DataCell({ row, column }: ICellProps) {
   if (spec.control === "integer" || spec.control === "number") {
     const isInteger = spec.control === "integer";
     const isUnrepresentable = strValue !== "" && Number.isNaN(Number(strValue));
-    const numInvalid = computeNumericInvalid(strValue, spec.min, spec.max, isInteger);
     const adornId = isUnrepresentable ? `adorn-${labelRow.id}-${field}` : undefined;
-    const describedBy = [adornId, errId].filter(Boolean).join(" ") || undefined;
-    const title = err
-      ? (isUnrepresentable ? `${err}\n\n${strValue}` : err)
-      : (isUnrepresentable ? strValue : undefined);
+    const title = isUnrepresentable ? strValue : undefined;
 
     return (
       <div ref={setCellRef} className="flex items-center gap-1.5 w-full" title={title}>
         <input
           type="number"
-          aria-label={`edit ${field}`}
-          aria-describedby={describedBy}
-          aria-invalid={err || numInvalid ? "true" : undefined}
+          aria-label={`edit ${label}`}
+          aria-describedby={adornId}
           min={spec.min}
           max={spec.max}
           step={isInteger ? 1 : "any"}
@@ -336,17 +289,6 @@ function DataCell({ row, column }: ICellProps) {
             {strValue}
           </span>
         )}
-        {err && (
-          <span
-            id={errId}
-            style={cellErrorStyle}
-            aria-label={`${field} ${err}`}
-            title={err}
-            className="text-xs whitespace-nowrap flex-shrink-0"
-          >
-            ⚠ {err}
-          </span>
-        )}
       </div>
     );
   }
@@ -359,18 +301,14 @@ function DataCell({ row, column }: ICellProps) {
         ? !/^\d{4}-\d{2}-\d{2}$/.test(strValue)
         : !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(strValue));
     const adornId = isUnrepresentable ? `adorn-${labelRow.id}-${field}` : undefined;
-    const describedBy = [adornId, errId].filter(Boolean).join(" ") || undefined;
-    const title = err
-      ? (isUnrepresentable ? `${err}\n\n${strValue}` : err)
-      : (isUnrepresentable ? strValue : undefined);
+    const title = isUnrepresentable ? strValue : undefined;
 
     return (
       <div ref={setCellRef} className="flex items-center gap-1.5 w-full" title={title}>
         <input
           type={isDate ? "date" : "datetime-local"}
-          aria-label={`edit ${field}`}
-          aria-describedby={describedBy}
-          aria-invalid={err ? "true" : undefined}
+          aria-label={`edit ${label}`}
+          aria-describedby={adornId}
           value={isUnrepresentable ? "" : strValue}
           onChange={(e) => commitCell(labelRow.id, field, e.target.value)}
           onMouseDown={handleMouseDown}
@@ -390,17 +328,6 @@ function DataCell({ row, column }: ICellProps) {
             {strValue}
           </span>
         )}
-        {err && (
-          <span
-            id={errId}
-            style={cellErrorStyle}
-            aria-label={`${field} ${err}`}
-            title={err}
-            className="text-xs whitespace-nowrap flex-shrink-0"
-          >
-            ⚠ {err}
-          </span>
-        )}
       </div>
     );
   }
@@ -409,16 +336,12 @@ function DataCell({ row, column }: ICellProps) {
     const lines = strValue.split(/\r\n|\n/);
     const isMultiline = lines.length > 1;
     const remaining = lines.length - 1;
-    const title = err && isMultiline
-      ? `${err}\n\n${strValue}`
-      : (err || (isMultiline ? strValue : undefined));
+    const title = isMultiline ? strValue : undefined;
 
     return (
       <div ref={setCellRef} className="flex items-center gap-1.5 w-full h-full" title={title}>
         <textarea
-          aria-label={`edit ${field}`}
-          aria-describedby={errId}
-          aria-invalid={err ? "true" : undefined}
+          aria-label={`edit ${label}`}
           value={strValue}
           onChange={(e) => commitCell(labelRow.id, field, e.target.value)}
           onMouseDown={handleMouseDown}
@@ -436,17 +359,6 @@ function DataCell({ row, column }: ICellProps) {
             +{remaining}
           </span>
         )}
-        {err && (
-          <span
-            id={errId}
-            style={cellErrorStyle}
-            aria-label={`${field} ${err}`}
-            title={err}
-            className="text-xs whitespace-nowrap flex-shrink-0"
-          >
-            ⚠ {err}
-          </span>
-        )}
       </div>
     );
   }
@@ -456,17 +368,13 @@ function DataCell({ row, column }: ICellProps) {
   const isMultiline = lines.length > 1;
   const firstLine = lines[0];
   const remaining = lines.length - 1;
-  const title = err && isMultiline
-    ? `${err}\n\n${strValue}`
-    : (err || (isMultiline ? strValue : undefined));
+  const title = isMultiline ? strValue : undefined;
 
   return (
     <div ref={setCellRef} className="flex items-center gap-1.5 w-full" title={title}>
       <input
         type="text"
-        aria-label={`edit ${field}`}
-        aria-describedby={errId}
-        aria-invalid={err ? "true" : undefined}
+        aria-label={`edit ${label}`}
         value={isMultiline ? firstLine : strValue}
         onChange={(e) => commitCell(labelRow.id, field, e.target.value)}
         onMouseDown={handleMouseDown}
@@ -482,17 +390,6 @@ function DataCell({ row, column }: ICellProps) {
           className="text-xs flex-shrink-0"
         >
           +{remaining}
-        </span>
-      )}
-      {err && (
-        <span
-          id={errId}
-          style={cellErrorStyle}
-          aria-label={`${field} ${err}`}
-          title={err}
-          className="text-xs whitespace-nowrap flex-shrink-0"
-        >
-          ⚠ {err}
         </span>
       )}
     </div>
@@ -542,7 +439,7 @@ function ActionsCell({ row }: ICellProps) {
 }
 
 export function LabelGrid(props: LabelGridProps) {
-  const { rows, fields, disabled, onSelectRow } = props;
+  const { rows, fields, disabled, onSelectRow, cellInput } = props;
 
   const latest = useRef(props);
   useEffect(() => {
@@ -573,14 +470,14 @@ export function LabelGrid(props: LabelGridProps) {
     ...(onSelectRow ? [{ id: PREVIEW_COLUMN, header: "", width: 36, cell: PreviewCell }] : []),
     ...fields.map((field): IColumnConfig => ({
       id: `${DATA_PREFIX}${field}`,
-      header: field,
+      header: cellInput?.(field)?.description || field,
       flexgrow: 1,
       getter: (row: IRow) => (asRow(row).data[field] ?? "") as Value,
       cell: DataCell,
     })),
     { id: ANNOTATION_COLUMN, header: "Status", flexgrow: 1, cell: AnnotationCell },
     { id: ACTIONS_COLUMN, header: "", width: 110, cell: ActionsCell },
-  ], [fields, onSelectRow]);
+  ], [fields, onSelectRow, cellInput]);
 
   const init = useCallback((api: IApi) => {
     apiRef.current = api;

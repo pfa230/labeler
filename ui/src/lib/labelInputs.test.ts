@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { pruneDataForSubmit } from "./labelInputs";
+import { blankOptionLabel, getOwnKey, pruneDataForSubmit, setOwnKey } from "./labelInputs";
 import type { Param } from "../api/types";
+
+const param = (name: string, control: Param["control"], extra: Partial<Param> = {}): Param =>
+  ({ name, type: "string", control, ...extra }) as Param;
 
 describe("pruneDataForSubmit", () => {
   it("omits names no parameter declares even when data has a non-empty value", () => {
@@ -23,20 +26,6 @@ describe("pruneDataForSubmit", () => {
     expect(pruned).not.toHaveProperty("other_inactive");
   });
 
-  it("submits empty strings for text, textarea, and image controls", () => {
-    const params: Param[] = [
-      { name: "t", type: "string", control: "text" },
-      { name: "ta", type: "string", control: "textarea" },
-      { name: "img", type: "string", control: "image" },
-    ];
-    const data = { t: "", ta: "", img: "" };
-    expect(pruneDataForSubmit(data, params)).toEqual({
-      t: "",
-      ta: "",
-      img: "",
-    });
-  });
-
   it("omits empty strings for integer, number, select, date and datetime controls", () => {
     const params: Param[] = [
       { name: "count", type: "integer", control: "integer" },
@@ -55,27 +44,35 @@ describe("pruneDataForSubmit", () => {
     expect(pruneDataForSubmit(data, params)).toEqual({});
   });
 
-  it("omits deferred names from the result while retaining non-deferred names", () => {
-    const params: Param[] = [
-      { name: "title", type: "string", control: "text", default: "Untitled" },
-      { name: "count", type: "integer", control: "integer", default: 1 },
-      { name: "notes", type: "string", control: "text" },
+  it("omits every blank control, defaulted or not", () => {
+    const params = [
+      param("title", "text", { default: "Untitled" }),
+      param("note", "text"),
+      param("body", "textarea"),
+      param("photo", "image"),
+      param("qty", "integer", { type: "integer" }),
+      param("when", "date", { type: "datetime", default: "2026-01-01" }),
     ];
-    const data = {
-      title: "Untitled",
-      count: 1,
-      notes: "Custom note",
-    };
-    const deferred = {
-      title: true,
-      count: false,
-    };
-    const pruned = pruneDataForSubmit(data, params, deferred);
-    expect(pruned).toEqual({
-      count: 1,
-      notes: "Custom note",
-    });
-    expect(pruned).not.toHaveProperty("title");
+    // title cleared to "", the rest never touched
+    expect(pruneDataForSubmit({ title: "" }, params)).toEqual({});
+  });
+
+  it("sends a held list, [] included, and nothing for an untouched one (guard)", () => {
+    const params = [param("a", "list", { type: "list" }), param("b", "list", { type: "list", default: ["X"] })];
+    expect(pruneDataForSubmit({ a: [] }, params)).toEqual({ a: [] });
+    expect(pruneDataForSubmit({}, params)).toEqual({});
+  });
+
+  it("reads and writes names that shadow Object.prototype as own keys, in declaration order", () => {
+    const params = [param("constructor", "checkbox", { type: "boolean" }), param("__proto__", "text")];
+    const untouched = pruneDataForSubmit({}, params);
+    expect(Object.keys(untouched)).toEqual(["constructor"]);
+    expect(untouched.constructor).toBe(false);
+    const data: Record<string, unknown> = {};
+    setOwnKey(data, "__proto__", "typed");
+    const typed = pruneDataForSubmit(data, params);
+    expect(Object.keys(typed)).toEqual(["constructor", "__proto__"]);
+    expect(getOwnKey(typed, "__proto__")).toBe("typed");
   });
 
   it("sends a checkbox's start state when its key is absent or blank, and a held value unchanged", () => {
@@ -92,5 +89,12 @@ describe("pruneDataForSubmit", () => {
       held_off: "false",
       unreadable: "yes",
     });
+  });
+});
+
+describe("blankOptionLabel", () => {
+  it("shows the default when there is one, else nothing", () => {
+    expect(blankOptionLabel({ default: "vertical" })).toBe("(default: vertical)");
+    expect(blankOptionLabel({})).toBe("");
   });
 });

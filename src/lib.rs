@@ -1459,44 +1459,6 @@ layout: []
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[tokio::test]
-    async fn thumbnail_enum_colour_ref_without_default_renders_the_first_value_via_http() {
-        let dir = temp_templates_dir();
-        let yaml = r#"
-name: Enum Colour Ref HTTP
-unit: mm
-dpi: 200
-params:
-  - name: palette
-    type: enum
-    values: [red, blue]
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{palette}"
-"#;
-        std::fs::write(dir.join("enum_colour.yaml"), yaml).unwrap();
-        let app = build_app_in(&dir);
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/templates/enum_colour/thumbnail")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        // An undefaulted enum takes its first value, so the colour ref resolves to red.
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     async fn set_variable(app: &axum::Router, key: &str, value: &str) {
         let res = app
             .clone()
@@ -1841,27 +1803,6 @@ layout:
             json!({ "message": "Hi" }),
             json!({ "message": "Hi", "printed_on": "" }),
             json!({ "message": "Hi", "printed_on": null }),
-        ] {
-            let payload = json!({ "template": "brother_24mm_printed_on", "data": data });
-            let response = build_app()
-                .oneshot(json_req(
-                    "POST",
-                    "/api/render/label?format=png",
-                    payload.to_string(),
-                ))
-                .await
-                .expect("request");
-            assert_eq!(
-                response.status(),
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "{data} should fail with 422 missing_field"
-            );
-            let body = json_response(response).await;
-            assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-            assert_eq!(body["error"]["details"]["field"], "printed_on");
-        }
-
-        for data in [
             json!({ "message": "Hi", "printed_on": "2026-08-19" }),
             json!({ "message": "Hi", "printed_on": "2026-08-19T14:30" }),
             json!({ "message": "Hi", "printed_on": "2026-08-19T14:30:00" }),
@@ -2063,7 +2004,8 @@ layout:
             "template": "brother_24mm_qr",
             "labels": [
                 { "data": { "message": "Hello", "code": "QR-1" } },
-                { "data": { "message": "World" } }
+                // (guard) an over-capacity QR payload stands in for the label that fails
+                { "data": { "message": "World", "code": "A".repeat(8000) } }
             ]
         });
         let response = app
@@ -2076,7 +2018,7 @@ layout:
         assert_eq!(body["error"]["details"]["failures"][0]["index"], 1);
         assert_eq!(
             body["error"]["details"]["failures"][0]["details"]["reason"],
-            "missing_field"
+            "qr_payload_invalid"
         );
     }
 
@@ -3137,6 +3079,7 @@ dpi: 200
 params:
   - name: brand
     type: string
+    default: red
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: text
@@ -3225,6 +3168,7 @@ format: { type: single, width: 50, height: 60 }
 params:
   - name: pitch
     type: number
+    default: 1.2
 layout:
   - type: text
     value: "Explicit Spacing"
@@ -6301,19 +6245,7 @@ layout:
             .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("request");
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "BatchInvalid");
-        let failures = body["error"]["details"]["failures"]
-            .as_array()
-            .expect("failures array");
-        assert!(!failures.is_empty(), "expected at least one failure");
-        let first = &failures[0];
-        let msg = first["message"].as_str().unwrap_or("");
-        assert!(
-            msg.contains("message") || msg.contains("code"),
-            "expected failure to name missing param, got {msg}"
-        );
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[test]
@@ -7905,7 +7837,7 @@ layout:
     }
 
     #[tokio::test]
-    async fn render_label_list_param_without_default_and_missing_field() {
+    async fn render_label_list_param_without_default_reads_as_empty() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
 
@@ -7935,35 +7867,13 @@ layout:
             .unwrap();
         assert_eq!(put_res.status(), StatusCode::CREATED);
 
-        // Omitted -> 422 missing_field
-        let res = app
-            .clone()
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label?format=png",
-                json!({ "template": "list_req", "data": {} }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body["error"]["details"]["field"], "tags");
-
-        // Null -> 422 missing_field
-        let res = app
-            .clone()
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label?format=png",
-                json!({ "template": "list_req", "data": { "tags": null } }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body["error"]["details"]["field"], "tags");
+        // Omitted and null each read as the empty list
+        let empty = render_png_bytes(&app, "list_req", json!({ "tags": [] })).await;
+        assert_eq!(render_png_bytes(&app, "list_req", json!({})).await, empty);
+        assert_eq!(
+            render_png_bytes(&app, "list_req", json!({ "tags": null })).await,
+            empty
+        );
 
         // Provided -> 200 OK
         let res = app
@@ -8399,7 +8309,7 @@ layout:
         assert_eq!(
             res_empty_render.status(),
             StatusCode::OK,
-            "default: [] must render without missing_field"
+            "default: [] must render"
         );
     }
 
@@ -8577,20 +8487,11 @@ layout:
         assert_eq!(res_def_empty.status(), StatusCode::OK);
         assert_eq!(res_def_empty.headers()["content-type"], "image/png");
 
-        // 4.7: Absent undefaulted list is 422 missing_field
-        let res_missing = app
-            .clone()
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label?format=png",
-                json!({ "template": "rep_expansion", "data": {} }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res_missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body_missing = json_response(res_missing).await;
-        assert_eq!(body_missing["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body_missing["error"]["details"]["field"], "tags");
+        // 4.7: An absent undefaulted list draws what the empty list draws
+        assert_eq!(
+            render_png_bytes(&app, "rep_expansion", json!({})).await,
+            render_png_bytes(&app, "rep_expansion", json!({ "tags": [] })).await
+        );
     }
 
     #[tokio::test]
@@ -9512,7 +9413,7 @@ layout:
         let tags = params.iter().find(|p| p["name"] == "tags").unwrap();
         assert_eq!(tags["control"], "list");
 
-        // 5.5: Thumbnail of repeat-only template draws 1 instance without 422 missing_field
+        // 5.5: Thumbnail of repeat-only template draws 1 instance
         let thumb_res = app
             .clone()
             .oneshot(
@@ -9870,7 +9771,8 @@ layout:
             "template": "homebox-qr",
             "labels": [
                 { "data": { "id": "1", "message": "one", "bad0": "x" } },
-                { "data": { "id": "2" } } // omits required "message"
+                // (guard) an over-capacity QR payload stands in for the label that fails
+                { "data": { "id": "A".repeat(8000), "message": "two" } }
             ]
         });
         let res = app
@@ -9887,7 +9789,7 @@ layout:
         assert_eq!(failures[0]["details"]["reason"], "data_key_unknown");
         assert_eq!(failures[1]["index"], 1);
         assert_eq!(failures[1]["code"], "UnsupportedLayoutItem");
-        assert_eq!(failures[1]["details"]["reason"], "missing_field");
+        assert_eq!(failures[1]["details"]["reason"], "qr_payload_invalid");
     }
 
     /// errors "Two labels fail differently": each failing label is its own error object plus
@@ -9895,13 +9797,13 @@ layout:
     #[tokio::test]
     async fn batch_failures_are_per_label_error_objects() {
         let app = build_app();
-        // brother_24mm_qr reads `code` and `message`, neither with a default.
+        // (guard) label 2's `code` is beyond any QR's capacity.
         let payload = json!({
             "template": "brother_24mm_qr",
             "labels": [
                 { "data": { "code": "A", "message": "hello", "bad_key": "x" } },
                 { "data": { "code": "B", "message": "fine" } },
-                { "data": { "message": "no code" } }
+                { "data": { "code": "A".repeat(8000), "message": "long" } }
             ]
         });
         let res = app
@@ -9925,7 +9827,7 @@ layout:
                 {
                     "index": 2,
                     "code": "UnsupportedLayoutItem",
-                    "details": { "reason": "missing_field", "field": "code" }
+                    "details": { "reason": "qr_payload_invalid" }
                 }
             ])
         );
@@ -11342,7 +11244,7 @@ mod auth_http_tests {
     }
 
     #[tokio::test]
-    async fn omitted_boolean_renders_false_and_omitted_enum_is_missing_field() {
+    async fn omitted_boolean_renders_false_and_omitted_enum_prints_nothing() {
         let yaml = r#"
 name: Test Missing Param
 unit: mm
@@ -11378,7 +11280,7 @@ layout:
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // 2. Omit choice -> 422 missing_field named 'choice'
+        // 2. Omit choice -> it prints nothing
         let req = req_post_json(
             "/api/render/label",
             &serde_json::json!({
@@ -11388,14 +11290,11 @@ layout:
             .to_string(),
         );
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body["error"]["details"]["field"], "choice");
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn omitted_datetime_returns_422_missing_field_and_declared_default_prints() {
+    async fn omitted_datetime_prints_nothing_and_declared_default_prints() {
         let yaml_no_default = r#"
 name: Test Missing DateTime
 unit: mm
@@ -11438,50 +11337,19 @@ layout:
             ("dt_with_default", yaml_with_default),
         ]);
 
-        // Omission without default -> 422 missing_field naming 'printed_on'
-        let req = req_post_json(
-            "/api/render/label",
-            &serde_json::json!({
-                "template": "dt_no_default",
-                "data": {}
-            })
-            .to_string(),
-        );
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body["error"]["details"]["field"], "printed_on");
-
-        // Blank string without default -> also treated as omission -> 422 missing_field
-        let req = req_post_json(
-            "/api/render/label",
-            &serde_json::json!({
-                "template": "dt_no_default",
-                "data": { "printed_on": "   " }
-            })
-            .to_string(),
-        );
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body["error"]["details"]["field"], "printed_on");
-
-        // null without default -> 422 missing_field
-        let req = req_post_json(
-            "/api/render/label",
-            &serde_json::json!({
-                "template": "dt_no_default",
-                "data": { "printed_on": null }
-            })
-            .to_string(),
-        );
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body["error"]["details"]["field"], "printed_on");
+        // Omission, blank and null without default each print nothing
+        for val in [
+            serde_json::json!({}),
+            serde_json::json!({"printed_on": "   "}),
+            serde_json::json!({"printed_on": null}),
+        ] {
+            let req = req_post_json(
+                "/api/render/label",
+                &serde_json::json!({ "template": "dt_no_default", "data": val }).to_string(),
+            );
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{val}");
+        }
 
         // Omission, blank, null with default: "{sys.now}" all render 200 OK
         for val in [
@@ -11760,18 +11628,22 @@ layout:
             assert_eq!(body["error"]["details"]["reason"], "item_out_of_frame");
         }
 
-        let response = app
-            .clone()
-            .oneshot(req_post_json(
-                "/api/render/label?format=png",
-                &serde_json::json!({ "template": "trim_missing_text", "data": {} }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        assert_eq!(body["error"]["details"]["field"], "missing");
+        // A trimmed item's text is still evaluated: absent, it reads as the empty string.
+        let mut pngs = Vec::new();
+        for data in [serde_json::json!({}), serde_json::json!({ "missing": "" })] {
+            let response = app
+                .clone()
+                .oneshot(req_post_json(
+                    "/api/render/label?format=png",
+                    &serde_json::json!({ "template": "trim_missing_text", "data": data })
+                        .to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            pngs.push(body_bytes(response).await);
+        }
+        assert_eq!(pngs[0], pngs[1]);
 
         let response = app
             .oneshot(req_post_json(
@@ -12604,7 +12476,8 @@ layout:
         let render = || {
             req_post_json(
                 "/api/render/label",
-                &serde_json::json!({ "template": "i262_when_gate", "data": {} }).to_string(),
+                &serde_json::json!({ "template": "i262_when_gate", "data": { "prod_secret": "S" } })
+                    .to_string(),
             )
         };
 
@@ -12615,22 +12488,21 @@ layout:
         assert_eq!(body["error"]["details"]["reason"], "reference_unresolved");
         assert_eq!(body["error"]["details"]["field"], "vars.site");
 
-        // 2. site=staging -> container inactive, so prod_secret is not required.
+        // (guard) 2. site=staging -> container inactive.
         state.store().set_variable("site", "staging").await.unwrap();
         let res = app.clone().oneshot(render()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+        let staging = body_bytes(res).await;
 
-        // 3. site=production -> container active, so the omitted prod_secret is missing.
+        // 3. site=production -> container active: the gate opened, so the label differs.
         state
             .store()
             .set_variable("site", "production")
             .await
             .unwrap();
         let res = app.clone().oneshot(render()).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "missing_field");
-        assert_eq!(body["error"]["details"]["field"], "prod_secret");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_ne!(body_bytes(res).await, staging);
     }
 
     #[tokio::test]
@@ -13328,6 +13200,7 @@ format: { type: single, width: 50, height: 20 }
 params:
   - name: pitch
     type: number
+    default: 1.2
 layout:
   - type: text
     value: "Hello"
@@ -13506,14 +13379,6 @@ layout:
         let msg = body["error"]["message"].as_str().unwrap();
         assert!(msg.contains("pitch"), "message must name pitch: {msg}");
 
-        // Task 6.11: omitting pitch parameter that declares no default refuses with 422 missing_field
-        let res = post_render("tpl_pitch_num_refusal", serde_json::json!({})).await;
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("pitch"), "message must name pitch: {msg}");
-
         // Task 6.13: pitch parameter declaring default: 0 loads and is served, and omitting pitch is refused with 400 line_spacing_param_invalid
         let res = post_render("tpl_pitch_def_zero", serde_json::json!({})).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -13546,6 +13411,7 @@ format: { type: single, width: 50, height: 20 }
 params:
   - name: pitch
     type: number
+    default: 1.2
 layout:
   - type: text
     value: "Hello"
@@ -13609,29 +13475,6 @@ layout:
             msg1.contains("layout[0]") && msg1.contains("pitch"),
             "message must name layout[0] and pitch: {msg1}"
         );
-
-        // Task 7.2: 2-label batch whose second label omits pitch with no default ->
-        // 422 BatchInvalid, failure at index 1 with reason missing_field.
-        let req2 = req_post_json(
-            "/api/render",
-            &serde_json::json!({
-                "template": "tpl_pitch_batch",
-                "labels": [
-                    { "data": { "pitch": 1.2 } },
-                    { "data": {} }
-                ]
-            })
-            .to_string(),
-        );
-        let res2 = app.clone().oneshot(req2).await.unwrap();
-        assert_eq!(res2.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body2 = body_json(res2).await;
-        assert_eq!(body2["error"]["code"], "BatchInvalid");
-        let failures2 = body2["error"]["details"]["failures"].as_array().unwrap();
-        assert_eq!(failures2.len(), 1);
-        assert_eq!(failures2[0]["index"], 1);
-        assert_eq!(failures2[0]["code"], "UnsupportedLayoutItem");
-        assert_eq!(failures2[0]["details"]["reason"], "missing_field");
 
         // Task 7.3: a template declaring default: .nan is refused at load
         let err = crate::parse::parse_template(tpl_pitch_def_nan)
@@ -14088,6 +13931,12 @@ mod parameters_http_tests {
         .await
     }
 
+    /// Render and return the raw answer, so a test can compare images.
+    async fn render_bytes(app: &axum::Router, template: &str, data: &str) -> (StatusCode, Vec<u8>) {
+        let body = format!(r#"{{"template": "{template}", "data": {data}}}"#);
+        send(app, "POST", "/api/render/label", "application/json", body).await
+    }
+
     /// A test's failed expectations, collected so one run reports every failing case.
     #[derive(Default)]
     struct Misses(Vec<String>);
@@ -14416,17 +14265,14 @@ mod parameters_http_tests {
 
     // A8b
     #[tokio::test]
-    async fn an_omitted_parameter_an_active_item_reads_is_still_missing_field() {
+    async fn an_omitted_string_prints_as_empty() {
         let yaml = single("  - name: title\n    type: string\n", &text("{title}"));
         let (app, _state, _dir) = app_with(&[("needs_title", &yaml)]);
-        let (status, body) = render(&app, "needs_title", "{}").await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem", "{body}");
-        assert_eq!(
-            body["error"]["details"]["reason"], "missing_field",
-            "{body}"
-        );
-        assert_eq!(body["error"]["details"]["field"], "title", "{body}");
+        let (status, omitted) = render_bytes(&app, "needs_title", "{}").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, empty) = render_bytes(&app, "needs_title", r#"{"title": ""}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(omitted, empty);
     }
 
     const COERCE_PARAMS: &str = "  - name: copies\n    type: integer\n  - name: title\n    type: string\n  - name: code\n    type: enum\n    values: [\"1\", \"2\"]\n  - name: width\n    type: number\n  - name: bold\n    type: boolean\n";
@@ -14454,10 +14300,9 @@ mod parameters_http_tests {
     // A11
     #[tokio::test]
     async fn a_boolean_takes_its_numeric_and_padded_spellings() {
-        // `bold: true` activates an item reading the undefaulted `title`, so a true spelling
-        // answers missing_field and a false one renders: the status shows which value it became.
-        // `bold` defaults to true, so a false spelling misread as an omission also answers
-        // missing_field.
+        // `bold: true` activates an item reading `title`, so a spelling's image shows which value
+        // it became. `bold` defaults to true, so a false spelling misread as an omission draws the
+        // true image.
         let params = COERCE_PARAMS.replace(
             "    type: boolean\n",
             "    type: boolean\n    default: true\n",
@@ -14465,26 +14310,26 @@ mod parameters_http_tests {
         let gated = "  - type: container\n    when: { bold: true }\n    at: [0, 10]\n    size: [60, 10]\n    items:\n      - type: text\n        value: \"{title}\"\n        at: [0, 0]\n        size: [60, 10]\n        font_size: 6\n";
         let yaml = single(&params, &(text("fixed") + gated));
         let (app, _state, _dir) = app_with(&[("coerce", &yaml)]);
+        let data = |spelling: &str| format!(r#"{{"title": "T", "bold": {spelling}}}"#);
+        let (_, true_png) = render_bytes(&app, "coerce", &data("true")).await;
+        let (_, false_png) = render_bytes(&app, "coerce", &data("false")).await;
+        assert_ne!(true_png, false_png, "the gate must change the image");
         let mut misses = Misses::default();
-        for spelling in ["1", "1.0", "1e0", r#""1""#, r#"" true ""#] {
-            let (status, body) =
-                render(&app, "coerce", &format!(r#"{{"bold": {spelling}}}"#)).await;
-            misses.expect(
-                status == StatusCode::UNPROCESSABLE_ENTITY
-                    && body["error"]["details"]["reason"] == "missing_field"
-                    && body["error"]["details"]["field"] == "title",
-                &format!("{spelling} reads as true (status {status})"),
-                &body,
-            );
-        }
-        for spelling in ["0", "0.0", r#""0""#, r#"" false ""#] {
-            let (status, body) =
-                render(&app, "coerce", &format!(r#"{{"bold": {spelling}}}"#)).await;
-            misses.ok(status, &body, spelling);
+        for (spellings, reference) in [
+            (&["1", "1.0", "1e0", r#""1""#, r#"" true ""#][..], &true_png),
+            (&["0", "0.0", r#""0""#, r#"" false ""#][..], &false_png),
+        ] {
+            for spelling in spellings {
+                let (status, png) = render_bytes(&app, "coerce", &data(spelling)).await;
+                misses.expect(
+                    status == StatusCode::OK && &png == reference,
+                    &format!("{spelling} (status {status})"),
+                    &Value::Null,
+                );
+            }
         }
         for spelling in ["2", "0.5"] {
-            let (status, body) =
-                render(&app, "coerce", &format!(r#"{{"bold": {spelling}}}"#)).await;
+            let (status, body) = render(&app, "coerce", &data(spelling)).await;
             misses.param_value_invalid(status, &body, "bold", spelling);
         }
         misses.assert_none();

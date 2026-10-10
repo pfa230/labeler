@@ -142,12 +142,17 @@ An item's intrinsic size on an axis SHALL be its content's extent multiplied by 
 | Item | Intrinsic size |
 | --- | --- |
 | `text` | its laid-out block (`text`) |
-| `qr` | `(modules + 2 × quiet_zone) × module_size` |
+| `qr` | `(modules + 2 × quiet_zone) × module_size`; zero when its value resolves to the empty string |
 | `container` | its children combined by its arrangement, plus padding |
 | `image` | none; an image's box is always authored |
 | `line` | none; a line contributes only through its endpoints |
 
 An absolutely arranged container's intrinsic extent on an axis SHALL be the largest frame requirement among its active children. A `qr` with a content or frame extent and no `module_size` SHALL be refused at load.
+
+#### Scenario: An empty QR takes no room
+
+- **WHEN** a `row` holds a `content`-sized `qr` reading `{code}` and then a `text`, and the request omits `code`
+- **THEN** the text is drawn where it would be if the `qr` were not there
 
 #### Scenario: A QR sizes a label
 
@@ -215,7 +220,7 @@ Every resolved label dimension (a `single`'s `width`, `height` and both dynamic 
 
 ### Requirement: Load-time validation runs the render-time sizing rules
 
-Load SHALL validate geometry with the same sizing rules render uses, against a frame built from the template alone: `width.max` for a dynamic width, and each geometry parameter reference instantiated from its `default` (a number, or a string parsing as one), else its `min`, else `0`. Load SHALL NOT measure text, encode QR codes, decode images or run a flow arrangement; a content extent SHALL stand in at its available extent. A refusal at load therefore depends only on the template.
+Load SHALL validate geometry with the same sizing rules render uses, against a frame built from the template alone: `width.max` for a dynamic width, and each geometry parameter reference instantiated from its `default`, or, when that default is tokened, from its `min`, else `0`. Load SHALL NOT measure text, encode QR codes, decode images or run a flow arrangement; a content extent SHALL stand in at its available extent. A refusal at load therefore depends only on the template.
 
 Structural validation SHALL traverse every branch whether or not its `when:` gate could match. A packed child SHALL be checked at load as if it were its container's only child, so an accumulation of siblings past the inner box is a render-time failure only.
 
@@ -224,9 +229,9 @@ Structural validation SHALL traverse every branch whether or not its `when:` gat
 - **WHEN** an item behind `when: { debug: true }`, with `debug` defaulting to `false`, declares `size: [0, 10]`
 - **THEN** the template is refused at load
 
-#### Scenario: A geometry parameter without a default
+#### Scenario: A geometry parameter with a tokened default
 
-- **WHEN** `size: ["{box_w}", 10]` names a parameter with `min: 12` and no `default`
+- **WHEN** `size: ["{box_w}", 10]` names a parameter with `min: 12` and `default: "{vars.box_w}"`
 - **THEN** load validates that axis as 12
 
 #### Scenario: An accumulation is a render failure
@@ -245,7 +250,7 @@ A render-time layout failure message SHALL name the item's layout path (`layout[
 
 ### Requirement: The qr item
 
-A `qr` SHALL accept `value` (required, interpolated, must not be blank), placement, `when`, `error_correction`, `module_size` and `quiet_zone`. `error_correction` SHALL be exactly `L`, `M`, `Q` or `H`, default `M`; any other value SHALL be refused at load. `module_size` is the module pitch in the template unit and MUST be greater than 0. `quiet_zone` is a count of modules, default 0, MUST be at least 0, and need not be whole. The symbol SHALL be drawn with exactly `quiet_zone` modules of margin on each side, as an SVG scaled `contain` into the item's box, whether or not `module_size` is set. A payload that cannot be encoded SHALL fail with `422 UnsupportedLayoutItem` reason `qr_payload_invalid`.
+A `qr` SHALL accept `value` (required, interpolated), placement, `when`, `error_correction`, `module_size` and `quiet_zone`. `error_correction` SHALL be exactly `L`, `M`, `Q` or `H`, default `M`; any other value SHALL be refused at load. `module_size` is the module pitch in the template unit and MUST be greater than 0. `quiet_zone` is a count of modules, default 0, MUST be at least 0, and need not be whole. The symbol SHALL be drawn with exactly `quiet_zone` modules of margin on each side, as an SVG scaled `contain` into the item's box, whether or not `module_size` is set. A value that resolves to the empty string SHALL draw nothing in the item's box. A payload that cannot be encoded SHALL fail with `422 UnsupportedLayoutItem` reason `qr_payload_invalid`.
 
 #### Scenario: The quiet zone is the requested margin
 
@@ -257,11 +262,16 @@ A `qr` SHALL accept `value` (required, interpolated, must not be blank), placeme
 - **WHEN** a `qr` declares `error_correction: X` or `error_correction: m`
 - **THEN** the template is refused at load, naming `error_correction`
 
+#### Scenario: An empty QR value draws nothing
+
+- **WHEN** a `qr` with `size: [15, 15]` and `value: "{code}"` renders and the request omits `code`
+- **THEN** the render succeeds and the item's box is blank
+
 ### Requirement: The image item
 
 An `image` SHALL set `src` (required, interpolated), plus placement, `when`, and `fit` (`contain` default, `cover`, `stretch`). A resolved `src` starting with `data:` SHALL be a base64 data URI of type `image/png`, `image/jpeg` or `image/svg+xml`; any other resolved `src` is a path under `{LABELER_CONFIG_DIR}/assets/` whose extension (`png`, `jpg`, `jpeg`, `svg`, case-insensitive) decides the format. There is no URL fetching.
 
-An image's box SHALL be authored on both axes (a number, a parameter reference, or a `to` whose corners are both non-negative or both edge-relative); any other extent SHALL be refused at load. The image SHALL be drawn into its box by `fit` and clipped to the box.
+An image's box SHALL be authored on both axes (a number, a parameter reference, or a `to` whose corners are both non-negative or both edge-relative); any other extent SHALL be refused at load. The image SHALL be drawn into its box by `fit` and clipped to the box. A `src` that resolves to the empty string SHALL draw nothing in the box.
 
 Render failures, all `UnsupportedLayoutItem`: not a base64 data URI `image_data_invalid`; unsupported MIME or extension `image_format_unsupported`; asset missing `image_asset_missing`; unreadable `image_asset_unreadable`; path escaping the assets directory `image_asset_path_escapes`; assets directory unresolvable `assets_dir_unavailable`.
 
@@ -274,6 +284,7 @@ Render failures, all `UnsupportedLayoutItem`: not a base64 data URI `image_data_
 
 - **WHEN** one image declares `src: "data:image/svg+xml;base64,…"` and another `src: "{photo}"`, and a request supplies `photo` as a PNG data URI
 - **THEN** both images are drawn into their boxes
+- **AND** a request omitting `photo` renders, with the second box blank
 
 #### Scenario: An image box from its content is refused
 
@@ -393,7 +404,7 @@ A flow container's intrinsic size SHALL be its padding plus its **assembled exte
 
 ### Requirement: Packing past the inner box
 
-Each packed child SHALL be checked twice against the padded inner box: its own extents (at load and render) and its arranged position (at render). Both SHALL fail with `UnsupportedLayoutItem` reason `item_out_of_frame` on either axis, never `coord_out_of_frame`. A child whose own extents do not fit SHALL fail under either policy. Under `overflow: trim` the first child whose arranged box does not fit, and every child after it, SHALL be left undrawn, out of the assembled extent, and unreported; trimmed children are still sized, so a trimmed `text` reading a missing field still fails with `missing_field`, while a trimmed `image` or authored-size `qr` reads nothing.
+Each packed child SHALL be checked twice against the padded inner box: its own extents (at load and render) and its arranged position (at render). Both SHALL fail with `UnsupportedLayoutItem` reason `item_out_of_frame` on either axis, never `coord_out_of_frame`. A child whose own extents do not fit SHALL fail under either policy. Under `overflow: trim` the first child whose arranged box does not fit, and every child after it, SHALL be left undrawn, out of the assembled extent, and unreported; trimmed children are still sized.
 
 #### Scenario: An accumulated overrun fails
 
@@ -415,13 +426,13 @@ Each packed child SHALL be checked twice against the padded inner box: its own e
 
 A `container` MAY carry `repeat:`, the bare name of a declared `type: list` parameter. Each of these SHALL be refused at load naming the key and the container's layout path: naming an undeclared parameter; naming a parameter of another type (also naming its type); on a container whose parent has no `flow`, including the layout root; naming a list an enclosing repeat already repeats. `repeat` on other item types is an unknown key.
 
-An active repeating container SHALL produce one packed instance per element, in element order, in the authored container's place among its siblings. An empty list produces none and is not an error. An absent list with no usable default SHALL fail `422 UnsupportedLayoutItem` reason `missing_field` naming it. The container's own `when:` SHALL be evaluated once, before binding, and gates every instance; a gated-off repeat reads nothing. There is no instance cap; overflow is the flow policy's. Each instance is sized on its own. Load checks the repeated subtree once as a single instance.
+An active repeating container SHALL produce one packed instance per element, in element order, in the authored container's place among its siblings. An empty list produces none and is not an error, and neither is an absent one (`parameters`). The container's own `when:` SHALL be evaluated once, before binding, and gates every instance; a gated-off repeat reads nothing. There is no instance cap; overflow is the flow policy's. Each instance is sized on its own. Load checks the repeated subtree once as a single instance.
 
 #### Scenario: Three tags render three pills
 
 - **WHEN** a `row` with `gap: 1` holds a `size: [content, content]` container repeating `tags` around a text `{tags}`, and a request sends `["A", "B", "C"]`
 - **THEN** three pills `A`, `B`, `C` are drawn left to right, each hugging its element
-- **AND** `tags: []` draws the strip with no pills, and omitting `tags` with no default fails with `missing_field`
+- **AND** `tags: []` draws the strip with no pills, and so does omitting `tags`
 
 #### Scenario: Misplaced repeats are refused
 
@@ -445,7 +456,7 @@ Within a repeating container and its descendants, the repeated name SHALL denote
 
 ### Requirement: when gates an item
 
-Any item MAY carry `when:`, a map of conditions. The item is **active** only when every condition matches the label's resolved parameter value, compared as text; a condition on an absent parameter is false. An inactive item, and everything inside an inactive container, SHALL be excluded from measurement and rendering: it imposes no requirement, paints nothing, raises no error, and a field read only by inactive items is not required.
+Any item MAY carry `when:`, a map of conditions. The item is **active** only when every condition matches the label's resolved parameter value, compared as text; a condition on an absent parameter is false. An inactive item, and everything inside an inactive container, SHALL be excluded from measurement and rendering: it imposes no requirement, paints nothing and raises no error.
 
 At load, each of these SHALL be refused: `when: {}`; an empty or whitespace-only key or value; a value that is a sequence or a mapping; a key naming an undeclared parameter; a value outside an `enum` parameter's `values`; a key naming a `list` parameter outside a repeat scope (including on the repeating container itself), naming the key and the item's layout path. A condition value is held as its scalar text, so `true` and `"true"` are one condition.
 

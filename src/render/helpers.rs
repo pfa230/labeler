@@ -126,7 +126,9 @@ pub(super) fn interpolate(
             }
             crate::interpolation::Source::Vars(key) => {
                 if token.reader.is_some() {
-                    return Err(AppError::missing_field(inner));
+                    return Err(AppError::internal(format!(
+                        "token '{inner}' passed load but cannot be read"
+                    )));
                 }
                 variables.get(key).cloned().ok_or_else(|| {
                     AppError::reference_unresolved(
@@ -142,14 +144,13 @@ pub(super) fn interpolate(
                             datetime.format(*instant, Some(fmt))?
                         }
                         Some(crate::interpolation::Reader::Join(_)) => {
-                            return Err(AppError::missing_field(name));
+                            return Err(AppError::internal(format!(
+                                "token '{inner}' passed load but cannot be read"
+                            )));
                         }
                         None => datetime.format(*instant, None)?,
                     }
-                } else {
-                    let val = data
-                        .get(name)
-                        .ok_or_else(|| AppError::missing_field(name))?;
+                } else if let Some(val) = data.get(name) {
                     match token.reader {
                         Some(crate::interpolation::Reader::Join(sep)) => match val {
                             JsonValue::Array(arr) => {
@@ -168,7 +169,9 @@ pub(super) fn interpolate(
                             _ => return Err(AppError::field_value_not_scalar(name)),
                         },
                         Some(crate::interpolation::Reader::Format(_)) => {
-                            return Err(AppError::missing_field(name));
+                            return Err(AppError::internal(format!(
+                                "token '{inner}' passed load but cannot be read"
+                            )));
                         }
                         None => match val {
                             JsonValue::Array(_) => {
@@ -177,6 +180,8 @@ pub(super) fn interpolate(
                             other => value_to_string(other),
                         },
                     }
+                } else {
+                    String::new()
                 }
             }
         };
@@ -197,9 +202,11 @@ pub(super) fn resolve_dynamic_value_f32(
     match dyn_val {
         crate::models::DynamicValue::Literal(v) => Ok(*v),
         crate::models::DynamicValue::Ref(name) => {
-            let val = data
-                .get(name)
-                .ok_or_else(|| AppError::missing_field(name))?;
+            let val = data.get(name).ok_or_else(|| {
+                AppError::internal(format!(
+                    "parameter '{name}' has no value although load requires its default"
+                ))
+            })?;
             match val {
                 JsonValue::Number(n) => n.as_f64().map(|f| f as f32).ok_or_else(|| {
                     AppError::param_value_invalid(
@@ -232,9 +239,11 @@ pub(super) fn resolve_dynamic_value_u16(
     match dyn_val {
         crate::models::DynamicValue::Literal(v) => Ok(*v),
         crate::models::DynamicValue::Ref(name) => {
-            let val = data
-                .get(name)
-                .ok_or_else(|| AppError::missing_field(name))?;
+            let val = data.get(name).ok_or_else(|| {
+                AppError::internal(format!(
+                    "parameter '{name}' has no value although load requires its default"
+                ))
+            })?;
             match val {
                 JsonValue::Number(n) => n
                     .as_u64()
@@ -2853,8 +2862,18 @@ mod interpolate_tests {
     }
 
     #[test]
-    fn missing_field_errors() {
-        assert!(interpolate("{nope}", &data(), &variables(), &no_datetime(), None).is_err());
+    fn an_absent_parameter_reads_as_empty() {
+        assert_eq!(
+            interpolate(
+                "[{nope}|{gone:short_date}|{tags:join(', ')}]",
+                &data(),
+                &variables(),
+                &no_datetime(),
+                None
+            )
+            .unwrap(),
+            "[||]"
+        );
     }
 
     #[test]
@@ -3192,7 +3211,7 @@ mod dynamic_resolution_tests {
 
         let err = resolve_dynamic_value_f32(&DynamicValue::Ref("missing".to_string()), &data)
             .unwrap_err();
-        assert_eq!(err.reason(), Some("missing_field"));
+        assert_eq!(err.code(), "Internal");
 
         let err =
             resolve_dynamic_value_f32(&DynamicValue::Ref("bad".to_string()), &data).unwrap_err();

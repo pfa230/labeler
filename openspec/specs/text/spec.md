@@ -14,7 +14,7 @@ A `text` item SHALL accept the keys below in addition to placement and `when` (o
 |---|---|---|---|
 | `value` | string, interpolated (`interpolation`) | required | |
 | `font_size` | number, or `{ min, max }`, in points | required | every number > 0; `min` ≤ `max` |
-| `font_weight` | integer, or `"{param}"` | 400 | literal: multiple of 100 from 100 to 900; reference: a declared `integer` parameter whose `default`, if any, meets the literal rule |
+| `font_weight` | integer, or `"{param}"` | 400 | literal: multiple of 100 from 100 to 900; reference: a declared `integer` parameter whose `default` meets the literal rule |
 | `color` | colour (`layout` colour vocabulary) | black | |
 | `wrap` | boolean | `false` | |
 | `line_spacing` | number | 1.2 | finite and > 0 |
@@ -48,7 +48,7 @@ Text SHALL be measured and rendered in Inter, loaded from `InterVariable.ttf` in
 
 ### Requirement: Font weight resolution
 
-A literal `font_weight` SHALL be the weight. A reference SHALL be resolved per render from the request data with defaults applied (`parameters`); the resolved integer SHALL be the weight. A supplied value SHALL meet the literal rule, else the render fails with `400 InvalidRequest` reason `param_value_invalid` naming the parameter. An absent value fails with `422 UnsupportedLayoutItem` reason `missing_field`.
+A literal `font_weight` SHALL be the weight. A reference SHALL be resolved per render from the request data with defaults applied (`parameters`); the resolved integer SHALL be the weight. A supplied value SHALL meet the literal rule, else the render fails with `400 InvalidRequest` reason `param_value_invalid` naming the parameter.
 
 #### Scenario: A referenced weight renders that weight
 

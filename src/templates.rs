@@ -657,6 +657,11 @@ fn check_param_ref(
             spec.param_type
         ));
     }
+    if spec.default.is_none() {
+        return Err(format!(
+            "parameter '{name}' referenced in {context} must declare a default"
+        ));
+    }
     Ok(())
 }
 
@@ -1380,15 +1385,11 @@ fn validate_layout_item(
             validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
         LayoutItem::Qr {
-            value,
             placement,
             params,
             when,
             ..
         } => {
-            if value.trim().is_empty() {
-                return Err("qr value must not be empty".to_string());
-            }
             validate_when(when.as_ref())?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
@@ -3025,7 +3026,7 @@ layout: []
                     "logo".to_string(),
                     ParamSpec {
                         param_type: ParamType::String { multiline: false },
-                        default: None,
+                        default: Some(crate::models::ParamValue::String(String::new())),
                         min: None,
                         max: None,
                         description: None,
@@ -3115,7 +3116,7 @@ layout:
     }
 
     #[test]
-    fn validate_rejects_empty_qr_value() {
+    fn an_empty_literal_qr_value_loads() {
         let template = TemplateContent {
             name: "Empty Qr".to_string(),
             description: "test".to_string(),
@@ -3138,8 +3139,22 @@ layout:
                 when: None,
             }]),
         };
-        let err = template.validate().expect_err("expected error");
-        assert_eq!(err, "qr value must not be empty");
+        assert_eq!(template.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_referenced_parameter_must_declare_a_default() {
+        let yaml = |default: &str| {
+            format!(
+                "name: R\nunit: mm\ndpi: 200\nparams:\n  - name: w\n    type: number\n{default}format: {{ type: single, width: 60, height: 20 }}\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0, 0]\n    size: [\"{{w}}\", 10]\n    font_size: 8\n"
+            )
+        };
+        let err = parse_and_validate(&yaml("")).unwrap_err();
+        assert!(
+            err.contains("'w'") && err.contains("must declare a default"),
+            "{err}"
+        );
+        parse_and_validate(&yaml("    default: 20\n")).unwrap();
     }
 
     #[test]
@@ -3873,6 +3888,20 @@ layout:
 "#;
         let res = parse_and_validate(yaml);
         assert!(res.is_ok(), "validates cleanly using default box_w = 10");
+    }
+
+    #[test]
+    fn a_tokened_geometry_default_is_validated_at_its_min() {
+        let yaml = |min: u32| {
+            format!(
+                "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: box_w\n    type: length\n    min: {min}\n    default: \"{{vars.box_w}}\"\nformat: {{ type: single, height: 18, width: 50 }}\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [\"{{box_w}}\", 10]\n    items: []\n"
+            )
+        };
+        parse_and_validate(&yaml(12)).unwrap();
+        assert!(
+            parse_and_validate(&yaml(60)).is_err(),
+            "min 60 exceeds width 50"
+        );
     }
 
     #[test]
@@ -5342,41 +5371,6 @@ layout:
     }
 
     #[test]
-    fn thumbnail_enum_colour_ref_without_default_takes_the_first_value() {
-        // An undefaulted enum takes its first value as a thumbnail placeholder, whatever reads it,
-        // so a colour `{ref}` to it renders.
-        let yaml = r#"
-name: Enum Colour Ref
-unit: mm
-dpi: 200
-params:
-  - name: palette
-    type: enum
-    values: [red, blue]
-format: { type: single, width: 50, height: 20 }
-layout:
-  - type: text
-    value: "Hello"
-    at: [0, 0]
-    size: [50, 20]
-    font_size: 10
-    color: "{palette}"
-"#;
-        let template = parse_template_ok(yaml);
-        let now = chrono::Local::now();
-        let variables = BTreeMap::new();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &BTreeMap::new(),
-            now,
-        };
-        let ph = template.placeholder_data(now);
-        assert_eq!(ph.get("palette"), Some(&json!("red")));
-        let png = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt)
-            .expect("the first value renders");
-        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-    }
-
-    #[test]
     fn repeating_container_thumbnail_placeholder_draws_one_instance() {
         // 5.5: Thumbnail placeholder data invents 1 instance for repeat-only list parameter
         let rep_yaml = r#"
@@ -5766,6 +5760,7 @@ dpi: 200
 params:
   - name: brand
     type: string
+    default: red
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: text
@@ -5785,6 +5780,7 @@ params:
   - name: brand
     type: enum
     values: [red, blue]
+    default: red
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: text
@@ -5849,6 +5845,7 @@ dpi: 200
 params:
   - name: bg_param
     type: string
+    default: red
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: container
@@ -5915,6 +5912,7 @@ params:
   - name: border
     type: enum
     values: [red, green]
+    default: red
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: line
@@ -6534,6 +6532,7 @@ dpi: 200
 params:
   - name: logo
     type: string
+    default: ""
 format: { type: single, width: 20, height: 10 }
 layout:
   - type: image
@@ -6562,17 +6561,15 @@ layout:
         );
         assert!(png.is_ok());
 
-        // Render omitting logo -> 422 missing_field naming logo
+        // Render omitting logo -> its empty default draws nothing
         let empty_data = HashMap::new();
-        let err = crate::render::render_single_label_image(
+        let png = crate::render::render_single_label_image(
             &template,
             &empty_data,
             &crate::render::resolve_environment(&template, &BTreeMap::new(), &dt).unwrap(),
             crate::render::ImageRenderOptions::default(),
-        )
-        .unwrap_err();
-        assert_eq!(err.code(), "UnsupportedLayoutItem");
-        assert_eq!(err.details().unwrap()["field"], "logo");
+        );
+        assert!(png.is_ok());
     }
 
     // Issue 322: Task 4.3 - Union rule: image name in one branch and text in another gets Image

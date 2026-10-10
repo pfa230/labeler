@@ -370,7 +370,7 @@ mod tests {
         let labels = vec![
             lbl("a"),
             LabelInput {
-                data: HashMap::new(),
+                data: HashMap::from([("message".to_string(), json!(["a", "b"]))]),
             },
         ];
         let err = render_batch(

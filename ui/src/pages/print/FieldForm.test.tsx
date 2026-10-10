@@ -54,7 +54,7 @@ function renderForm(
   return Object.assign(onChange, { unmount });
 }
 
-const singleValue: FormValue = { data: {}, deferred: {}, printer: undefined, startSlot: 0 };
+const singleValue: FormValue = { data: {}, printer: undefined, startSlot: 0 };
 
 // FieldForm updates functionally, so that a value read at render time cannot overwrite a later one.
 // A test applies the last update to the value the form rendered with.
@@ -114,7 +114,7 @@ describe("FieldForm", () => {
     const select = (await screen.findByLabelText("flavor")) as HTMLSelectElement;
     expect(select.tagName).toBe("SELECT");
     expect(select.value).toBe("vanilla");
-    expect([...select.options].map((o) => o.value)).toEqual(["vanilla", "chocolate"]);
+    expect([...select.options].map((o) => o.value)).toEqual(["", "vanilla", "chocolate"]);
   });
 
   it("renders checkbox control", async () => {
@@ -167,7 +167,7 @@ describe("FieldForm", () => {
   });
 
   it("renders a start-slot number input for a sheet template", async () => {
-    renderForm(sheet, { data: {}, deferred: {}, printer: undefined, startSlot: 0 });
+    renderForm(sheet, { data: {}, printer: undefined, startSlot: 0 });
     const slot = (await screen.findByLabelText(/start slot/i)) as HTMLInputElement;
     expect(slot.type).toBe("number");
   });
@@ -178,59 +178,6 @@ describe("FieldForm", () => {
     expect(lastUpdate(onChange, singleValue)).toEqual(
       expect.objectContaining({ data: { message: "hello" } }),
     );
-  });
-
-  it("renders a checked Use default checkbox naming the published default and disables the control", async () => {
-    const params: Param[] = [{ name: "title", type: "string", control: "text", default: "Untitled" }];
-    renderForm(single, { ...singleValue, data: { title: "Untitled" }, deferred: { title: true } }, params);
-
-    const checkbox = (await screen.findByRole("checkbox", {
-      name: "Use default for title",
-    })) as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
-    expect(screen.getByText(/Use default/)).toHaveTextContent("Untitled");
-    expect(screen.getByRole("textbox", { name: "title" })).toBeDisabled();
-  });
-
-  it("renders no Use default checkbox for an entry publishing no default", async () => {
-    renderForm(single, singleValue, [{ name: "message", type: "string", control: "text" }]);
-
-    await screen.findByLabelText("message");
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Use default/)).not.toBeInTheDocument();
-  });
-
-  it("clears deferral without touching the value, and restores the default on re-checking", async () => {
-    const params: Param[] = [{ name: "title", type: "string", control: "text", default: "Untitled" }];
-    const deferredValue: FormValue = { ...singleValue, data: { title: "Untitled" }, deferred: { title: true } };
-    const onChange = renderForm(single, deferredValue, params);
-
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Use default for title" }));
-    const cleared = lastUpdate(onChange, deferredValue);
-    expect(cleared.deferred).toEqual({ title: false });
-    expect(cleared.data).toEqual({ title: "Untitled" });
-    onChange.unmount();
-
-    // Re-checking after an edit discards it, whatever the control then held.
-    const editedValue: FormValue = { ...singleValue, data: { title: "Kitchen" }, deferred: { title: false } };
-    const onChange2 = renderForm(single, editedValue, params);
-    expect(screen.getByRole("textbox", { name: "title" })).not.toBeDisabled();
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "Use default for title" }));
-    const recheck = lastUpdate(onChange2, editedValue);
-    expect(recheck.deferred).toEqual({ title: true });
-    expect(recheck.data).toEqual({ title: "Untitled" });
-  });
-
-  it("gives two entries sharing a description and a default distinct accessible names", async () => {
-    const params: Param[] = [
-      { name: "title", description: "Line", type: "string", control: "text", default: "Untitled" },
-      { name: "subtitle", description: "Line", type: "string", control: "text", default: "Untitled" },
-    ];
-    renderForm(single, { ...singleValue, deferred: { title: true, subtitle: true } }, params);
-
-    expect(await screen.findByRole("checkbox", { name: "Use default for title" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Use default for subtitle" })).toBeInTheDocument();
   });
 
   it("renders an editor for a list input and renders other inputs normally", async () => {

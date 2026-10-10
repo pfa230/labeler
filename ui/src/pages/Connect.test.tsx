@@ -306,7 +306,7 @@ async function browseSelectMaterialize() {
   fireEvent.click(await screen.findByLabelText("select entities:e1"));
   fireEvent.click(await screen.findByLabelText("select entities:e2"));
   fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
-  await screen.findByRole("grid", { name: /label rows/i });
+  await screen.findAllByRole("button", { name: "remove row" });
 }
 
 describe("Connect", () => {
@@ -1344,7 +1344,7 @@ describe("Connect", () => {
       fireEvent.click(addBtn);
 
       const grid = await screen.findByRole("grid", { name: /label rows/i });
-      expect(within(grid).getByDisplayValue("Drill")).toBeInTheDocument();
+      expect(await within(grid).findByDisplayValue("Drill")).toBeInTheDocument();
       expect(within(grid).queryByText("Hammer")).not.toBeInTheDocument();
     });
 
@@ -1468,15 +1468,12 @@ describe("Connect: datetime parameters", () => {
     expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
   });
 
-  it("blocks the run when a materialized datetime value cannot be parsed", async () => {
+  it("leaves the run enabled when a materialized datetime value cannot be parsed", async () => {
     fetchMock = withPrintedOn("not a date");
     vi.stubGlobal("fetch", fetchMock);
-
     renderConnect();
     await browseSelectMaterialize();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
-    );
+    await waitFor(() => expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled());
   });
 
   it("leaves the run enabled when the materialized datetime value parses", async () => {
@@ -1541,7 +1538,7 @@ describe("Connect: datetime parameters", () => {
     fireEvent.change(await screen.findByLabelText("map title"), { target: { value: "tags" } });
     expect(await screen.findByText(/tags.*title|title.*tags/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add .* row/i })).toBeDisabled();
-    expect(screen.queryByRole("grid", { name: /label rows/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "remove row" })).toBeNull();
 
     // Reset title mapping
     fireEvent.change(screen.getByLabelText("map title"), { target: { value: "" } });
@@ -1550,7 +1547,7 @@ describe("Connect: datetime parameters", () => {
     fireEvent.change(screen.getByLabelText("map tagList"), { target: { value: "name" } });
     expect(await screen.findByText(/name.*tagList|tagList.*name/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add .* row/i })).toBeDisabled();
-    expect(screen.queryByRole("grid", { name: /label rows/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "remove row" })).toBeNull();
 
     // Case 3: Correct mapping (scalar -> scalar, list -> list)
     fireEvent.change(screen.getByLabelText("map title"), { target: { value: "name" } });
@@ -1561,7 +1558,7 @@ describe("Connect: datetime parameters", () => {
     fireEvent.click(addButton);
 
     const grid = await screen.findByRole("grid", { name: /label rows/i });
-    expect(within(grid).getByDisplayValue("Drill")).toBeInTheDocument();
+    expect(await within(grid).findByDisplayValue("Drill")).toBeInTheDocument();
     expect(within(grid).getByText("KIDS")).toBeInTheDocument();
   });
 
@@ -1636,7 +1633,7 @@ describe("Connect: datetime parameters", () => {
     fireEvent.click(screen.getByRole("button", { name: /add .* row/i }));
 
     const grid = await screen.findByRole("grid", { name: /label rows/i });
-    expect(within(grid).getByText("KIDS, CONSUMABLE")).toBeInTheDocument();
+    expect(await within(grid).findByText("KIDS, CONSUMABLE")).toBeInTheDocument();
 
     // Run batch download
     await waitFor(() => {
@@ -1694,7 +1691,7 @@ describe("issue-386: sheet preview", () => {
       fireEvent.click(await screen.findByLabelText(`select entities:e${i}`));
     }
     fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
-    await screen.findByRole("grid", { name: /label rows/i });
+    await screen.findAllByRole("button", { name: "remove row" });
   }
 
   it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/render preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
@@ -1759,98 +1756,11 @@ describe("issue-386: sheet preview", () => {
 
     fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "sheet-tpl" } });
     await waitFor(() => {
-      expect(screen.queryByRole("grid", { name: /label rows/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: "remove row" })).toBeNull();
     });
     fireEvent.click(await screen.findByRole("button", { name: /add 2 rows/i }));
-    await screen.findByRole("grid", { name: /label rows/i });
+    await screen.findAllByRole("button", { name: "remove row" });
     expect(document.querySelectorAll('input[name="preview-row"]').length).toBe(0);
-  });
-
-  // A row the grid refuses is one holding a datetime it cannot parse. It arrives the way connector
-  // values do, through a `printed_on` column the default mapping carries onto the parameter.
-  async function selectDatedSheet(printedOn: string[], opts?: StubOptions) {
-    const base = stub({
-      templates: [{ id: "sheet-tpl", name: "Sheet", description: "", unit: "mm", dpi: 300, format: { type: "sheet" } }],
-      templateDetails: {
-        "sheet-tpl": {
-          ...sheetTemplateDetail,
-          params: [
-            { name: "name", type: "string", control: "text" },
-            { name: "printed_on", type: "datetime", control: "datetime", time: true },
-          ],
-        },
-      },
-      browseRows: printedOn.map((_, i) => ({ id: { resource: "entities", key: `e${i + 1}` }, cells: { name: `item ${i + 1}` } })),
-      ...opts,
-    });
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/connections/c1/schema") {
-        const printedCol = { key: "printed_on", label: "Printed", ty: "text", tier: "cheap", multi_valued: false };
-        return json({ ...schema, resources: [{ ...schema.resources[0], columns: [...schema.resources[0].columns, printedCol] }] });
-      }
-      if (url === "/api/connections/c1/materialize") {
-        return json(printedOn.map((value, i) => ({
-          source: { resource: "entities", key: `e${i + 1}` },
-          data: { name: `item ${i + 1}`, printed_on: value },
-        })));
-      }
-      return base(input, init);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await screen.findByRole("option", { name: "Home" });
-    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
-    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "sheet-tpl" } });
-    for (let i = 1; i <= printedOn.length; i++) {
-      fireEvent.click(await screen.findByLabelText(`select entities:e${i}`));
-    }
-    fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
-    await screen.findByRole("grid", { name: /label rows/i });
-  }
-
-  it("5.3 Sheet template with one row holding an unparseable datetime: no /api/render request, no <object>, pane reads Fix row N to preview the sheet.; fixing the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
-    const capturedBatchBodies: BatchPayload[] = [];
-    await selectDatedSheet(["", "not a date"], {
-      batch: (body) => {
-        capturedBatchBodies.push(body);
-        return new Response(new Blob(["%PDF"]), {
-          status: 200,
-          headers: { "content-type": "application/pdf" },
-        });
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("Fix row 2 to preview the sheet.")).toBeInTheDocument();
-    });
-    await new Promise((r) => setTimeout(r, 400));
-    expect(document.querySelector("object")).toBeNull();
-    expect(capturedBatchBodies.length).toBe(0);
-
-    const grid = screen.getByRole("grid", { name: /label rows/i });
-    const pickers = within(grid).getAllByLabelText("edit printed_on");
-    fireEvent.change(pickers[1], { target: { value: "2026-08-19T10:00" } });
-    await waitFor(() => {
-      expect(capturedBatchBodies.length).toBe(1);
-    });
-    expect(capturedBatchBodies[0].labels).toEqual([
-      { data: { name: "item 1" } },
-      { data: { name: "item 2", printed_on: "2026-08-19T10:00" } },
-    ]);
-    await waitFor(() => {
-      expect(document.querySelector("object")).not.toBeNull();
-    });
-  });
-
-  it("5.4 Sheet template with a 5-row grid whose rows 2 and 5 are invalid: pane reads exactly Fix rows 2, 5 to preview the sheet. and the text does not begin with Preview failed", async () => {
-    await selectDatedSheet(["", "nope", "", "", "2026-02-30"]);
-
-    await waitFor(() => {
-      expect(screen.getByText("Fix rows 2, 5 to preview the sheet.")).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/Preview failed/)).toBeNull();
   });
 
   it("5.5 Sheet template with 2 rows and copies set to 300: no /api/render request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
@@ -1875,6 +1785,7 @@ describe("issue-386: sheet preview", () => {
         screen.getByText("Over the 500-label limit; reduce the batch to preview the sheet."),
       ).toBeInTheDocument();
     });
+    expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
     await new Promise((r) => setTimeout(r, 400));
     expect(capturedBatchBodies.length).toBe(0);
   });
@@ -1989,6 +1900,16 @@ describe("issue-413: Connect reads the published parameter list", () => {
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+  it("draws the template's columns before any row is added", async () => {
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    const headers = within(grid).getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers.filter((h) => paramsDetail.params.some((p) => p.name === h))).toEqual(["name", "code", "flag", "on"]);
+  });
+
   it("A18: offers mappings and columns from detail.params and never requests /inputs", async () => {
     renderConnect();
     await browseSelectMaterialize();
@@ -2001,12 +1922,12 @@ describe("issue-413: Connect reads the published parameter list", () => {
     expect(inputsCalls()).toEqual([]);
   });
 
-  it("A20: an untouched row with blank checkbox cells submits each start state", async () => {
+  it("A20: an untouched row with blank checkbox cells submits each start state and omits a blank text", async () => {
     renderConnect();
     await browseSelectMaterialize();
     await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
     const previewCall = [...fetchMock.mock.calls].reverse().find(([u]) => String(u).startsWith("/api/render/label"))!;
-    expect(JSON.parse(String((previewCall[1] as RequestInit).body)).data).toEqual({ name: "Drill", code: "", flag: false, on: true });
+    expect(JSON.parse(String((previewCall[1] as RequestInit).body)).data).toEqual({ name: "Drill", flag: false, on: true });
 
     const download = screen.getByRole("button", { name: /^download$/i });
     await waitFor(() => expect(download).toBeEnabled());
@@ -2014,8 +1935,8 @@ describe("issue-413: Connect reads the published parameter list", () => {
     await waitFor(() => expect(countCalls("/api/render")).toBe(1));
     const batchCall = fetchMock.mock.calls.find(([u]) => String(u) === "/api/render")!;
     expect(JSON.parse(String((batchCall[1] as RequestInit).body)).labels).toEqual([
-      { data: { name: "Drill", code: "", flag: false, on: true } },
-      { data: { name: "Hammer", code: "", flag: false, on: true } },
+      { data: { name: "Drill", flag: false, on: true } },
+      { data: { name: "Hammer", flag: false, on: true } },
     ]);
   });
 });

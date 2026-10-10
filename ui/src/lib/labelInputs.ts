@@ -14,46 +14,27 @@ export function setOwnKey<T>(o: Record<string, T>, k: string, v: T): void {
   Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
 }
 
-export function seedDefaultValue(param: Param): ParamValue {
-  if (
-    param.control === "datetime" &&
-    typeof param.default === "string" &&
-    /^\d{4}-\d{2}-\d{2}$/.test(param.default)
-  ) {
-    return `${param.default}T00:00`;
-  }
-  return param.default!;
-}
+const isBlank = (v: unknown): boolean => v === undefined || v === null || v === "";
 
-// A checkbox always sends its value: one whose key is absent or blank sends its start state, which is
-// its published default (a JSON boolean) or false. A held value is sent unchanged, even one the
-// control cannot show, because a grid cell keeps its value until it is edited.
-export function pruneDataForSubmit(
-  data: Record<string, unknown>,
-  params: Param[],
-  deferred?: Record<string, boolean>,
-): Record<string, ParamValue> {
+// What a screen submits for one label (ui spec, "What a screen submits"). Parameters are walked, not
+// data keys, so an absent checkbox still sends its start state and an undeclared key never leaves the
+// browser. Every other blank control is omitted. A held value is sent unchanged, even one the control
+// cannot show, because a grid cell keeps its value until it is edited.
+export function pruneDataForSubmit(data: Record<string, unknown>, params: Param[]): Record<string, ParamValue> {
   const result: Record<string, ParamValue> = {};
-  const byName = new Map(params.map((p) => [p.name, p]));
-  for (const [k, v] of Object.entries(data)) {
-    if (deferred && getOwnKey(deferred, k)) continue;
-    const param = byName.get(k);
-    if (!param) continue;
-    if (param.control === "list") {
-      if (Array.isArray(v)) {
-        setOwnKey(result, k, v as ParamValue);
-      }
-      continue;
-    }
-    if (v === "" && param.control !== "text" && param.control !== "textarea" && param.control !== "image") continue;
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-      setOwnKey(result, k, v as ParamValue);
-    }
-  }
   for (const param of params) {
-    if (param.control === "checkbox" && !hasOwnKey(result, param.name)) {
-      setOwnKey(result, param.name, param.default === true);
+    const v = getOwnKey(data, param.name);
+    if (param.control === "list") {
+      if (Array.isArray(v)) setOwnKey(result, param.name, v as string[]);
+    } else if (param.control === "checkbox") {
+      setOwnKey(result, param.name, isBlank(v) ? param.default === true : (v as ParamValue));
+    } else if (!isBlank(v) && (typeof v === "string" || typeof v === "number" || typeof v === "boolean")) {
+      setOwnKey(result, param.name, v);
     }
   }
   return result;
+}
+
+export function blankOptionLabel(param: Pick<Param, "default">): string {
+  return param.default === undefined ? "" : `(default: ${String(param.default)})`;
 }

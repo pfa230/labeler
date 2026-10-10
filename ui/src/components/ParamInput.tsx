@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { Param, ParamValue } from "../api/types";
+import { blankOptionLabel } from "../lib/labelInputs";
 
 export interface ParamInputProps {
   name: string;
   spec: Param;
   value: ParamValue | undefined;
   onChange: (value: ParamValue) => void;
-  disabled?: boolean;
 }
 
 const inputClass =
@@ -31,19 +31,15 @@ export function ParamInput({
   spec,
   value,
   onChange,
-  disabled = false,
 }: ParamInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   // A file chooser is the browser's own state, not the form's: clearing the value it stands for
   // leaves the filename on screen unless the element is cleared too.
-  const disabledRef = useRef(disabled);
-
   useEffect(() => {
-    disabledRef.current = disabled;
-    if ((!value || disabled) && fileInputRef.current) {
+    if (!value && fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-  }, [value, disabled]);
+  }, [value]);
 
   const pendingFocusRef = useRef<
     | { type: "move-earlier" | "move-later" | "remove"; index: number }
@@ -83,22 +79,33 @@ export function ParamInput({
           type="file"
           accept="image/*"
           aria-label={label}
-          disabled={disabled}
           onChange={async (e) => {
             const file = e.target.files?.[0];
-            if (!file) return;
+            // A cancelled selection empties the chooser, so the value it held goes too.
+            if (!file) {
+              onChange("");
+              return;
+            }
             const dataUrl = await readFileAsDataUrl(file);
-            // The read finishes after the render that started it. If the entry was deferred again
-            // meanwhile, or the chooser no longer holds this file, the value it stood for is gone
-            // and must not come back.
-            if (disabledRef.current || fileInputRef.current?.files?.[0] !== file) return;
+            // The read finishes after the render that started it. If the chooser no longer holds
+            // this file, the value it stood for is gone and must not come back.
+            if (fileInputRef.current?.files?.[0] !== file) return;
             onChange(dataUrl);
           }}
           className="text-sm"
         />
         {current && (
-          <span className="text-xs" style={{ color: "var(--muted)" }}>
+          <span className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
             image selected
+            <button
+              type="button"
+              aria-label={`clear ${label}`}
+              onClick={() => onChange("")}
+              className="rounded-md border px-2 py-0.5 focus-visible:outline-none focus-visible:ring-2"
+              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+            >
+              Clear
+            </button>
           </span>
         )}
       </div>
@@ -110,7 +117,6 @@ export function ParamInput({
       <textarea
         aria-label={label}
         rows={3}
-        disabled={disabled}
         value={value !== undefined ? String(value) : ""}
         onChange={(e) => onChange(e.target.value)}
         className={`${inputClass} resize-y`}
@@ -128,7 +134,6 @@ export function ParamInput({
         min={spec.min}
         max={spec.max}
         step={isInteger ? 1 : "any"}
-        disabled={disabled}
         value={typeof value === "number" || typeof value === "string" ? value : ""}
         onChange={(e) => {
           const raw = e.target.value;
@@ -150,8 +155,7 @@ export function ParamInput({
       <input
         type="checkbox"
         aria-label={label}
-        disabled={disabled}
-        checked={value === true}
+        checked={value === undefined ? spec.default === true : value === true}
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 rounded border"
         style={{ accentColor: "var(--accent)" }}
@@ -160,22 +164,15 @@ export function ParamInput({
   }
 
   if (control === "select") {
-    const currentVal = value !== undefined ? String(value) : "";
-    const hasMatch = (spec.values ?? []).includes(currentVal);
     return (
       <select
         aria-label={label}
-        disabled={disabled}
-        value={currentVal}
+        value={value !== undefined ? String(value) : ""}
         onChange={(e) => onChange(e.target.value)}
         className={inputClass}
         style={inputStyle}
       >
-        {!hasMatch && (
-          <option value="" disabled hidden>
-            Select...
-          </option>
-        )}
+        <option value="">{blankOptionLabel(spec)}</option>
         {(spec.values ?? []).map((v: string) => (
           <option key={v} value={v}>
             {v}
@@ -191,7 +188,6 @@ export function ParamInput({
       <input
         type={inputType}
         aria-label={label}
-        disabled={disabled}
         value={value !== undefined ? String(value) : ""}
         onChange={(e) => onChange(e.target.value)}
         className={inputClass}
@@ -213,15 +209,12 @@ export function ParamInput({
           const pos = idx + 1;
           const isFirst = idx === 0;
           const isLast = idx === items.length - 1;
-          const isEarlierInert = !disabled && isFirst;
-          const isLaterInert = !disabled && isLast;
 
           return (
             <div key={idx} className="flex items-center gap-2">
               <input
                 type="text"
                 aria-label={`${name} ${pos}`}
-                disabled={disabled}
                 value={item}
                 onChange={(e) => {
                   const next = [...items];
@@ -237,10 +230,9 @@ export function ParamInput({
                 }}
                 type="button"
                 aria-label={`move ${name} ${pos} earlier`}
-                aria-disabled={isEarlierInert ? "true" : undefined}
-                disabled={disabled}
+                aria-disabled={isFirst ? "true" : undefined}
                 onClick={() => {
-                  if (isEarlierInert || isFirst) return;
+                  if (isFirst) return;
                   pendingFocusRef.current = { type: "move-earlier", index: idx - 1 };
                   const next = [...items];
                   const tmp = next[idx];
@@ -248,11 +240,11 @@ export function ParamInput({
                   next[idx - 1] = tmp;
                   onChange(next);
                 }}
-                className="rounded-md border p-1.5 text-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                className="rounded-md border p-1.5 text-xs focus-visible:outline-none focus-visible:ring-2"
                 style={{
                   borderColor: "var(--border)",
                   color: "var(--ink)",
-                  opacity: isEarlierInert ? 0.4 : undefined,
+                  opacity: isFirst ? 0.4 : undefined,
                 }}
               >
                 ↑
@@ -263,10 +255,9 @@ export function ParamInput({
                 }}
                 type="button"
                 aria-label={`move ${name} ${pos} later`}
-                aria-disabled={isLaterInert ? "true" : undefined}
-                disabled={disabled}
+                aria-disabled={isLast ? "true" : undefined}
                 onClick={() => {
-                  if (isLaterInert || isLast) return;
+                  if (isLast) return;
                   pendingFocusRef.current = { type: "move-later", index: idx + 1 };
                   const next = [...items];
                   const tmp = next[idx];
@@ -274,11 +265,11 @@ export function ParamInput({
                   next[idx + 1] = tmp;
                   onChange(next);
                 }}
-                className="rounded-md border p-1.5 text-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                className="rounded-md border p-1.5 text-xs focus-visible:outline-none focus-visible:ring-2"
                 style={{
                   borderColor: "var(--border)",
                   color: "var(--ink)",
-                  opacity: isLaterInert ? 0.4 : undefined,
+                  opacity: isLast ? 0.4 : undefined,
                 }}
               >
                 ↓
@@ -289,7 +280,6 @@ export function ParamInput({
                 }}
                 type="button"
                 aria-label={`remove ${name} ${pos}`}
-                disabled={disabled}
                 onClick={() => {
                   if (items.length === 1) {
                     pendingFocusRef.current = { type: "append" };
@@ -301,7 +291,7 @@ export function ParamInput({
                   const next = items.filter((_, i) => i !== idx);
                   onChange(next);
                 }}
-                className="rounded-md border p-1.5 text-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                className="rounded-md border p-1.5 text-xs focus-visible:outline-none focus-visible:ring-2"
                 style={{ borderColor: "var(--border)", color: "var(--ink)" }}
               >
                 ✕
@@ -313,11 +303,10 @@ export function ParamInput({
           ref={appendRef}
           type="button"
           aria-label={`add ${name}`}
-          disabled={disabled}
           onClick={() => {
             onChange([...items, ""]);
           }}
-          className="self-start rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+          className="self-start rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
           style={{ borderColor: "var(--border)", color: "var(--ink)" }}
         >
           + Add
@@ -330,7 +319,6 @@ export function ParamInput({
     <input
       type="text"
       aria-label={label}
-      disabled={disabled}
       value={value !== undefined ? String(value) : ""}
       onChange={(e) => onChange(e.target.value)}
       className={inputClass}

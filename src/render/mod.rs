@@ -1072,10 +1072,9 @@ impl<'a> RenderContext<'a> {
                 ..
             } = item
             {
-                let val = self
-                    .data
-                    .get(rep_name)
-                    .ok_or_else(|| AppError::missing_field(rep_name))?;
+                let Some(val) = self.data.get(rep_name) else {
+                    continue;
+                };
                 if let Some(elements) = val.as_array() {
                     for (elem_idx, elem) in elements.iter().enumerate() {
                         let elem_str = value_to_string(elem);
@@ -1411,6 +1410,9 @@ impl<'a> RenderContext<'a> {
                     return Ok(([None, None], None));
                 }
                 let payload = self.resolve_item_text(value)?;
+                if payload.is_empty() {
+                    return Ok((per_axis((0.0, 0.0)), None));
+                }
                 let module_size = params.as_ref().and_then(|p| p.module_size);
                 let m = module_size.ok_or_else(|| {
                     AppError::unsupported_layout_item(
@@ -1451,33 +1453,9 @@ impl<'a> RenderContext<'a> {
                 if !demands[0] && !demands[1] {
                     return Ok(([None, None], None));
                 }
-                let (bytes, fmt) = match (src.as_deref(), name.as_deref()) {
-                    (Some(src_str), _) => {
-                        let resolved_src = helpers::interpolate(
-                            src_str,
-                            self.data,
-                            self.env.settings,
-                            self.env.datetime,
-                            self.instants,
-                        )?;
-                        helpers::resolve_image_asset(&helpers::assets_root(), &resolved_src)?
-                    }
-                    (_, Some(name_str)) => {
-                        let value = self
-                            .data
-                            .get(name_str)
-                            .ok_or_else(|| AppError::missing_field(name_str))?;
-                        if matches!(value, JsonValue::Array(_)) {
-                            return Err(AppError::field_value_not_scalar(name_str));
-                        }
-                        helpers::parse_image_data_uri(&helpers::value_to_string(value))?
-                    }
-                    (None, None) => {
-                        return Err(AppError::unsupported_layout_item(
-                            Reason::ImageSourceMissing,
-                            format!("at {path}: image missing source"),
-                        ));
-                    }
+                let Some((bytes, fmt)) = self.resolve_image(src.as_deref(), name.as_deref())?
+                else {
+                    return Ok((per_axis((0.0, 0.0)), None));
                 };
 
                 let extents = match fmt {
@@ -1945,6 +1923,9 @@ impl<'a> RenderContext<'a> {
         params: &Option<crate::models::QrParams>,
         pbox: PlacedBox,
     ) -> Result<(), AppError> {
+        if payload.is_empty() {
+            return Ok(());
+        }
         let top = pbox.y + pbox.h;
         let dx = format_length(pbox.x, self.unit)?;
         let dy = format_length(pbox.frame.1 - top, self.unit)?;
@@ -1968,6 +1949,44 @@ impl<'a> RenderContext<'a> {
         Ok(())
     }
 
+    /// The image an item names, or `None` when its source resolves to the empty string (layout spec,
+    /// "The image item": such an image draws nothing).
+    fn resolve_image(
+        &self,
+        src: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<Option<(Vec<u8>, helpers::ImageFmt)>, AppError> {
+        let source = match (src, name) {
+            (Some(src), _) => interpolate(
+                src,
+                self.data,
+                self.env.settings,
+                self.env.datetime,
+                self.instants,
+            )?,
+            (_, Some(name)) => match self.data.get(name) {
+                None => String::new(),
+                Some(JsonValue::Array(_)) => return Err(AppError::field_value_not_scalar(name)),
+                Some(value) => value_to_string(value),
+            },
+            (None, None) => {
+                return Err(AppError::unsupported_layout_item(
+                    Reason::ImageSourceMissing,
+                    "image requires src or name",
+                ))
+            }
+        };
+        if source.is_empty() {
+            return Ok(None);
+        }
+        let image = if src.is_some() {
+            resolve_image_asset(&assets_root(), &source)?
+        } else {
+            parse_image_data_uri(&source)?
+        };
+        Ok(Some(image))
+    }
+
     fn render_image_item(
         &self,
         out: &mut String,
@@ -1977,33 +1996,8 @@ impl<'a> RenderContext<'a> {
         fit: &Fit,
         pbox: PlacedBox,
     ) -> Result<(), AppError> {
-        let (bytes, fmt) = match (src, name) {
-            (Some(src), _) => {
-                let resolved_src = interpolate(
-                    src,
-                    self.data,
-                    self.env.settings,
-                    self.env.datetime,
-                    self.instants,
-                )?;
-                resolve_image_asset(&assets_root(), &resolved_src)?
-            }
-            (_, Some(name)) => {
-                let value = self
-                    .data
-                    .get(name)
-                    .ok_or_else(|| AppError::missing_field(name))?;
-                if matches!(value, JsonValue::Array(_)) {
-                    return Err(AppError::field_value_not_scalar(name));
-                }
-                parse_image_data_uri(&value_to_string(value))?
-            }
-            (None, None) => {
-                return Err(AppError::unsupported_layout_item(
-                    Reason::ImageSourceMissing,
-                    "image requires src or name",
-                ))
-            }
+        let Some((bytes, fmt)) = self.resolve_image(src, name)? else {
+            return Ok(());
         };
         let top = pbox.y + pbox.h;
         let vpath = self.images.borrow_mut().add(fmt.ext(), bytes);
@@ -2213,7 +2207,7 @@ mod tests {
     use crate::reason::Reason;
     use crate::templates::{TemplateContent, TemplateDefinition};
     use indexmap::IndexMap;
-    use serde_json::json;
+    use serde_json::{json, Value as JsonValue};
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     fn render_test_items(items: &[LayoutItem], frame: (f32, f32)) -> Result<String, AppError> {
@@ -4731,7 +4725,7 @@ layout:
         let labels = vec![
             sheet_label("a"),
             LabelInput {
-                data: HashMap::new(),
+                data: HashMap::from([("message".to_string(), json!(["a", "b"]))]),
             },
         ];
         let err = render_sheet_pages(
@@ -4992,10 +4986,10 @@ layout:
     }
 
     #[test]
-    fn render_image_missing_data_errors() {
+    fn render_image_absent_data_draws_nothing() {
         let template = image_single_template();
         let data = HashMap::new();
-        assert!(render_single_label(&template, &data, &no_settings(), &no_datetime()).is_err());
+        assert!(render_single_label(&template, &data, &no_settings(), &no_datetime()).is_ok());
     }
 
     #[test]
@@ -7858,7 +7852,7 @@ layout:
     }
 
     #[test]
-    fn inactive_when_branch_does_not_require_missing_fields_during_measure_or_render() {
+    fn an_inactive_branch_is_neither_measured_nor_rendered() {
         let yaml = r#"
 name: When Lazy Test
 unit: mm
@@ -7885,18 +7879,18 @@ layout:
     size: [content, 18]
     font_size: { min: 8, max: 24 }
     when: { orientation: h }
-  - type: text
+  - type: qr
     value: "{v_text}"
     at: [0, 0]
-    size: [content, 18]
-    font_size: { min: 8, max: 24 }
+    size: [content, content]
+    params: { module_size: 0.5 }
     when: { orientation: v }
 "#;
         let template = parse_and_validate(yaml).unwrap();
         let mut data = HashMap::new();
         data.insert("orientation".to_string(), json!("h"));
         data.insert("h_text".to_string(), json!("Horizontal only"));
-        // v_text is omitted; must succeed without missing_field
+        data.insert("v_text".to_string(), json!("A".repeat(8000)));
 
         let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(
@@ -7905,31 +7899,114 @@ layout:
         );
     }
 
-    #[test]
-    fn active_branch_missing_field_returns_422_missing_field() {
+    /// A label holding `items` after a fixed text, with `code` and `photo` declared and never supplied.
+    fn empty_content_label(items: &str) -> TemplateContent {
         let yaml = r#"
-name: Active Missing Test
+name: Empty Content
+unit: mm
+dpi: 200
+params:
+  - name: code
+    type: string
+  - name: photo
+    type: string
+format: { type: single, width: 60, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 20]
+    flow: { direction: row }
+    items:
+      #ITEMS
+      - type: text
+        value: "after"
+        size: [content, content]
+        font_size: 8
+"#
+        .replace("      #ITEMS\n", items);
+        parse_and_validate(&yaml).unwrap()
+    }
+
+    fn render_empty(t: &TemplateContent) -> Vec<u8> {
+        render_single_label(t, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap()
+    }
+
+    #[test]
+    fn an_empty_qr_takes_no_room_and_draws_nothing() {
+        let qr = "      - type: qr\n        value: \"{code}\"\n        size: [content, content]\n        params: { module_size: 0.5 }\n";
+        assert_eq!(
+            render_empty(&empty_content_label(qr)),
+            render_empty(&empty_content_label(""))
+        );
+    }
+
+    #[test]
+    fn an_empty_image_src_draws_nothing_in_its_box() {
+        let image = "      - type: image\n        src: \"{photo}\"\n        size: [15, 15]\n";
+        // An authored image box keeps its room, so its reference is an empty 15 x 15 container.
+        let spacer = "      - type: container\n        size: [15, 15]\n        items: []\n";
+        assert_eq!(
+            render_empty(&empty_content_label(image)),
+            render_empty(&empty_content_label(spacer))
+        );
+    }
+
+    #[test]
+    fn an_absent_token_renders_as_empty_text() {
+        let yaml = r#"
+name: Absent Token
 unit: mm
 dpi: 200
 params:
   - name: message
     type: string
-format:
-  type: single
-  height: 18
-  width: 60
+format: { type: single, width: 60, height: 18 }
 layout:
   - type: text
-    value: "{message}"
+    value: "[{message}]"
     at: [0, 0]
     size: [60, 18]
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let data = HashMap::new(); // message omitted
+        let empty = HashMap::from([("message".to_string(), json!(""))]);
+        let render = |data: &HashMap<String, JsonValue>| {
+            render_single_label(&template, data, &BTreeMap::new(), &resolver()).unwrap()
+        };
+        assert_eq!(render(&HashMap::new()), render(&empty));
+    }
 
-        let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
-        assert!(matches!(res, Err(err) if err.reason() == Some("missing_field")));
+    #[test]
+    fn an_absent_repeated_list_draws_no_instance() {
+        let yaml = r#"
+name: Absent Repeat
+unit: mm
+dpi: 200
+params:
+  - name: tags
+    type: list
+format: { type: single, width: 60, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 20]
+    flow: { direction: row, gap: 1 }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        items:
+          - type: text
+            value: "{tags}"
+            size: [content, content]
+            font_size: 8
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let empty = HashMap::from([("tags".to_string(), json!([]))]);
+        let render = |data: &HashMap<String, JsonValue>| {
+            render_single_label(&template, data, &BTreeMap::new(), &resolver()).unwrap()
+        };
+        assert_eq!(render(&HashMap::new()), render(&empty));
     }
 
     #[test]

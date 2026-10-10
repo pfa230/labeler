@@ -2,11 +2,11 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { pruneDataForSubmit, setOwnKey, seedDefaultValue } from "../../lib/labelInputs";
+import { pruneDataForSubmit } from "../../lib/labelInputs";
 import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../../api/client";
 import { usePrinters, useSettings } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
-import type { Param, ParamValue, PrintSummary, TemplateDetail } from "../../api/types";
+import type { PrintSummary, TemplateDetail } from "../../api/types";
 import { PreviewPane } from "../../components/PreviewPane";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
@@ -18,41 +18,14 @@ const MIN_COPIES = 1;
 const MAX_COPIES = 100;
 const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Math.floor(Number.isFinite(n) ? n : 1)));
 
-// A checkbox starts at its published default, else unchecked, and is never deferred. Any other
-// parameter publishing a default is seeded from it and starts deferred: the template decides it until
-// an operator says otherwise. An undefaulted list seeds an empty array into data so the untouched
-// editor is submittable, without being deferred. Any other parameter publishing no default is absent
-// from both maps, which is not the same as holding an empty value or a `false` deferral.
-function initialFieldState(params: Param[]): Pick<FormValue, "data" | "deferred"> {
-  const data: Record<string, ParamValue> = {};
-  const deferred: Record<string, boolean> = {};
-  for (const param of params) {
-    if (param.control === "checkbox") {
-      setOwnKey(data, param.name, param.default === true);
-    } else if (param.default !== undefined && param.default !== null) {
-      setOwnKey(data, param.name, seedDefaultValue(param));
-      setOwnKey(deferred, param.name, true);
-    } else if (param.control === "list") {
-      setOwnKey(data, param.name, []);
-    }
-  }
-  return { data, deferred };
-}
-
 export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
-  const [value, setValue] = useState<FormValue>(() => ({
-    ...initialFieldState(detail.params),
-    printer: undefined,
-    startSlot: 0,
-  }));
+  const [value, setValue] = useState<FormValue>({ data: {}, printer: undefined, startSlot: 0 });
 
-  // Selecting a different template reinitialises BOTH values and deferral from the new template's
-  // parameters: a name both templates declare must carry nothing across, or template A's value would
-  // sit in a disabled control while the render resolved B's default.
+  // Values belong to the template they were entered for.
   const [renderedTemplateId, setRenderedTemplateId] = useState(detail.id);
   if (renderedTemplateId !== detail.id) {
     setRenderedTemplateId(detail.id);
-    setValue((prev) => ({ ...prev, ...initialFieldState(detail.params) }));
+    setValue((prev) => ({ ...prev, data: {} }));
   }
   const [fmt, setFmt] = useState<"png" | "pdf">("png");
   const [copies, setCopies] = useState(1);
@@ -82,7 +55,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
 
   const isSheet = detail.format.type === "sheet";
   const startSlot = isSheet ? value.startSlot : undefined;
-  const submittedData = pruneDataForSubmit(value.data, detail.params, value.deferred);
+  const submittedData = pruneDataForSubmit(value.data, detail.params);
   const label = { data: submittedData };
 
   const preview = useLivePreview(

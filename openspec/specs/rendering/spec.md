@@ -85,8 +85,8 @@ A `sheet` batch SHALL fill the sheet's `positions` in declared order with labels
 
 #### Scenario: Two labels failing different ways
 
-- **WHEN** label 0 carries an undeclared key and label 1 omits a parameter with no default that an active item reads
-- **THEN** the response is `422 BatchInvalid` with index 0 reason `data_key_unknown` and index 1 reason `missing_field`, and no ZIP
+- **WHEN** label 0 carries an undeclared key and label 1 sends `abc` for an `integer` parameter
+- **THEN** the response is `422 BatchInvalid` with index 0 reason `data_key_unknown` and index 1 reason `param_value_invalid`, and no ZIP
 
 ### Requirement: Print summary
 

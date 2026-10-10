@@ -740,7 +740,7 @@ layout:
     assert_eq!(err_zero.reason(), Some("item_out_of_frame"));
     assert!(err_zero.message_text().contains("items[0]"));
 
-    // A text child interpolating a missing field fails with missing_field whether extent is zero or not
+    // A text child interpolating an absent field reads it as the empty string
     let yaml_missing_param = r#"
 name: Missing Field In Flow
 unit: mm
@@ -761,14 +761,17 @@ layout:
         font_size: 8
 "#;
     let t_missing = parse_and_validate(yaml_missing_param).unwrap();
-    let err_missing = render_single_label_image(
-        &t_missing,
-        &HashMap::new(),
-        &resolve_environment(&t_missing, &vars, &dt).unwrap(),
-        opts,
-    )
-    .unwrap_err();
-    assert_eq!(err_missing.reason(), Some("missing_field"));
+    let render_missing = |data: &HashMap<String, serde_json::Value>| {
+        render_single_label_image(
+            &t_missing,
+            data,
+            &resolve_environment(&t_missing, &vars, &dt).unwrap(),
+            opts,
+        )
+        .unwrap()
+    };
+    let blank = HashMap::from([("unsupplied_variable".to_string(), serde_json::json!(""))]);
+    assert_eq!(render_missing(&HashMap::new()), render_missing(&blank));
 
     // 4. A quarter turn packs in author space
     let yaml_turn_flow = r#"

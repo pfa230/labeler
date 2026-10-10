@@ -51,7 +51,6 @@ reasons! {
     DimensionExceedsLimit => "dimension_exceeds_limit",
     CircleBoxNotSquare => "circle_box_not_square",
     FieldValueNotScalar => "field_value_not_scalar",
-    MissingField => "missing_field",
     QrPayloadInvalid => "qr_payload_invalid",
 
     // InvalidRequest

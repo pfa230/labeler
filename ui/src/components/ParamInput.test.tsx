@@ -47,26 +47,7 @@ describe("ParamInput", () => {
     await waitFor(() => expect(onChange).toHaveBeenCalled());
   });
 
-  it("drops a file read that finishes after the entry was deferred again", async () => {
-    const onChange = vi.fn();
-    const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
-    const { rerender } = render(
-      <ParamInput name="logo" spec={spec} value="" onChange={onChange} />,
-    );
-
-    const input = screen.getByLabelText("Logo") as HTMLInputElement;
-    const file = new File(["fake-image"], "logo.png", { type: "image/png" });
-    fireEvent.change(input, { target: { files: [file] } });
-
-    // Re-checking "Use default" while the read is in flight: the chooser is cleared and the control
-    // disabled before the reader resolves.
-    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} disabled={true} />);
-
-    await new Promise((r) => setTimeout(r, 50));
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("clears the file input selection when value is reset or disabled", async () => {
+  it("clears the file input selection when value is reset", async () => {
     const onChange = vi.fn();
     const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
     const { rerender } = render(
@@ -81,10 +62,31 @@ describe("ParamInput", () => {
     rerender(<ParamInput name="logo" spec={spec} value="data:image/png;base64,..." onChange={onChange} />);
     expect(screen.getByText("image selected")).toBeInTheDocument();
 
-    // Now reset value and disable (simulating re-checking the Use default checkbox)
-    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} disabled={true} />);
+    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} />);
     expect(screen.queryByText("image selected")).not.toBeInTheDocument();
     expect(input.value).toBe("");
+  });
+
+  it("clears a held image back to blank", () => {
+    const onChange = vi.fn();
+    const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
+    render(<ParamInput name="logo" spec={spec} value="data:image/png;base64,AAAA" onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "clear Logo" }));
+    expect(onChange).toHaveBeenCalledWith("");
+  });
+
+  it("clears the held image when a selection is cancelled", () => {
+    const onChange = vi.fn();
+    const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
+    render(<ParamInput name="logo" spec={spec} value="data:image/png;base64,AAAA" onChange={onChange} />);
+    fireEvent.change(screen.getByLabelText("Logo"), { target: { files: [] } });
+    expect(onChange).toHaveBeenCalledWith("");
+  });
+
+  it("offers no clear action while no image is held", () => {
+    const spec: Param = { name: "logo", type: "string", control: "image", description: "Logo" };
+    render(<ParamInput name="logo" spec={spec} value={undefined} onChange={() => {}} />);
+    expect(screen.queryByRole("button", { name: "clear Logo" })).not.toBeInTheDocument();
   });
 
   it("renders a number input when min or max is not specified", () => {
@@ -147,14 +149,33 @@ describe("ParamInput", () => {
     expect(onChange).toHaveBeenCalledWith("vertical");
   });
 
-  it("disables the input when disabled prop is true", () => {
-    const spec: Param = { name: "dis", type: "string", control: "text", description: "Disabled Field" };
-    render(
-      <ParamInput name="dis" spec={spec} value="" onChange={vi.fn()} disabled={true} />,
-    );
+  it("starts an unset checkbox at its default", () => {
+    render(<ParamInput name="bold" spec={{ name: "bold", type: "boolean", control: "checkbox", default: true }} value={undefined} onChange={() => {}} />);
+    expect((screen.getByRole("checkbox", { name: "bold" }) as HTMLInputElement).checked).toBe(true);
+  });
 
-    const input = screen.getByRole("textbox", { name: "Disabled Field" });
-    expect(input).toBeDisabled();
+  it("offers a selectable blank first option naming the default", () => {
+    const onChange = vi.fn();
+    render(
+      <ParamInput
+        name="size"
+        spec={{ name: "size", type: "enum", control: "select", values: ["small", "large"], default: "large" }}
+        value="small"
+        onChange={onChange}
+      />,
+    );
+    const select = screen.getByLabelText("size") as HTMLSelectElement;
+    const options = [...select.options].map((o) => [o.value, o.textContent, o.disabled]);
+    expect(options).toEqual([["", "(default: large)", false], ["small", "small", false], ["large", "large", false]]);
+    fireEvent.change(select, { target: { value: "" } });
+    expect(onChange).toHaveBeenCalledWith("");
+  });
+
+  it("shows the blank option for an unset select with no default", () => {
+    render(<ParamInput name="size" spec={{ name: "size", type: "enum", control: "select", values: ["small"] }} value={undefined} onChange={() => {}} />);
+    const select = screen.getByLabelText("size") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(select.options[0].textContent).toBe("");
   });
 
   it("renders a date input for datetime parameter without time", () => {
@@ -183,27 +204,6 @@ describe("ParamInput", () => {
 
     fireEvent.change(input, { target: { value: "2026-08-19T16:45" } });
     expect(onChange).toHaveBeenCalledWith("2026-08-19T16:45");
-  });
-
-  it("renders a select with placeholder when value and default are undefined", () => {
-    const onChange = vi.fn();
-    const spec: Param = { name: "choice", type: "enum", control: "select", values: ["a", "b"], description: "Choice" };
-    render(<ParamInput name="choice" spec={spec} value={undefined} onChange={onChange} />);
-
-    const select = screen.getByRole("combobox", { name: "Choice" }) as HTMLSelectElement;
-    expect(select).toBeInTheDocument();
-    expect(select.value).toBe("");
-    expect(screen.getByText("Select...")).toBeInTheDocument();
-  });
-
-  it("does not substitute a default for an unset select", () => {
-    const onChange = vi.fn();
-    const spec: Param = { name: "choice", type: "enum", control: "select", values: ["a", "b"], default: "a" };
-    render(<ParamInput name="choice" spec={spec} value={undefined} onChange={onChange} />);
-
-    const select = screen.getByRole("combobox", { name: "choice" }) as HTMLSelectElement;
-    expect(select.value).toBe("");
-    expect(screen.getByText("Select...")).toBeInTheDocument();
   });
 
   it("renders the list editor, and an undefined value renders zero rows without crashing", () => {
@@ -501,33 +501,6 @@ describe("ParamInput", () => {
     expect(screen.getByRole("button", { name: "remove codes 1" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "remove codes 2" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "add codes" })).toBeInTheDocument();
-  });
-
-  it("disables every control in the editor when disabled is true, while showing row values", () => {
-    render(
-      <ParamInput
-        name="tags"
-        spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
-        value={["ALPHA", "BETA"]}
-        disabled={true}
-        onChange={() => {}}
-      />,
-    );
-
-    const input1 = screen.getByRole("textbox", { name: "tags 1" }) as HTMLInputElement;
-    const input2 = screen.getByRole("textbox", { name: "tags 2" }) as HTMLInputElement;
-    expect(input1.value).toBe("ALPHA");
-    expect(input2.value).toBe("BETA");
-    expect(input1).toBeDisabled();
-    expect(input2).toBeDisabled();
-
-    expect(screen.getByRole("button", { name: "move tags 1 earlier" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "move tags 1 later" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "move tags 2 earlier" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "move tags 2 later" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "remove tags 1" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "remove tags 2" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "add tags" })).toBeDisabled();
   });
 
   it("places focus on the moved element's new row under native event dispatch", async () => {

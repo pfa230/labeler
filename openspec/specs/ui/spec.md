@@ -72,8 +72,8 @@ A screen collecting label data SHALL offer one control per parameter in the temp
 
 #### Scenario: A refused row is marked
 
-- **WHEN** a grid run's row 3 leaves blank an `integer` parameter with no default that an active item reads
-- **THEN** the run fails and row 3 shows the `missing_field` failure naming that parameter
+- **WHEN** a grid run's row 3 holds `abc`, loaded from a CSV, for an `integer` parameter
+- **THEN** the run fails and row 3 shows the `param_value_invalid` failure naming that parameter
 
 ### Requirement: Parameter controls
 
@@ -87,7 +87,7 @@ Each parameter's control SHALL be labelled with its `description`, else its `nam
 | `checkbox` | two-state checkbox starting at the parameter's default | same |
 | `select` | a blank first option (showing the default when there is one), then the declared `values` | same, plus a held value outside `values` |
 | `date`, `datetime` | date or date-and-time picker | same |
-| `image` | image file chooser | read-only mark that a value is held |
+| `image` | image file chooser, with a clear action while it holds a value | read-only mark that a value is held |
 | `list` | editor of text elements the operator can add, remove and reorder | read-only (see "List values in the grids") |
 
 A print form field for a parameter with a default SHALL start blank and show the default as its hint, except a checkbox, which has no blank state and starts at its default. Grid cells SHALL be editable in place.
@@ -99,17 +99,17 @@ A print form field for a parameter with a default SHALL start blank and show the
 
 ### Requirement: What a screen submits
 
-A screen SHALL submit, per label, the value of every control holding one. A blank control SHALL be omitted, so the service applies the default (`parameters`), except that a `text`, `textarea` or `image` control of a parameter with no default SHALL send `""`. A checkbox SHALL always send its value. A `list` value SHALL be sent as an array, `[]` included, its elements in order without trimming, dropping empties or de-duplicating. The print form SHALL send its label repeated `copies` times; every screen SHALL print through `POST /api/print` and download through `POST /api/render`. After a print, the screen SHALL report how many labels were sent to the printer and show each failed label with its error.
+A screen SHALL submit, per label, the value of every control holding one. A blank control SHALL be omitted, so the service applies the default or reads the parameter as empty (`parameters`). A checkbox SHALL always send its value. A `list` value SHALL be sent as an array, `[]` included, its elements in order without trimming, dropping empties or de-duplicating. The print form SHALL send its label repeated `copies` times; every screen SHALL print through `POST /api/print` and download through `POST /api/render`. After a print, the screen SHALL report how many labels were sent to the printer and show each failed label with its error.
 
 #### Scenario: A blank defaulted field is omitted
 
 - **WHEN** the operator leaves `title` (`default: "Untitled"`) blank and prints
 - **THEN** the submitted `data` carries no `title`
 
-#### Scenario: Cleared numeric versus cleared text
+#### Scenario: Cleared controls are omitted
 
 - **WHEN** the operator clears an `integer` control and a `text` control, neither parameter declaring a default
-- **THEN** the submitted `data` omits the integer's name and carries the text's name as `""`
+- **THEN** the submitted `data` carries neither name
 
 #### Scenario: Edits reach the array
 

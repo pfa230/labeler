@@ -271,13 +271,12 @@ Governing specs: [parameters](../openspec/specs/parameters/spec.md), [interpolat
 
 ## Troubleshooting
 
-Load refuses whatever the template alone shows to be wrong; on an auto-length label it checks geometry against `width.max`. A template that loads can still fail every request, when it reads a variable or format name the server lacks (`reference_unresolved`), or one request, when that request's data is missing or unusable, or produces a width the layout cannot live in. Match on `error.code` and `error.details.reason`, never on the message ([errors](../openspec/specs/errors/spec.md)).
+Load refuses whatever the template alone shows to be wrong; on an auto-length label it checks geometry against `width.max`. A template that loads can still fail every request, when it reads a variable or format name the server lacks (`reference_unresolved`), or one request, when that request's data is unusable, or produces a width the layout cannot live in. Match on `error.code` and `error.details.reason`, never on the message ([errors](../openspec/specs/errors/spec.md)).
 
 | Symptom or reason | Fix |
 | --- | --- |
 | Template missing, listed under `broken` | Read its message: it names the key or the item path (`layout[0].items[2]`). Fix, then reload. |
-| `template_validation_failed` | Follow the key or item path in the message. Common: a misspelled, misplaced or `null` key, geometry past `width.max`, `size` and `to` together or neither, a `when:` naming an undeclared parameter, a `qr` sized `content` without `module_size`, an unbalanced brace (write literal braces as `{{` and `}}`). |
-| `missing_field` | Supply the named field, or declare a `default:`. |
+| `template_validation_failed` | Follow the key or item path in the message. Common: a misspelled, misplaced or `null` key, geometry past `width.max`, `size` and `to` together or neither, a `when:` naming an undeclared parameter, a `qr` sized `content` without `module_size`, a `size` or `font_weight` reference to a parameter with no `default:`, an unbalanced brace (write literal braces as `{{` and `}}`). |
 | `reference_unresolved` | The template reads something the server lacks, so every request for it fails until fixed: for `vars.x` set the variable, for a format name add it to `datetime_formats`, and for a parameter name fix what its tokened `default:` resolves to. |
 | `data_key_unknown` | The request sends a key the template does not declare. Declare it or drop it. |
 | `param_value_invalid` | Send a value the parameter's type accepts: one of an enum's `values`, a number within `min`/`max`, a whole number for `integer`. |

@@ -171,13 +171,16 @@ describe("CSV Import screen", () => {
     await waitFor(() => expect(print).toBeEnabled());
   });
 
-  it("disables Run above the 500-label cap", async () => {
+  it("keeps Download enabled above the 500-label cap and shows the service's refusal", async () => {
+    fetchMock = stubFetch(() => json({ error: { code: "PayloadTooLarge", message: "batch exceeds 500 labels" } }, 413));
+    vi.stubGlobal("fetch", fetchMock);
     renderPage();
     await loadTemplateAndCsv();
-    const copies = screen.getByLabelText(/copies/i) as HTMLInputElement;
-    fireEvent.change(copies, { target: { value: "300" } }); // 2 rows x 300 = 600 > 500
-    await waitFor(() => expect(screen.getByRole("button", { name: /download/i })).toBeDisabled());
-    expect(screen.getByText(/over the 500/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "300" } }); // 2 rows x 300
+    const download = screen.getByRole("button", { name: /download/i });
+    expect(download).toBeEnabled();
+    fireEvent.click(download);
+    expect(await screen.findByText(/batch exceeds 500 labels/)).toBeInTheDocument();
   });
 
   it("prints and annotates rows from the summary", async () => {
@@ -212,7 +215,7 @@ describe("CSV Import screen", () => {
   it("maps a 422 BatchInvalid failure to its row and shows a form error", async () => {
     fetchMock = stubFetch(() =>
       json(
-        { error: { code: "BatchInvalid", message: "row invalid", details: { failures: [{ index: 0, code: "UnsupportedLayoutItem", message: "missing sku", details: { reason: "missing_field", field: "sku" } }] } } },
+        { error: { code: "BatchInvalid", message: "row invalid", details: { failures: [{ index: 0, code: "InvalidRequest", message: "bad sku", details: { reason: "param_value_invalid", param: "sku" } }] } } },
         422,
       ),
     );
@@ -223,10 +226,10 @@ describe("CSV Import screen", () => {
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
     // index 0 maps to the first CSV row (sku=1): the annotation lands on that row.
-    const failedRow = (await screen.findByText(/failed: missing sku/i)).closest('[role="row"]') as HTMLElement;
+    const failedRow = (await screen.findByText(/failed: bad sku/i)).closest('[role="row"]') as HTMLElement;
     expect(within(failedRow).getByDisplayValue("1")).toBeInTheDocument();
-    // a form-level error in the sticky action bar (not the row annotation, which reads "failed: missing sku").
-    expect(screen.getByText("missing sku", { selector: "span" })).toBeInTheDocument();
+    // a form-level error in the sticky action bar (not the row annotation, which reads "failed: bad sku").
+    expect(screen.getByText("bad sku", { selector: "span" })).toBeInTheDocument();
   });
 
   it("blocks a malformed CSV from being submitted", async () => {
@@ -521,33 +524,43 @@ describe("CSV Import screen: datetime parameters", () => {
     expect(await screen.findByRole("button", { name: /download/i })).not.toBeDisabled();
   });
 
-  it("flags an unparseable datetime cell and blocks the run", async () => {
+  it("sends an unparseable datetime cell to the service as held", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     renderPage();
     await loadCsv("not a date");
-
     const download = await screen.findByRole("button", { name: /download/i });
-    await waitFor(() => expect(download).toBeDisabled());
+    await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
-    expect(countCalls("/api/render")).toBe(0);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(body.labels[0].data.printed_on).toBe("not a date");
   });
 
-  it("flags a datetime cell that is well-shaped but not a real date", async () => {
+  it("previews the first row when none is selected, whatever it holds", async () => {
     renderPage();
-    await loadCsv("2026-02-30");
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
-    );
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    fireEvent.change(await screen.findByLabelText(/paste csv/i), {
+      target: { value: "sku,printed_on\n1,not a date\n2,2026-08-19\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
+    const body = JSON.parse((lastCall("/api/render/label")![1] as RequestInit).body as string);
+    expect(body.data.sku).toBe("1");
   });
 
-  it("flags an unparseable cell on a date control and blocks the run", async () => {
+  it("sends an unparseable date-control cell to the service as held", async () => {
     dtControl = "date";
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     renderPage();
     await loadCsv("not a date");
-
     const download = await screen.findByRole("button", { name: /download/i });
-    await waitFor(() => expect(download).toBeDisabled());
+    await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
-    expect(countCalls("/api/render")).toBe(0);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(body.labels[0].data.printed_on).toBe("not a date");
   });
 
   it("skips list parameters when building grid columns and does not break import", async () => {
@@ -794,60 +807,20 @@ describe("issue-386: sheet preview", () => {
     expect(document.activeElement).toBe(picker);
   });
 
-  // A row the grid refuses is one holding a datetime it cannot parse; the CSV is the only way to put
-  // such a value into a cell, since the picker itself only produces well-formed ones.
-  const datedSheet = {
-    ...sheetDetail,
-    params: [
-      { name: "sku", type: "string", control: "text" },
-      { name: "printed_on", type: "datetime", control: "datetime", time: true },
-    ],
-  };
-
-  it("5.3 Sheet template with one row holding an unparseable datetime: no /api/render request, no <object>, pane reads Fix row N to preview the sheet.; fixing the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
-    const capturedBatchBodies: BatchPayload[] = [];
-    await loadSheetAndCsv("sku,printed_on\n1,\n2,not a date\n", {
-      templateDetails: { "sheet-tpl": datedSheet },
+  it("previews a sheet whose row holds an unparseable datetime, sending the value as held", async () => {
+    const captured: BatchPayload[] = [];
+    await loadSheetAndCsv("sku,printed_on\n1,not a date\n", {
+      templateDetails: {
+        "sheet-tpl": { ...sheetDetail, params: [...sheetDetail.params, { name: "printed_on", type: "datetime", control: "date" }] },
+      },
       batch: (body) => {
-        capturedBatchBodies.push(body);
-        return new Response(new Blob(["%PDF"]), {
-          status: 200,
-          headers: { "content-type": "application/pdf" },
-        });
+        captured.push(body);
+        return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
       },
     });
-
-    await waitFor(() => {
-      expect(screen.getByText("Fix row 2 to preview the sheet.")).toBeInTheDocument();
-    });
-    await new Promise((r) => setTimeout(r, 400));
-    expect(document.querySelector("object")).toBeNull();
-    expect(capturedBatchBodies.length).toBe(0);
-
-    const grid = screen.getByRole("grid", { name: /label rows/i });
-    const pickers = within(grid).getAllByLabelText("edit printed_on");
-    fireEvent.change(pickers[1], { target: { value: "2026-08-19T10:00" } });
-    await waitFor(() => {
-      expect(capturedBatchBodies.length).toBe(1);
-    });
-    expect(capturedBatchBodies[0].labels).toEqual([
-      { data: { sku: "1" } },
-      { data: { sku: "2", printed_on: "2026-08-19T10:00" } },
-    ]);
-    await waitFor(() => {
-      expect(document.querySelector("object")).not.toBeNull();
-    });
-  });
-
-  it("5.4 Sheet template with a 5-row grid whose rows 2 and 5 are invalid: pane reads exactly Fix rows 2, 5 to preview the sheet. and the text does not begin with Preview failed", async () => {
-    await loadSheetAndCsv("sku,printed_on\n1,\n2,nope\n3,\n4,\n5,2026-02-30\n", {
-      templateDetails: { "sheet-tpl": datedSheet },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("Fix rows 2, 5 to preview the sheet.")).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/Preview failed/)).toBeNull();
+    await waitFor(() => expect(captured.length).toBe(1));
+    expect(captured[0].labels).toEqual([{ data: { sku: "1", printed_on: "not a date" } }]);
+    expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled();
   });
 
   it("5.5 Sheet template with 2 rows and copies set to 300: no /api/render request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
@@ -1020,6 +993,25 @@ describe("issue-413: Import reads the published parameter list", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("draws the template's columns before any row exists, and keeps them after the last row goes", async () => {
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const declared = () =>
+      within(screen.getByRole("grid", { name: /label rows/i }))
+        .getAllByRole("columnheader")
+        .map((h) => h.textContent)
+        .filter((h) => paramsDetail.params.some((p) => p.name === h));
+    await screen.findByRole("grid", { name: /label rows/i });
+    expect(declared()).toEqual(["title", "subtitle", "code", "flag", "on"]);
+    fireEvent.change(screen.getByLabelText(/paste csv/i), { target: { value: "title\nx\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "remove row" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "remove row" })).not.toBeInTheDocument());
+    expect(declared()).toEqual(["title", "subtitle", "code", "flag", "on"]);
   });
 
   it("A18: draws columns from detail.params and never requests /inputs", async () => {

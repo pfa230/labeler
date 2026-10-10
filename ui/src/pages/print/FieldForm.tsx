@@ -1,14 +1,11 @@
 import type { Dispatch, SetStateAction } from "react";
 import { usePrinters } from "../../api/queries";
-import type { Param, ParamValue, TemplateDetail } from "../../api/types";
+import type { ParamValue, TemplateDetail } from "../../api/types";
 import { ParamInput } from "../../components/ParamInput";
-import { getOwnKey, seedDefaultValue } from "../../lib/labelInputs";
+import { getOwnKey } from "../../lib/labelInputs";
 
 export type FormValue = {
   data: Record<string, ParamValue>;
-  // Deferral is concrete, never inferred: a non-checkbox parameter publishing a default is present and
-  // true from the start, so what the form renders and what submission omits read one map.
-  deferred: Record<string, boolean>;
   option?: Record<string, string>;
   printer?: string;
   startSlot: number;
@@ -35,18 +32,9 @@ export function FieldForm({
   const allPrinters = printers ?? [];
 
   // Every update is applied to the latest state rather than to this render's snapshot: an image read
-  // resolves after the render that started it, and re-checking meanwhile must not be undone.
+  // resolves after the render that started it, and an edit made meanwhile must not be undone.
   const setData = (field: string, v: ParamValue) =>
     onChange((prev) => ({ ...prev, data: { ...prev.data, [field]: v } }));
-
-  // Re-checking discards whatever was entered while the checkbox was cleared, putting the control
-  // back to what the seeding rule gave it. Clearing leaves that value in place, to be submitted.
-  const toggleDeferred = (param: Param, checked: boolean) =>
-    onChange((prev) => ({
-      ...prev,
-      deferred: { ...prev.deferred, [param.name]: checked },
-      data: checked ? { ...prev.data, [param.name]: seedDefaultValue(param) } : prev.data,
-    }));
 
   const positions = detail.format.type === "sheet" ? detail.format.positions.length : 0;
   const clampSlot = (raw: string) =>
@@ -54,49 +42,28 @@ export function FieldForm({
 
   return (
     <div className="flex flex-col gap-4">
-      {detail.params.map((param) => {
-        // A checkbox always holds a value, so it has nothing to defer to.
-        const defers = param.control !== "checkbox" && param.default !== undefined && param.default !== null;
-        const isDeferred = defers && getOwnKey(value.deferred, param.name) === true;
-
-        return (
-          <div key={param.name} className="flex flex-col gap-1">
-            <div className="flex items-baseline justify-between">
-              <span className="text-sm font-medium">{param.description || param.name}</span>
-              {param.description && param.description !== param.name && (
-                <span className="font-mono text-xs" style={{ color: "var(--muted)" }}>
-                  {param.name}
-                </span>
-              )}
-            </div>
-            {defers && (
-              <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs select-none" style={{ color: "var(--muted)" }}>
-                <input
-                  type="checkbox"
-                  // The accessible name carries the parameter's `name`, which is unique within a
-                  // template, so two parameters sharing a description and a default stay
-                  // distinguishable. This label is the checkbox's own; the value control never shares it.
-                  aria-label={`Use default for ${param.name}`}
-                  checked={isDeferred}
-                  onChange={(e) => toggleDeferred(param, e.target.checked)}
-                  className="h-3.5 w-3.5 rounded border"
-                  style={{ accentColor: "var(--accent)" }}
-                />
-                <span>
-                  Use default: <span className="font-mono">{String(param.default)}</span>
-                </span>
-              </label>
+      {detail.params.map((param) => (
+        // Keyed by template too, so a control (and an image read it started) never outlives its template.
+        <div key={`${detail.id}:${param.name}`} className="flex flex-col gap-1">
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm font-medium">{param.description || param.name}</span>
+            {param.description && param.description !== param.name && (
+              <span className="font-mono text-xs" style={{ color: "var(--muted)" }}>
+                {param.name}
+              </span>
             )}
-            <ParamInput
-              name={param.name}
-              spec={param}
-              value={getOwnKey(value.data, param.name)}
-              onChange={(v) => setData(param.name, v)}
-              disabled={isDeferred}
-            />
           </div>
-        );
-      })}
+          {param.control !== "checkbox" && param.default !== undefined && (
+            <span className="text-xs" style={{ color: "var(--muted)" }}>{`default: ${String(param.default)}`}</span>
+          )}
+          <ParamInput
+            name={param.name}
+            spec={param}
+            value={getOwnKey(value.data, param.name)}
+            onChange={(v) => setData(param.name, v)}
+          />
+        </div>
+      ))}
 
       <label className="flex flex-col gap-1">
         <span className="text-sm font-medium">Printer</span>

@@ -5,7 +5,6 @@ import { useConnections, useConnectorSchema, materializeConnection, type Connect
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters, useSettings } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
-import { datetimeCellError } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, validateMapping, type FieldMapping } from "../lib/connectorRows";
 import {
   MAX_BATCH_LABELS, expandedCount, sourceRowForExpandedIndex,
@@ -15,7 +14,7 @@ import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { useSheetPreview } from "../lib/sheetPreview";
-import { getOwnKey, pruneDataForSubmit } from "../lib/labelInputs";
+import { pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../api/client";
 import { useToast } from "../app/toast-context";
 import type { TemplateDetail } from "../api/types";
@@ -191,27 +190,10 @@ function Composer({
   const isSheet = detail.format.type === "sheet";
   const positions = detail.format.type === "sheet" ? detail.format.positions.length : 0;
 
-  const cellInput = (_row: LabelGridRow, field: string) => detail.params.find((p) => p.name === field);
+  const cellInput = (field: string) => detail.params.find((p) => p.name === field);
 
-  const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
-    const field: Record<string, string> = {};
-    for (const param of detail.params) {
-      if (param.control !== "datetime" && param.control !== "date") continue;
-      const held = getOwnKey(row.data, param.name);
-      const dtErr = datetimeCellError(held !== undefined && held !== null ? String(held) : "");
-      if (dtErr) field[param.name] = dtErr;
-    }
-    return Object.keys(field).length ? { field } : {};
-  };
-
-  const rowInvalid = (row: LabelGridRow): boolean => !!validateRow(row).field;
-  const viewRows = rows.map((row) => ({ ...row, validation: validateRow(row) }));
-  const hasErrors = viewRows.some(rowInvalid);
-
-  // Keep selectedRowId pointing at a valid row. Fall back to first valid (or undefined) derived each
-  // render so no effect is needed: the canonical state is `selectedRowId`.
-  const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
-  const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
+  // The first row is previewed when none is selected or the selected one was removed.
+  const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : rows[0]?.id;
 
   const dataFor = (r: LabelGridRow) => pruneDataForSubmit(r.data, detail.params);
 
@@ -223,8 +205,7 @@ function Composer({
   const total = expandedCount(rows.length, copies);
   const overCap = total > MAX_BATCH_LABELS;
 
-  const invalidPositions = viewRows.flatMap((row, index) => (rowInvalid(row) ? [index + 1] : []));
-  const blocked = sheetPreviewBlock(invalidPositions, total);
+  const blocked = sheetPreviewBlock(total);
 
   const sheetPreview = useSheetPreview(
     { templateId: detail.id, labels: resolveLabels(rows, copies, dataFor), startSlot },
@@ -262,8 +243,6 @@ function Composer({
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
-    if (snapshot.some(rowInvalid)) { setFormError("Fix the highlighted rows before running."); return; }
-    if (expandedCount(snapshot.length, copies) > MAX_BATCH_LABELS) { setFormError(`Too many labels (over the ${MAX_BATCH_LABELS} limit).`); return; }
     const printTo = mode === "print" ? printer : undefined;
     if (mode === "print" && !printTo) { setFormError("Select a printer to print."); return; }
     setBusy(true);
@@ -333,6 +312,22 @@ function Composer({
         </div>
       </section>
 
+      <LabelGrid
+        rows={rows}
+        fields={templateFields}
+        cellInput={cellInput}
+        onRowsChange={(next, { indexes }) => {
+          const dirty = new Set(indexes);
+          commitRows(next.map((r, i) => ({ ...r, annotation: dirty.has(i) ? undefined : r.annotation })));
+          setFormError(null);
+        }}
+        onDuplicate={(id) => { commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
+        onRemove={(id) => { commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
+        disabled={busy}
+        selectedRowId={isSheet ? undefined : resolvedSelectedId}
+        onSelectRow={isSheet ? undefined : setSelectedRowId}
+      />
+
       {rows.length > 0 && (
         <>
           <div className="flex flex-wrap items-end gap-3">
@@ -359,22 +354,6 @@ function Composer({
             </label>
           </div>
 
-          <LabelGrid
-            rows={viewRows}
-            fields={templateFields}
-            cellInput={cellInput}
-            onRowsChange={(next, { indexes }) => {
-              const dirty = new Set(indexes);
-              commitRows(next.map((r, i) => ({ ...r, validation: {}, annotation: dirty.has(i) ? undefined : r.annotation })));
-              setFormError(null);
-            }}
-            onDuplicate={(id) => { commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
-            onRemove={(id) => { commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
-            disabled={busy}
-            selectedRowId={isSheet ? undefined : resolvedSelectedId}
-            onSelectRow={isSheet ? undefined : setSelectedRowId}
-          />
-
           <PreviewPane name={detail.name} format={isSheet ? "sheet" : "single"} preview={preview} />
 
           {/* An action bar over the preview has to be opaque and reach the scrollport floor.
@@ -385,8 +364,8 @@ function Composer({
               index.html asks for viewport-fit=cover, without which env() is 0 (#374).
               z-10 matches the Print page's bar. */}
           <div className="sticky -bottom-6 z-10 flex flex-wrap items-center gap-3 border-t pt-3 pb-[calc(0.75rem_+_1.5rem_+_env(safe-area-inset-bottom))]" style={{ background: "var(--paper)", borderColor: "var(--border)" }}>
-            <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer || stale} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Print</button>
-            <button type="button" onClick={() => run("download")} disabled={busy || overCap || hasErrors || stale} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Download</button>
+            <button type="button" onClick={() => run("print")} disabled={busy || !printer || stale} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Print</button>
+            <button type="button" onClick={() => run("download")} disabled={busy || stale} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Download</button>
             <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
             {overCap && <span style={{ color: "var(--bad)" }}>over the {MAX_BATCH_LABELS}-label limit</span>}
             {formError && <span style={{ color: "var(--bad)" }}>{formError}</span>}
