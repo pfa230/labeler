@@ -31,6 +31,3 @@ operations:
       - Check a task only after performing it. Do not write a task whose completion nothing can show, such as opening a rendered image.
       - A test that cannot fail is worse than no test. Before accepting one, name what would have to break for it to fail.
       - Stay inside the change's scope. Do not widen a parser or change behavior for inputs the issue never mentions.
-  archive:
-    guidance:
-      - After archiving, delete `openspec/changes/archive/`; git keeps the history. Then run the gates and commit the change as one commit with `Fixes #N`.

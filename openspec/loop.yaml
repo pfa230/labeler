@@ -1,0 +1,25 @@
+defaultBranch: main
+worktrees: .worktrees
+agents:
+  codex: [loop-codex, --ignore-user-config, -s, read-only, -c, model_reasoning_effort=high]
+  mimo: [loop-opencode, -m, openrouter/xiaomi/mimo-v2.6-flash]
+  muse: [loop-opencode, -m, meta/muse-spark-1.3-contributor]
+roles:
+  proposalReviewer: codex
+  planReviser: muse
+  implementer: mimo
+  implementationReviewer: codex
+attempts:
+  proposalReview: 3
+  implementation: 3
+checks:
+  # A run's worktree starts without dependencies; the gates below need both manifests installed.
+  - npm ci --silent && npm --prefix ui ci --silent
+  - cargo fmt --check
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo test
+  - npm --prefix ui run lint
+  - npm --prefix ui run test
+  - npm --prefix ui run build
+  - npx --no-install openspec validate --all --strict --no-interactive
+delivery: pr

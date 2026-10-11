@@ -9,7 +9,7 @@ A stateless label-rendering REST service (Rust/axum) with a React UI under `ui/`
 
 ## Work
 
-- **One issue, one worktree, one commit.** GitHub issues are the only tracker: no TODOs in code or docs, no backlog in `tasks.md`. Every piece of work gets its own worktree (`git worktree add .worktrees/issue-<N> -b issue-<N>-<slug> origin/main`), because sessions run concurrently. Never switch branches inside one.
+- **One issue, one worktree.** GitHub issues are the only tracker: no TODOs in code or docs, no backlog in `tasks.md`. Every piece of work gets its own worktree (`git worktree add .worktrees/issue-<N> -b issue-<N>-<slug> origin/main`), because sessions run concurrently. Never switch branches inside one.
 - **Claim only what you did.** Check a box or write "verified" only after performing the thing. A test that cannot fail is worse than none: before accepting one, name what would have to break for it to fail.
 - **Run artifacts** go to `.agent-runs/` at the worktree root (gitignored), never into the repository.
 
@@ -17,14 +17,12 @@ A stateless label-rendering REST service (Rust/axum) with a React UI under `ui/`
 
 The behavior contract lives in `openspec/specs/<domain>/spec.md`, one capability per domain: `templates`, `parameters`, `interpolation`, `layout`, `text`, `rendering`, `errors`, `auth`, `printing`, `settings`, `connections`, `ui`. Read only the domains your change touches. `docs/AUTHORING.md` is the human guide to writing templates; where it disagrees with the spec, the guide is wrong.
 
-**Behavior changes go through OpenSpec; nothing else does.** Behavior means labeler's API, template schema, layout, rendering, errors and UI, which is what the specs describe. The OpenSpec CLI is pinned in the root npm manifest: `npm ci`, then `npx --no-install openspec` (never a global install). In the change's worktree:
+**Behavior changes go through OpenSpec and openspec-loop; nothing else does.** Behavior means labeler's API, template schema, layout, rendering, errors and UI, which is what the specs describe. The OpenSpec CLI is pinned in the root npm manifest: `npm ci`, then `npx --no-install openspec`. openspec-loop is installed globally (`npm install -g openspec-loop`) and needs `openspec` 1.14.0 or later on `PATH`; `openspec/loop.yaml` configures it. In the change's worktree:
 
-1. `/opsx:propose` writes the proposal (with literal `Fixes #N`), delta specs, design and tasks. A person reviews the plan before implementation.
-2. `/opsx:apply` implements.
-3. `npx --no-install openspec archive <change> --yes` merges the deltas into `openspec/specs/`. Then delete `openspec/changes/archive/`: the tree holds only the current spec, and git keeps the history.
-4. Run the gates, then commit everything as one commit with `Fixes #N`.
+1. `/opsx:propose` writes the proposal (with literal `Fixes #N`), delta specs, design and tasks. A person reviews the plan, then commits it on the issue branch.
+2. `loop run <change>`, supervised through the `openspec-loop` skill, reviews the plan, implements it, runs the gates, reviews the patch, archives the change and opens a pull request. The change lands as the loop's commits, its folder kept under `openspec/changes/archive/`.
 
-A docs fix, harness change (root npm manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `openspec/config.yaml`), CI change, dependency bump or behavior-preserving refactor skips the change folder: issue, worktree, gates, one commit. So does code that catches up to a contract already in `openspec/specs/`: there is no delta to write, and the issue names the requirements it implements. Nothing checks whether a diff should have carried a delta; that judgment is yours.
+A docs fix, harness change (root npm manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `openspec/config.yaml`, `openspec/loop.yaml`), CI change, dependency bump or behavior-preserving refactor skips OpenSpec and the loop: issue, worktree, gates, one commit. So does code that catches up to a contract already in `openspec/specs/`: there is no delta to write, and the issue names the requirements it implements. Nothing checks whether a diff should have carried a delta; that judgment is yours.
 
 **Breaking changes, until 1.0.** A behavior change replaces what came before: no migration, no deprecation window, no second spelling, no explanation of the removed one. A dropped key becomes a parse error via `deny_unknown_fields`. Stored user data is the one exception: `store.rs` migrates the SQLite schema.
 
@@ -47,14 +45,15 @@ For non-trivial work, web-search current API behavior first, especially Typst, a
 
 Commit without prompting. A manual message is an imperative subject under 72 characters, a blank line, and a body that says why: the problem, and why this fix over the obvious alternative. Never inventory the diff. No `Co-Authored-By`, no "Generated with", no AI attribution of any kind.
 
-Integration needs human approval. Then, from the default-branch checkout:
+Integration needs human approval; for a loop run, that is the review of its pull request. Then, from the default-branch checkout:
 
 ```bash
 git merge --ff-only <change-branch> && git push
 git worktree remove .worktrees/<dir> && git branch -d <change-branch>
+git push origin --delete <change-branch>   # only for a pushed branch, such as a loop run's
 ```
 
-A change branch rebases onto `main` and never merges `main` into itself; if `main` moved, rebase and rerun the gates before asking for approval. Never integrate with `git merge --squash`, and never rewrite `main` or any ref another session consumes. CI on `main` runs after integration; `build` needs `[rust, ui]`, so a broken commit ships nothing until fixed forward.
+Pushing `main` with the pull request's commits marks it merged. A change branch rebases onto `main`; if `main` moved, rebase, rerun the gates, and push a pushed branch with `--force-with-lease` before asking for approval. The loop rebases by itself and merges `main` in only when the rebase conflicts. Never integrate with `git merge --squash`, and never rewrite `main` or any ref another session consumes. CI on `main` runs after integration; `build` needs `[rust, ui]`, so a broken commit ships nothing until fixed forward.
 
 ## Architecture
 
@@ -76,4 +75,5 @@ A template that parses and renders is not proof it looks right. Render to PNG (`
 
 - `CLAUDE.md` is a symlink to this file. Personal, machine-specific instructions go in the gitignored `CLAUDE.local.md`.
 - The `openspec-*` skills and `opsx` commands under `.claude/`, `.agent/`, `.agents/` and `.opencode/` are generated. Never hand-edit them: upgrade the CLI, run `openspec update --force`, review, and commit the regeneration alone.
+- The `openspec-loop` skill under `.claude/skills/` and `.agents/skills/` is copied verbatim from the installed package. After `npm update -g openspec-loop`, copy it again from the installed package's `skills/openspec-loop` and commit the copy alone.
 - Fonts: Inter loads from `fonts/InterVariable.ttf`; Typst is told to use `"Inter Variable"`/`"Inter"`.
