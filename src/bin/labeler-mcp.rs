@@ -31,28 +31,22 @@ struct Config {
 }
 
 /// Parse a service origin: absolute HTTP(S), no userinfo, query or fragment, and
-/// only the root path (empty or `/`). Anything else is a startup failure.
+/// only the root path (empty or `/`). Anything else is a startup failure. The
+/// diagnostic names the reason but never echoes the raw value, which may hold
+/// credentials.
 fn parse_origin(raw: &str) -> Result<Url, String> {
-    let url = Url::parse(raw).map_err(|e| format!("invalid LABELER_URL '{raw}': {e}"))?;
+    let url = Url::parse(raw).map_err(|e| format!("invalid LABELER_URL: {e}"))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(format!(
-            "invalid LABELER_URL '{raw}': scheme must be http or https"
-        ));
+        return Err("invalid LABELER_URL: scheme must be http or https".to_string());
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(format!(
-            "invalid LABELER_URL '{raw}': userinfo is not allowed"
-        ));
+        return Err("invalid LABELER_URL: userinfo is not allowed".to_string());
     }
     if url.query().is_some() || url.fragment().is_some() {
-        return Err(format!(
-            "invalid LABELER_URL '{raw}': query and fragment are not allowed"
-        ));
+        return Err("invalid LABELER_URL: query and fragment are not allowed".to_string());
     }
     if !(url.path().is_empty() || url.path() == "/") {
-        return Err(format!(
-            "invalid LABELER_URL '{raw}': only the root path is allowed"
-        ));
+        return Err("invalid LABELER_URL: only the root path is allowed".to_string());
     }
     Ok(url)
 }
@@ -94,7 +88,15 @@ struct PrintLabelsArgs {
     printer: String,
     labels: Vec<LabelEntry>,
     /// Present only when supplied; explicit `null` is refused (the REST spelling).
-    #[serde(default, deserialize_with = "non_null")]
+    // `required` publishes the integer's own schema and `skip_serializing_if`
+    // drops the Option default, so discovery offers an optional, nonnullable
+    // integer with no `null` default.
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(required)]
     start_slot: Option<u32>,
 }
 
@@ -120,15 +122,6 @@ struct ErrorObject {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     details: Option<Value>,
-}
-
-/// The parts of a print summary the adapter reads; extra fields pass through.
-#[derive(Debug, Deserialize, Serialize)]
-struct PrintSummary {
-    total: usize,
-    sent: usize,
-    failed: Vec<Value>,
-    jobs: usize,
 }
 
 #[derive(Clone)]
@@ -332,17 +325,23 @@ impl LabelerMcp {
         if !status.is_success() {
             return Err(self.service_error(status, &bytes));
         }
-        let summary: PrintSummary = match serde_json::from_slice(&bytes) {
-            Ok(summary) => summary,
+        // The complete summary passes through unchanged; only its failed list
+        // decides isError.
+        let value: Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
             Err(_) => {
                 return Ok(error_text(format!(
                     "unexpected response from the labeler service (HTTP {status}): body is not a print summary"
                 )));
             }
         };
-        let value = serde_json::to_value(&summary).expect("print summary serializes");
+        let Some(failed) = value.get("failed").and_then(Value::as_array) else {
+            return Ok(error_text(format!(
+                "unexpected response from the labeler service (HTTP {status}): body is not a print summary"
+            )));
+        };
         let mut result = json_text(&value);
-        if !summary.failed.is_empty() {
+        if !failed.is_empty() {
             result.is_error = Some(true);
         }
         Ok(result)
@@ -361,8 +360,15 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // One invocation may make at most one print POST: refuse redirects, which
+    // would replay the request body, and disable the client's automatic retries.
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .expect("the HTTP client builds without special configuration");
     let server = LabelerMcp {
-        http: reqwest::Client::new(),
+        http,
         origin: config.origin,
         token: config.token,
     };

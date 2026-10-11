@@ -148,6 +148,23 @@ async fn invalid_service_origin_exits_before_serving() {
 }
 
 #[tokio::test]
+async fn rejected_credentials_are_absent_from_the_startup_diagnostic() {
+    let mcp = McpProcess::spawn(&[(
+        "LABELER_URL",
+        "http://secret-user:secret-pass@127.0.0.1:8080",
+    )])
+    .await;
+    let (success, lines, stderr) = mcp.shutdown().await;
+    assert!(!success, "userinfo exits nonzero");
+    assert!(lines.is_empty(), "no protocol output: {lines:?}");
+    assert!(stderr.contains("userinfo"), "the reason is named: {stderr}");
+    assert!(
+        !stderr.contains("secret-user") && !stderr.contains("secret-pass"),
+        "the rejected credentials never appear in diagnostics: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn token_is_sent_as_bearer_and_never_appears_in_output() {
     const TOKEN: &str = "test-secret-token-value";
     let mock = wiremock::MockServer::start().await;
@@ -243,6 +260,15 @@ async fn discovery_publishes_four_tools_with_schemas_and_annotations() {
             .as_array()
             .is_some_and(|r| r.iter().any(|v| v == "start_slot")),
         "start_slot is optional: {schema}"
+    );
+    let start_slot = &schema["properties"]["start_slot"];
+    assert_eq!(
+        start_slot["type"], "integer",
+        "start_slot is a nonnullable integer: {start_slot}"
+    );
+    assert!(
+        start_slot.get("default").is_none(),
+        "start_slot has no null default: {start_slot}"
     );
     let annotations = &print["annotations"];
     assert_eq!(annotations["readOnlyHint"], false);
@@ -607,7 +633,15 @@ async fn sheet_refusal_propagates_as_the_service_error() {
 
 #[tokio::test]
 async fn print_labels_forwards_arguments_and_returns_a_full_summary() {
-    let summary = json!({"total": 2, "sent": 2, "failed": [], "jobs": 2});
+    // The summary carries an additional field beyond the four known keys: the
+    // result must preserve it unchanged rather than drop it on reserialization.
+    let summary = json!({
+        "total": 2,
+        "sent": 2,
+        "failed": [],
+        "jobs": 2,
+        "printer": "p1"
+    });
     let mock = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/api/print"))
@@ -800,6 +834,44 @@ async fn dropped_print_response_reports_unknown_outcome_without_resending() {
         print_posts.load(Ordering::SeqCst),
         1,
         "exactly one print POST was sent"
+    );
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+}
+
+#[tokio::test]
+async fn print_redirect_is_not_followed() {
+    // A 308 pointing elsewhere must not replay the print POST at its Location:
+    // the redirect itself is reported as a failure and no second POST is sent.
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/print"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(308).insert_header("location", "/api/elsewhere"),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/elsewhere"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "total": 1, "sent": 1, "failed": [], "jobs": 1
+        })))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", mock.uri().as_str())]).await;
+    mcp.initialize().await;
+    let result = mcp
+        .tool_result(
+            "print_labels",
+            json!({ "template": "t", "printer": "p", "labels": [{"data": {}}] }),
+        )
+        .await;
+    assert!(
+        is_error(&result),
+        "a redirect is not a print summary: {result}"
     );
     let (success, _, _) = mcp.shutdown().await;
     assert!(success);

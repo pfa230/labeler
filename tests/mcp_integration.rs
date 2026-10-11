@@ -371,7 +371,8 @@ async fn personal_token_preview_print_and_attribution() {
         "published parameters are available: {summary}"
     );
 
-    // Filled preview: the decoded image equals a PNG produced by the service.
+    // Filled preview: the decoded image is a PNG (byte equality with the
+    // service's own PNG is asserted in tests/mcp.rs).
     let preview = mcp
         .tool_result(
             "render_label",
