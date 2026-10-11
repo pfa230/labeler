@@ -7,9 +7,9 @@
 ## 2. REST-backed operations
 
 - [ ] 2.1 Implement template and printer list tools; verify exact methods/paths and unchanged JSON results, including every template's published parameters and quarantined entries, against mock REST responses.
-- [ ] 2.2 Implement `render_label` as a PNG-only preview; verify request body/query fidelity, decoded MCP image byte equality, `image/png` content, rejection of a successful non-PNG response and propagation of a sheet refusal, with no print request emitted.
+- [ ] 2.2 Implement `render_label` as a PNG-only preview; verify request body/query fidelity, decoded MCP image byte equality, `image/png` content, rejection of a successful preview response failing the PNG signature check and propagation of a sheet refusal, with no print request emitted.
 - [ ] 2.3 Implement `print_labels`; verify explicit printer/labels forwarding, omitted-versus-present `start_slot`, full and partial print summaries and their `isError` flags, and that a dropped response after POST receipt never produces a second print POST.
-- [ ] 2.4 Map service and connection failures into MCP execution errors; verify `401`, `404`, `413`, indexed `422 BatchInvalid`, undecodable responses and an unavailable service, asserting unchanged REST error objects/statuses and that failures do not terminate subsequent tool calls.
+- [ ] 2.4 Map service and connection failures into MCP execution errors; verify `401`, `404`, `413`, indexed `422 BatchInvalid`, undecodable JSON responses, preview responses failing the PNG signature check and an unavailable service, asserting unchanged REST error objects/statuses and that failures do not terminate subsequent tool calls.
 
 ## 3. Integration and delivery
 

@@ -109,7 +109,7 @@ Successful `render_label` SHALL return the REST PNG bytes as one MCP image conte
 
 ### Requirement: Tool errors
 
-A REST non-success response with labeler's JSON error envelope SHALL become an MCP tool execution result with `isError: true` and JSON text `{status: <HTTP status>, error: <service error object>}`, preserving its code, message and details from `errors`. Missing required tool arguments, unlisted argument keys and invalid argument values SHALL return `isError: true` with an explanatory text message without calling REST. Connection failures and responses that cannot be decoded as the expected JSON or PNG SHALL return `isError: true` with an explanatory text message, without fabricated REST codes or reasons. Unknown tools and malformed `CallToolRequest` envelopes SHALL use MCP protocol errors.
+A REST non-success response with labeler's JSON error envelope SHALL become an MCP tool execution result with `isError: true` and JSON text `{status: <HTTP status>, error: <service error object>}`, preserving its code, message and details from `errors`. Missing required tool arguments, unlisted argument keys and invalid argument values SHALL return `isError: true` with an explanatory text message without calling REST. Connection failures, responses that cannot be decoded as the expected JSON, and successful preview responses failing the PNG signature check SHALL return `isError: true` with an explanatory text message, without fabricated REST codes or reasons. Unknown tools and malformed `CallToolRequest` envelopes SHALL use MCP protocol errors.
 
 #### Scenario: Required print arguments are missing
 
