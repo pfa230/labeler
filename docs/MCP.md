@@ -1,6 +1,6 @@
 # MCP adapter
 
-`labeler-mcp` is a stdio [MCP](https://modelcontextprotocol.io) adapter for AI agents such as Claude Code. It forwards four tools to a running labeler REST service: template discovery, filled PNG previews, printer discovery and batch printing. The service owns validation, rendering, printer connections and job attribution; the adapter owns only the MCP protocol and the HTTP calls.
+`labeler-mcp` is a stdio [MCP](https://modelcontextprotocol.io) adapter for AI agents such as Claude Code. It forwards eleven tools to a running labeler REST service: the whole template API (list, detail, source, thumbnail, create, replace, delete, reload), filled PNG previews, printer discovery and batch printing. The service owns validation, rendering, printer connections and job attribution; the adapter owns only the MCP protocol and the HTTP calls.
 
 ## Build
 
@@ -32,19 +32,73 @@ For a local service in no-auth mode, omit `-e LABELER_TOKEN`; prints are then at
 
 ## Tools
 
-| Tool | What it does |
-|---|---|
-| `list_templates` | `GET /api/templates`. Each summary carries the template's published `params`. |
-| `render_label` | `POST /api/render/label?format=png`. Returns the filled label as an inline PNG image. |
-| `list_printers` | `GET /api/printers`. The service's configured printers. |
-| `print_labels` | `POST /api/print`. Sends physical print jobs for a batch of labels. |
+| Tool | Arguments | What it does |
+|---|---|---|
+| `list_templates` | — | `GET /api/templates`. Each summary carries the template's published `params`; files the service refused are listed under `broken`. |
+| `get_template` | `template` | `GET /api/templates/{id}`. The published detail: identity, format, parameters and referenced variables. A quarantined template has none. |
+| `get_template_source` | `template` | `GET /api/templates/{id}/source`. The stored YAML as one exact text block, comments and trailing whitespace included. Works for quarantined templates too. |
+| `get_template_thumbnail` | `template` | `GET /api/templates/{id}/thumbnail`. A placeholder-filled PNG; a sheet template yields one slot, not the page. Unconditional, and never prints. |
+| `create_template` | `template`, `yaml` | `POST /api/templates/{id}` with the raw YAML. An id that already exists is refused (409), never overwritten. |
+| `replace_template` | `template`, `yaml` | `PUT /api/templates/{id}` with the raw YAML. The whole file is replaced; an id that does not exist is refused (404), never created. |
+| `delete_template` | `template` | `DELETE /api/templates/{id}`. Removes the stored file and drops it from the live registry. |
+| `reload_templates` | — | `POST /api/templates/reload`. Re-reads the templates folder and replaces the live registry: valid files are served, broken ones quarantined. |
+| `render_label` | `template`, `data` | `POST /api/render/label?format=png`. Returns the filled label as an inline PNG image. |
+| `list_printers` | — | `GET /api/printers`. The service's configured printers. |
+| `print_labels` | `template`, `printer`, `labels`, `start_slot?` | `POST /api/print`. Sends physical print jobs for a batch of labels. |
 
-`render_label` previews **single-label templates only**; the service refuses sheet templates (print those with `print_labels`). Argument keys outside each tool's schema are rejected before any request is sent.
+`template` is a template id: non-empty, matching `^[a-zA-Z0-9_-]+$` (letters, digits, `-` and `_`). An id outside that rule is refused before any request is sent, as is any argument key outside a tool's schema. Every valid id addresses that template, including the id `reload`.
 
-`print_labels` has a physical effect. It never retries: one call sends at most one print request, and a lost response is reported as an unknown dispatch outcome rather than resent. A `200` summary with failed rows comes back as a tool error carrying the full summary, so a partial failure is visible.
+`render_label` previews **single-label templates only**; the service refuses sheet templates (print those with `print_labels`). Use `get_template_thumbnail` for a sheet's one-slot preview.
 
-REST refusals (invalid batch, unknown template or printer, revoked token, oversized batch) surface as tool errors that keep the service's status and error object unchanged.
+Read tools are advertised as read-only. The write tools and `print_labels` are advertised as non-read-only, destructive and non-idempotent, so a client can warn before they run.
+
+### Writes, refusals and unknown outcomes
+
+`create_template` and `replace_template` send the `yaml` argument unchanged as the whole file, with `Content-Type: text/yaml`; the service parses and validates it, so comments and formatting survive a read-edit-write round trip. There is no partial edit: a replacement always overwrites the complete source.
+
+Each write (create, replace, delete, reload) sends exactly one request and never follows a redirect. If the connection drops before the response arrives, the tool reports the outcome as **unknown**: the change may already be applied, and the adapter never replays it. Inspect the source or the listing before deciding on the next call.
+
+REST refusals (invalid batch, unknown template or printer, revoked token, oversized batch, duplicate id, invalid YAML) surface as tool errors that keep the service's status and error object unchanged. A `200` print summary with failed rows comes back as a tool error carrying the full summary, so a partial failure is visible. A successful delete answers with an empty content array, matching the service's `204`.
+
+## Authoring a template
+
+Write the complete YAML, store it, and read it back before trusting it. A minimal single-label template:
+
+```yaml
+# shelf label
+name: Shelf Label
+unit: mm
+dpi: 200
+params:
+  - name: message
+    type: string
+format: {type: single, width: 50, height: 20}
+layout:
+  - type: text
+    value: "{message}"
+    at: [0.0, 0.0]
+    size: [50, 20]
+    font_size: 12
+```
+
+Through the tools:
+
+1. `create_template` with `template: "shelf_label"` and that document as `yaml`. The service answers with the published detail, and `shelf_label.yaml` now holds the exact bytes.
+2. `get_template_source` with `template: "shelf_label"` reads that document back, comments included; `get_template` reads the published detail instead.
+3. Edit the text just read — nothing else — and send the whole document again with `replace_template`. The file is overwritten; there is no merge.
+4. Check the result with `render_label` (`data: {"message": "Hello"}`) or `get_template_thumbnail`.
+5. `delete_template` removes the file and the served entry.
+
+## Repairing a broken template
+
+A file the service cannot parse or validate is quarantined: it stays on disk, appears in `list_templates` under `broken`, has no detail (`get_template` answers `404`), and is not rendered. Repair it from its source:
+
+1. `get_template_source` for the broken id returns the file as it stands.
+2. Fix the problem in that text and send it back with `replace_template`.
+3. Any write, or `reload_templates`, republishes the registry; the reload answer reports how many templates are served and how many are still broken.
+
+`docs/AUTHORING.md` documents the template format itself.
 
 ## Acceptance
 
-Before trusting the integration, connect a local Claude Code to a local labeler, discover templates with their published parameters and the configured printers, render a filled single-label PNG, and print that label to a designated real printer. Confirm the physical output: an accepted-job response alone does not show that a label emerged. Record the client results in the pull request review, keeping redacted local transcripts and render artifacts under `.agent-runs/`.
+Before trusting the integration, connect a local Claude Code to a local labeler, discover templates with their published parameters and the configured printers, author a template through create → source → replace → preview → delete, repair one broken file the same way, render a filled single-label PNG, and print that label to a designated real printer. Confirm the physical output: an accepted-job response alone does not show that a label emerged. Record the client results in the pull request review, keeping redacted local transcripts and render artifacts under `.agent-runs/`.
