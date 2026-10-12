@@ -46,7 +46,7 @@ For a local service in no-auth mode, omit `-e LABELER_TOKEN`; prints are then at
 | `list_printers` | — | `GET /api/printers`. The service's configured printers. |
 | `print_labels` | `template`, `printer`, `labels`, `start_slot?` | `POST /api/print`. Sends physical print jobs for a batch of labels. |
 
-`template` is a template id: non-empty, matching `^[a-zA-Z0-9_-]+$` (letters, digits, `-` and `_`). An id outside that rule is refused before any request is sent, as is any argument key outside a tool's schema. Every valid id addresses that template, including the id `reload`.
+`template` is a template id: non-empty, matching `^[a-zA-Z0-9_-]+$` (letters, digits, `-` and `_`). The six path-based template-management tools (`get_template`, `get_template_source`, `get_template_thumbnail`, `create_template`, `replace_template`, `delete_template`) refuse an id outside that rule before any request is sent; `render_label` and `print_labels` forward their `template` argument without adapter validation. Any argument key outside a tool's schema is refused before any request too. Every valid id addresses that template, including the id `reload`.
 
 `render_label` previews **single-label templates only**; the service refuses sheet templates (print those with `print_labels`). Use `get_template_thumbnail` for a sheet's one-slot preview.
 
@@ -97,7 +97,7 @@ A file the service cannot parse or validate is quarantined: it stays on disk, ap
 2. Fix the problem in that text and send it back with `replace_template`.
 3. Any write, or `reload_templates`, republishes the registry; the reload answer reports how many templates are served and how many are still broken.
 
-`docs/AUTHORING.md` documents the template format itself.
+[`AUTHORING.md`](AUTHORING.md) documents the template format itself.
 
 ## Acceptance
 
