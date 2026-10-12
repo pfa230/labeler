@@ -46,6 +46,8 @@ url = "2"
 urlencoding = "2.1"
 regex = "1"
 rustix = { version = "1", features = ["fs", "alloc"] }
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "macros", "transport-io"] }
+schemars = "1"
 
 rustybuzz = "0.20.1"
 unicode-bidi = "0.3.18"

@@ -20,6 +20,8 @@ A new install has no templates. Install them from the catalog in the UI (Labels 
 
 Routes live under `/api`; all but health, login, setup and the API docs need authentication (see the [`auth` spec](openspec/specs/auth/spec.md)). The OpenAPI document is at `/api/openapi.json` and Swagger UI at `/api/docs/`. The full contract for the API, template schema, layout and errors is in [`openspec/specs/`](openspec/specs/). `scripts/render_avery_sheet.sh` posts a sample batch to a running server; export `LABELER_API_TOKEN` (create one under Settings) first.
 
+AI agents can reach the same workflow through the `labeler-mcp` stdio adapter; [`docs/MCP.md`](docs/MCP.md) covers the build, Claude Code registration and the four tools.
+
 ## Develop
 
 ```bash
