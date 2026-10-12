@@ -193,6 +193,26 @@ pub fn is_error(result: &Value) -> bool {
     result.get("isError").and_then(Value::as_bool) == Some(true)
 }
 
+/// The eleven tools the adapter publishes, in the order a client discovers them.
+pub fn template_management_tool_names() -> Vec<String> {
+    [
+        "create_template",
+        "delete_template",
+        "get_template",
+        "get_template_source",
+        "get_template_thumbnail",
+        "list_printers",
+        "list_templates",
+        "print_labels",
+        "reload_templates",
+        "render_label",
+        "replace_template",
+    ]
+    .iter()
+    .map(|name| name.to_string())
+    .collect()
+}
+
 pub fn first_text(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()

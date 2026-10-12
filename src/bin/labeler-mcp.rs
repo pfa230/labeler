@@ -1,14 +1,16 @@
 //! `labeler-mcp`: an MCP (stdio) adapter that fronts a running labeler REST service.
 //!
-//! It publishes four tools — `list_templates`, `render_label`, `list_printers` and
-//! `print_labels` — over the official Rust MCP SDK, forwarding each call as an HTTP
-//! request to the service origin in `LABELER_URL` (default `http://127.0.0.1:8080`),
-//! with `LABELER_TOKEN` (when set) as a bearer token. The service owns validation,
-//! rendering, printer connections and actor attribution; this process owns only the
-//! MCP protocol and the HTTP forwarding.
+//! It publishes eleven tools — template listing, detail, source, thumbnail, create,
+//! replace, delete, reload, `render_label`, `list_printers` and `print_labels` — over
+//! the official Rust MCP SDK, forwarding each call as an HTTP request to the service
+//! origin in `LABELER_URL` (default `http://127.0.0.1:8080`), with `LABELER_TOKEN`
+//! (when set) as a bearer token. The service owns validation, rendering, printer
+//! connections and actor attribution; this process owns only the MCP protocol and
+//! the HTTP forwarding.
 
 use std::collections::HashMap;
 
+use labeler::templates::validate_template_id_stem;
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
@@ -116,6 +118,33 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+/// The template argument shared by the read and delete tools. The id rule is the
+/// service's, published here so a client can refuse an impossible id before any
+/// request is sent.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TemplateArgs {
+    /// Template id: non-empty, matching ^[a-zA-Z0-9_-]+$ (letters, digits, '-' and '_').
+    template: String,
+}
+
+/// The arguments of the complete-source write tools: the id plus the entire YAML
+/// document to store under it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TemplateWriteArgs {
+    /// Template id: non-empty, matching ^[a-zA-Z0-9_-]+$ (letters, digits, '-' and '_').
+    template: String,
+    /// The template's complete YAML source, sent unchanged as the request body.
+    yaml: String,
+}
+
+/// A request body: service JSON, or the raw YAML bytes of a template write.
+enum Body {
+    Json(Value),
+    Yaml(String),
+}
+
 /// Labeler's error envelope, carried through unchanged into execution results.
 #[derive(Debug, Deserialize)]
 struct ErrorEnvelope {
@@ -145,11 +174,43 @@ fn error_text(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
 
+/// The service's PNG bytes as one MCP image block. A body without the PNG
+/// signature is an execution error, never an advertised image.
+fn png_image(bytes: &[u8], request: &str) -> CallToolResult {
+    if !bytes.starts_with(PNG_MAGIC) {
+        return error_text(format!(
+            "the service returned a non-PNG body for a {request} request"
+        ));
+    }
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    CallToolResult::success(vec![ContentBlock::image(encoded, "image/png")])
+}
+
+/// The single path segment of a template id. The id must satisfy the service's
+/// rule; its first byte is escaped as `%HH` so the segment can never read as the
+/// static `/api/templates/reload` route, while the rest stays literal and the
+/// service still receives the original identifier.
+fn id_segment(id: &str) -> Result<String, CallToolResult> {
+    if !validate_template_id_stem(id) {
+        return Err(error_text(format!(
+            "invalid template id '{id}': must be non-empty and match ^[a-zA-Z0-9_-]+$"
+        )));
+    }
+    Ok(format!("%{:02X}{}", id.as_bytes()[0], &id[1..]))
+}
+
 impl LabelerMcp {
     fn url(&self, path: &str) -> Url {
         self.origin
             .join(path)
             .expect("fixed API paths join the configured origin")
+    }
+
+    /// The URL of one path-based template tool: the encoded id segment plus the
+    /// tool's fixed suffix.
+    fn template_url(&self, id: &str, suffix: &str) -> Result<Url, CallToolResult> {
+        Ok(self.url(&format!("api/templates/{}{suffix}", id_segment(id)?)))
     }
 
     /// Send one REST request and classify the outcome. Success bodies must be the
@@ -159,7 +220,7 @@ impl LabelerMcp {
         &self,
         method: reqwest::Method,
         url: Url,
-        body: Option<&Value>,
+        body: Option<&Body>,
     ) -> Result<Value, CallToolResult> {
         let (status, bytes) = self.send(method, url, body).await?;
         if !status.is_success() {
@@ -172,12 +233,13 @@ impl LabelerMcp {
         })
     }
 
-    /// Like `rest_json`, but a success body is returned as raw bytes (for PNG previews).
+    /// Like `rest_json`, but a success body is returned as raw bytes (for PNG and
+    /// source responses).
     async fn rest_bytes(
         &self,
         method: reqwest::Method,
         url: Url,
-        body: Option<&Value>,
+        body: Option<&Body>,
     ) -> Result<(reqwest::StatusCode, Vec<u8>), CallToolResult> {
         let (status, bytes) = self.send(method, url, body).await?;
         if !status.is_success() {
@@ -186,18 +248,65 @@ impl LabelerMcp {
         Ok((status, bytes))
     }
 
+    /// Send one mutation. A transport failure means the request may already have
+    /// been applied when its response was lost, so it is reported as an unknown
+    /// outcome; nothing is replayed.
+    async fn mutate(
+        &self,
+        method: reqwest::Method,
+        url: Url,
+        body: Option<&Body>,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), CallToolResult> {
+        self.send(method, url, body).await.map_err(|err| {
+            let text = err
+                .content
+                .first()
+                .and_then(|c| c.as_text())
+                .map(|t| t.text.clone())
+                .unwrap_or_else(|| "the request failed".to_string());
+            error_text(format!(
+                "{text}; the mutation outcome is unknown, the change may already be applied \
+                 and is never replayed"
+            ))
+        })
+    }
+
+    /// A mutation whose success body must be JSON, classified like `rest_json`.
+    async fn mutate_json(
+        &self,
+        method: reqwest::Method,
+        url: Url,
+        body: Option<&Body>,
+    ) -> Result<Value, CallToolResult> {
+        let (status, bytes) = self.mutate(method, url, body).await?;
+        if !status.is_success() {
+            return Err(self.service_error(status, &bytes));
+        }
+        serde_json::from_slice(&bytes).map_err(|_| {
+            error_text(format!(
+                "unexpected response from the labeler service (HTTP {status}): body is not JSON"
+            ))
+        })
+    }
+
     async fn send(
         &self,
         method: reqwest::Method,
         url: Url,
-        body: Option<&Value>,
+        body: Option<&Body>,
     ) -> Result<(reqwest::StatusCode, Vec<u8>), CallToolResult> {
         let mut req = self.http.request(method, url);
         if let Some(token) = &self.token {
             req = req.bearer_auth(token);
         }
-        if let Some(body) = body {
-            req = req.json(body);
+        match body {
+            None => {}
+            Some(Body::Json(value)) => req = req.json(value),
+            Some(Body::Yaml(text)) => {
+                req = req
+                    .header(reqwest::header::CONTENT_TYPE, "text/yaml")
+                    .body(text.clone())
+            }
         }
         let resp = req
             .send()
@@ -242,6 +351,141 @@ impl LabelerMcp {
     }
 
     #[tool(
+        name = "get_template",
+        description = "Read one template's published detail as JSON: identity, format, categories, parameters and referenced variables. A quarantined (broken) template has no detail; read its source with get_template_source.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_template(
+        &self,
+        Parameters(args): Parameters<TemplateArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let url = self.template_url(&args.template, "")?;
+        let body = self.rest_json(reqwest::Method::GET, url, None).await?;
+        Ok(json_text(&body))
+    }
+
+    #[tool(
+        name = "get_template_source",
+        description = "Read the stored YAML source of one template as exact text, comments and trailing whitespace included, without parsing or reformatting it. Works for quarantined (broken) templates too.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_template_source(
+        &self,
+        Parameters(args): Parameters<TemplateArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let url = self.template_url(&args.template, "/source")?;
+        let (status, bytes) = self.rest_bytes(reqwest::Method::GET, url, None).await?;
+        let source = String::from_utf8(bytes).map_err(|_| {
+            error_text(format!(
+                "unexpected response from the labeler service (HTTP {status}): body is not UTF-8"
+            ))
+        })?;
+        Ok(CallToolResult::success(vec![ContentBlock::text(source)]))
+    }
+
+    #[tool(
+        name = "get_template_thumbnail",
+        description = "Fetch a template's placeholder thumbnail as a PNG image; a sheet template yields one slot. The request is unconditional and never prints.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_template_thumbnail(
+        &self,
+        Parameters(args): Parameters<TemplateArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let url = self.template_url(&args.template, "/thumbnail")?;
+        let (_, bytes) = self.rest_bytes(reqwest::Method::GET, url, None).await?;
+        Ok(png_image(&bytes, "thumbnail"))
+    }
+
+    #[tool(
+        name = "create_template",
+        description = "Create a new template from a complete YAML source and republish the live registry. The service validates the source; an id that already exists is refused with a conflict and never overwritten. The adapter does not retry: if the response is lost the outcome is unknown, the template may already exist.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn create_template(
+        &self,
+        Parameters(args): Parameters<TemplateWriteArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let url = self.template_url(&args.template, "")?;
+        let body = Body::Yaml(args.yaml);
+        let detail = self
+            .mutate_json(reqwest::Method::POST, url, Some(&body))
+            .await?;
+        Ok(json_text(&detail))
+    }
+
+    #[tool(
+        name = "replace_template",
+        description = "Replace an existing template's stored YAML wholesale with the supplied complete source: the whole file is overwritten, never merged or patched, and an id that does not exist is refused and never created. The adapter does not retry: if the response is lost the outcome is unknown, the file may already be changed.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn replace_template(
+        &self,
+        Parameters(args): Parameters<TemplateWriteArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let url = self.template_url(&args.template, "")?;
+        let body = Body::Yaml(args.yaml);
+        let detail = self
+            .mutate_json(reqwest::Method::PUT, url, Some(&body))
+            .await?;
+        Ok(json_text(&detail))
+    }
+
+    #[tool(
+        name = "delete_template",
+        description = "Delete a template's stored file and drop it from the live registry. The adapter does not retry: if the response is lost the outcome is unknown, the template may already be gone.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn delete_template(
+        &self,
+        Parameters(args): Parameters<TemplateArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let url = self.template_url(&args.template, "")?;
+        let (status, bytes) = self.mutate(reqwest::Method::DELETE, url, None).await?;
+        if !status.is_success() {
+            return Err(self.service_error(status, &bytes));
+        }
+        // The service answers 204 with no body; an empty content array is the
+        // acknowledgement, and inventing JSON would claim more than it returned.
+        Ok(CallToolResult::success(vec![]))
+    }
+
+    #[tool(
+        name = "reload_templates",
+        description = "Re-read the templates folder and replace the live registry from disk: valid files are served, broken ones quarantined. The adapter does not retry: if the response is lost the outcome is unknown, the registry may already be replaced.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn reload_templates(
+        &self,
+        Parameters(_args): Parameters<NoArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let body = self
+            .mutate_json(
+                reqwest::Method::POST,
+                self.url("api/templates/reload"),
+                None,
+            )
+            .await?;
+        Ok(json_text(&body))
+    }
+
+    #[tool(
         name = "render_label",
         description = "Preview a filled label as a PNG image without printing. Only single-label templates can be previewed; sheet templates are refused by the service (print them with print_labels).",
         annotations(read_only_hint = true)
@@ -255,20 +499,10 @@ impl LabelerMcp {
             .rest_bytes(
                 reqwest::Method::POST,
                 self.url("api/render/label?format=png"),
-                Some(&body),
+                Some(&Body::Json(body)),
             )
             .await?;
-        if !bytes.starts_with(PNG_MAGIC) {
-            return Ok(error_text(
-                "the service returned a non-PNG body for a preview request",
-            ));
-        }
-        use base64::Engine as _;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        Ok(CallToolResult::success(vec![ContentBlock::image(
-            encoded,
-            "image/png",
-        )]))
+        Ok(png_image(&bytes, "preview"))
     }
 
     #[tool(
@@ -312,7 +546,11 @@ impl LabelerMcp {
         }
         let url = self.url("api/print");
         let (status, bytes) = match self
-            .send(reqwest::Method::POST, url, Some(&Value::Object(body)))
+            .send(
+                reqwest::Method::POST,
+                url,
+                Some(&Body::Json(Value::Object(body))),
+            )
             .await
         {
             Ok(outcome) => outcome,
@@ -366,8 +604,9 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    // One invocation may make at most one print POST: refuse redirects, which
-    // would replay the request body, and disable the client's automatic retries.
+    // One invocation may make at most one request per tool call: refuse redirects,
+    // which would replay the request body, and disable the client's automatic
+    // retries, so a print or a template write is never sent twice.
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
@@ -427,5 +666,25 @@ mod tests {
         assert!(parse_origin("http://127.0.0.1:8080/api")
             .unwrap_err()
             .contains("root path"));
+    }
+
+    #[test]
+    fn valid_ids_escape_one_leading_byte_and_invalid_ids_are_refused() {
+        assert_eq!(id_segment("reload").ok().as_deref(), Some("%72eload"));
+        assert_eq!(
+            id_segment("brother_24mm-qr").ok().as_deref(),
+            Some("%62rother_24mm-qr")
+        );
+        assert!(id_segment("").is_err());
+        assert!(id_segment("../other").is_err());
+        assert!(id_segment("has space").is_err());
+        assert!(id_segment("has.dot").is_err());
+    }
+
+    #[test]
+    fn the_escaped_segment_survives_joining_it_to_the_origin() {
+        let origin = parse_origin(DEFAULT_SERVICE_ORIGIN).unwrap();
+        let url = origin.join("api/templates/%72eload/source").unwrap();
+        assert_eq!(url.path(), "/api/templates/%72eload/source");
     }
 }
