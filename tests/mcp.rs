@@ -147,6 +147,24 @@ async fn invalid_service_origin_exits_before_serving() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn non_utf8_service_origin_exits_before_serving() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let origin = std::ffi::OsStr::from_bytes(b"http://\xff\xfe");
+    let mcp = McpProcess::spawn_os(&[("LABELER_URL", origin)]).await;
+    let (success, lines, stderr) = mcp.shutdown().await;
+    assert!(!success, "non-UTF-8 origin exits nonzero");
+    assert!(
+        lines.is_empty(),
+        "no protocol output before exit: {lines:?}"
+    );
+    assert!(
+        stderr.contains("LABELER_URL"),
+        "diagnostic names the setting: {stderr}"
+    );
+}
+
 #[tokio::test]
 async fn rejected_credentials_are_absent_from_the_startup_diagnostic() {
     let mcp = McpProcess::spawn(&[(

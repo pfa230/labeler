@@ -17,6 +17,16 @@ pub struct McpProcess {
 impl McpProcess {
     /// Spawn the binary with a cleared environment plus the given variables.
     pub async fn spawn(envs: &[(&str, &str)]) -> Self {
+        let raw: Vec<(&str, &std::ffi::OsStr)> = envs
+            .iter()
+            .map(|(key, value)| (*key, std::ffi::OsStr::new(*value)))
+            .collect();
+        Self::spawn_os(&raw).await
+    }
+
+    /// Like `spawn`, but environment values may be arbitrary OS strings, including
+    /// ones that are not valid UTF-8.
+    pub async fn spawn_os(envs: &[(&str, &std::ffi::OsStr)]) -> Self {
         let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_labeler-mcp"));
         cmd.env_clear();
         if let Ok(path) = std::env::var("PATH") {

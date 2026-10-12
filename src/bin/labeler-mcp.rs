@@ -54,8 +54,14 @@ fn parse_origin(raw: &str) -> Result<Url, String> {
 fn config_from_env() -> Result<Config, String> {
     let origin = match std::env::var("LABELER_URL") {
         Ok(raw) => parse_origin(&raw)?,
-        Err(_) => {
+        Err(std::env::VarError::NotPresent) => {
             parse_origin(DEFAULT_SERVICE_ORIGIN).expect("the built-in default origin is valid")
+        }
+        // An origin that is set but not UTF-8 is invalid, not absent: the default
+        // could silently target the wrong service. The value itself may hold
+        // credentials, so it is never echoed.
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("LABELER_URL is not valid UTF-8".to_string());
         }
     };
     let token = std::env::var("LABELER_TOKEN").ok();
