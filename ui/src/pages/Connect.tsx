@@ -256,7 +256,7 @@ function Composer({
       if (!printTo) {
         const { blob, filename } = await renderBatch({ template: detail.id, labels, ...slot });
         saveBlob(blob, filename ?? `${detail.id}.${isSheet ? "pdf" : "zip"}`);
-        push({ kind: "ok", message: `Downloaded ${labels.length} labels` });
+        push({ kind: "ok", message: `Downloaded ${expandedCount(labels.length, submittedCopies)} labels` });
       } else {
         const summary = await printBatch({ template: detail.id, labels, printer: printTo, ...slot });
         const { failed } = summary;

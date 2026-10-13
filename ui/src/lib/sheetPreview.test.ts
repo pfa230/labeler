@@ -28,7 +28,7 @@ describe("useSheetPreview", () => {
       {
         initialProps: {
           templateId: "t",
-          labels: [{ data: { a: "1" } }],
+          labels: [{ data: { a: "1" }, copies: 1 }],
         },
       },
     );
@@ -39,7 +39,7 @@ describe("useSheetPreview", () => {
 
     rerender({
       templateId: "t",
-      labels: [{ data: { a: "2" } }],
+      labels: [{ data: { a: "2" }, copies: 1 }],
     });
 
     act(() => {
@@ -48,7 +48,7 @@ describe("useSheetPreview", () => {
 
     rerender({
       templateId: "t",
-      labels: [{ data: { a: "3" } }],
+      labels: [{ data: { a: "3" }, copies: 1 }],
     });
 
     await act(async () => {
@@ -57,7 +57,7 @@ describe("useSheetPreview", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    expect(body.labels).toEqual([{ data: { a: "3" } }]);
+    expect(body.labels).toEqual([{ data: { a: "3" }, copies: 1 }]);
   });
 
   it("a fetch that never resolves has its signal.aborted set by a rerender with a new key and the hook reports neither a URL nor an error for it", async () => {
@@ -75,7 +75,7 @@ describe("useSheetPreview", () => {
       {
         initialProps: {
           templateId: "t",
-          labels: [{ data: { a: "1" } }],
+          labels: [{ data: { a: "1" }, copies: 1 }],
         },
       },
     );
@@ -89,7 +89,7 @@ describe("useSheetPreview", () => {
 
     rerender({
       templateId: "t",
-      labels: [{ data: { a: "2" } }],
+      labels: [{ data: { a: "2" }, copies: 1 }],
     });
 
     expect(capturedSignal?.aborted).toBe(true);
@@ -104,7 +104,7 @@ describe("useSheetPreview", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() =>
-      useSheetPreview({ templateId: "t", labels: [{ data: { a: "1" } }] }, false),
+      useSheetPreview({ templateId: "t", labels: [{ data: { a: "1" }, copies: 1 }] }, false),
     );
 
     await act(async () => {
@@ -126,7 +126,7 @@ describe("useSheetPreview", () => {
       useSheetPreview(
         {
           templateId: "t1",
-          labels: [{ data: { sku: "1" } }, { data: { sku: "2" } }],
+          labels: [{ data: { sku: "1" }, copies: 1 }, { data: { sku: "2" }, copies: 1 }],
           startSlot: 4,
         },
         true,
@@ -148,7 +148,7 @@ describe("useSheetPreview", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body).toEqual({
       template: "t1",
-      labels: [{ data: { sku: "1" } }, { data: { sku: "2" } }],
+      labels: [{ data: { sku: "1" }, copies: 1 }, { data: { sku: "2" }, copies: 1 }],
       start_slot: 4,
     });
   });
@@ -163,7 +163,7 @@ describe("useSheetPreview", () => {
       {
         initialProps: {
           templateId: "t",
-          labels: [{ data: { a: "1", b: "2" } }],
+          labels: [{ data: { a: "1", b: "2" }, copies: 1 }],
           startSlot: 1,
         },
       },
@@ -178,7 +178,7 @@ describe("useSheetPreview", () => {
     // Rerender with equal key (different object references, inverted keys)
     rerender({
       templateId: "t",
-      labels: [{ data: { b: "2", a: "1" } }],
+      labels: [{ data: { b: "2", a: "1" }, copies: 1 }],
       startSlot: 1,
     });
 
@@ -195,7 +195,7 @@ describe("useSheetPreview", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { result, unmount } = renderHook(() =>
-      useSheetPreview({ templateId: "t", labels: [{ data: { a: "1" } }] }, true),
+      useSheetPreview({ templateId: "t", labels: [{ data: { a: "1" }, copies: 1 }] }, true),
     );
 
     await act(async () => {

@@ -3,6 +3,8 @@
 //! dispatch lives in `api::run_batch`, behind `/print`.
 
 use std::io::Write as _;
+use std::num::NonZeroU32;
+use std::ops::Range;
 
 use crate::errors::{AppError, BatchFailure};
 use crate::models::{LabelInput, TemplateFormat};
@@ -23,12 +25,14 @@ pub struct BatchEnv<'a> {
     pub render_opts: crate::render::ImageRenderOptions,
 }
 
-/// One print job's bytes plus the label indices it covers (single: one label; sheet: all labels),
-/// and for a single label its resolved width in millimetres.
+/// One print job's bytes plus the label indices it covers (single: one entry's labels; sheet: all
+/// labels), the IPP `copies` it asks for (single: the entry's count; sheet: 1), and for a single
+/// label its resolved width in millimetres.
 #[derive(Debug)]
 pub struct PrintUnit {
     pub bytes: Vec<u8>,
     pub indices: Vec<usize>,
+    pub copies: u32,
     pub width_mm: Option<f64>,
 }
 
@@ -53,8 +57,13 @@ pub fn render_batch(
     env: &BatchEnv,
     max_labels: usize,
 ) -> Result<RenderedBatch, AppError> {
-    if labels.len() > max_labels {
-        return Err(AppError::batch_too_large(labels.len(), max_labels));
+    // Counted before anything is expanded or rendered, so a huge `copies` costs nothing.
+    let within_cap = labels.iter().try_fold(0usize, |n, l| {
+        n.checked_add(l.copies.get() as usize)
+            .filter(|&n| n <= max_labels)
+    });
+    if within_cap.is_none() {
+        return Err(AppError::batch_too_large(max_labels));
     }
     if labels.is_empty() {
         return Err(AppError::invalid_request(
@@ -92,15 +101,26 @@ fn render_single_batch(
     } else {
         SingleKind::Png
     };
-    let mut artifacts: Vec<RenderedSingle> = Vec::with_capacity(labels.len());
+    // Each entry renders once and covers the next `copies` label indices.
+    let mut artifacts: Vec<(RenderedSingle, Range<usize>, u32)> = Vec::with_capacity(labels.len());
     let mut failures: Vec<BatchFailure> = Vec::new();
-    for (idx, lbl) in labels.iter().enumerate() {
+    let mut next = 0;
+    for lbl in labels {
+        let copies = lbl.copies.get();
+        let indices = next..next + copies as usize;
+        next = indices.end;
         let res = crate::render::validate_label_data_keys(template, &lbl.data).and_then(|()| {
             render_single_label_as(template, &lbl.data, env.render, kind, env.render_opts)
         });
         match res {
-            Ok(label) => artifacts.push(label),
-            Err(err) => failures.push(BatchFailure::new(idx, err)),
+            Ok(label) => artifacts.push((label, indices, copies)),
+            Err(err) => {
+                let failure = BatchFailure::new(indices.start, err);
+                failures.extend(indices.map(|index| BatchFailure {
+                    index,
+                    ..failure.clone()
+                }));
+            }
         }
     }
     if !failures.is_empty() {
@@ -111,26 +131,28 @@ fn render_single_batch(
         BatchMode::Print => Ok(RenderedBatch::Print {
             units: artifacts
                 .into_iter()
-                .enumerate()
-                .map(|(i, label)| PrintUnit {
+                .map(|(label, indices, copies)| PrintUnit {
                     bytes: label.bytes,
-                    indices: vec![i],
+                    indices: indices.collect(),
+                    copies,
                     width_mm: Some(label.width_mm),
                 })
                 .collect(),
         }),
         BatchMode::Download => {
-            let width = labels.len().to_string().len();
+            let width = next.to_string().len();
             let mut cursor = std::io::Cursor::new(Vec::new());
             let mut zip = zip::ZipWriter::new(&mut cursor);
             let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
-            for (i, label) in artifacts.iter().enumerate() {
-                let name = format!("{:0width$}.{ext}", i + 1, width = width);
-                zip.start_file(name, opts)
-                    .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
-                zip.write_all(&label.bytes)
-                    .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
+            for (label, indices, _) in &artifacts {
+                for i in indices.clone() {
+                    let name = format!("{:0width$}.{ext}", i + 1, width = width);
+                    zip.start_file(name, opts)
+                        .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
+                    zip.write_all(&label.bytes)
+                        .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
+                }
             }
             zip.finish()
                 .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
@@ -150,7 +172,20 @@ fn render_sheet_batch(
     start_slot: u32,
     env: &BatchEnv,
 ) -> Result<RenderedBatch, AppError> {
-    let pdf = render_sheet_pages(template, labels, start_slot, env.render)?;
+    // Every slot is drawn, so the sheet takes the entries expanded into labels.
+    let labels: Vec<LabelInput> = labels
+        .iter()
+        .flat_map(|l| {
+            std::iter::repeat_n(
+                LabelInput {
+                    data: l.data.clone(),
+                    copies: NonZeroU32::MIN,
+                },
+                l.copies.get() as usize,
+            )
+        })
+        .collect();
+    let pdf = render_sheet_pages(template, &labels, start_slot, env.render)?;
     match mode {
         BatchMode::Download => Ok(RenderedBatch::Download {
             bytes: pdf,
@@ -161,6 +196,7 @@ fn render_sheet_batch(
             units: vec![PrintUnit {
                 bytes: pdf,
                 indices: (0..labels.len()).collect(),
+                copies: 1,
                 width_mm: None,
             }],
         }),
@@ -226,6 +262,7 @@ mod tests {
     fn lbl(msg: &str) -> LabelInput {
         LabelInput {
             data: HashMap::from([("message".to_string(), json!(msg))]),
+            copies: NonZeroU32::MIN,
         }
     }
 
@@ -336,6 +373,7 @@ mod tests {
                 ("message".to_string(), json!(message)),
                 ("code".to_string(), json!("Q")),
             ]),
+            copies: NonZeroU32::MIN,
         };
         let units = print_units(
             "brother_24mm_qr",
@@ -358,6 +396,7 @@ mod tests {
                 ("tags".to_string(), json!("Power tools")),
                 ("description".to_string(), json!("Angle grinder")),
             ]),
+            copies: NonZeroU32::MIN,
         };
         let units = print_units("avery5163_asset_tag", &[label.clone(), label]);
         assert_eq!(units.len(), 1);
@@ -371,6 +410,7 @@ mod tests {
             lbl("a"),
             LabelInput {
                 data: HashMap::from([("message".to_string(), json!(["a", "b"]))]),
+                copies: NonZeroU32::MIN,
             },
         ];
         let err = render_batch(
@@ -440,6 +480,71 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code(), "InvalidRequest");
+    }
+
+    fn copies(label: LabelInput, n: u32) -> LabelInput {
+        LabelInput {
+            copies: NonZeroU32::new(n).unwrap(),
+            ..label
+        }
+    }
+
+    #[test]
+    fn a_copies_entry_is_one_print_unit_over_its_labels() {
+        let labels = vec![lbl("a"), copies(lbl("b"), 3)];
+        let RenderedBatch::Print { units } = render_batch(
+            &single_tpl(),
+            &labels,
+            BatchMode::Print,
+            None,
+            0,
+            &no_env(),
+            500,
+        )
+        .unwrap() else {
+            panic!("expected print")
+        };
+        let shape: Vec<(Vec<usize>, u32)> = units
+            .iter()
+            .map(|u| (u.indices.clone(), u.copies))
+            .collect();
+        assert_eq!(shape, vec![(vec![0], 1), (vec![1, 2, 3], 3)]);
+    }
+
+    #[test]
+    fn copies_fill_sheet_slots_like_repeated_entries() {
+        let mut sheet = single_tpl();
+        sheet.content.format = TemplateFormat::Sheet {
+            paper_width: 120.0,
+            paper_height: 40.0,
+            label_width: 20.0,
+            label_height: 10.0,
+            positions: (0..24)
+                .map(|i| {
+                    crate::models::SheetPosition([(i % 6) as f32 * 20.0, (i / 6) as f32 * 10.0])
+                })
+                .collect(),
+        };
+        let pdf = |labels: &[LabelInput]| match render_batch(
+            &sheet,
+            labels,
+            BatchMode::Download,
+            None,
+            22,
+            &no_env(),
+            500,
+        )
+        .unwrap()
+        {
+            RenderedBatch::Download { bytes, .. } => bytes,
+            _ => panic!("expected download"),
+        };
+        let with_copies = pdf(&[copies(lbl("A"), 3), lbl("B")]);
+        assert!(
+            with_copies == pdf(&[lbl("A"), lbl("A"), lbl("A"), lbl("B")]),
+            "copies must fill the slots the repeated entries fill"
+        );
+        assert_eq!(crate::render::count_pdf_pages(&with_copies), 2);
     }
 
     #[test]

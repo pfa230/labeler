@@ -40,6 +40,7 @@ type StubConnection = {
 type StubOptions = {
   renderLabel?: () => Response;
   batch?: (body: Record<string, unknown>) => Response;
+  print?: (body: Record<string, unknown>) => Response;
   connections?: StubConnection[];
   connectionsError?: boolean;
   settings?: Record<string, { value: unknown; is_default: boolean }>;
@@ -188,6 +189,9 @@ function stub(opts: StubOptions = {}) {
         headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="tpl.pdf"' },
       });
     }
+    if (url === "/api/print" && method === "POST" && opts.print) {
+      return opts.print(init?.body ? JSON.parse(String(init.body)) : {});
+    }
     throw new Error(`unexpected fetch: ${url} ${method}`);
   });
 
@@ -318,6 +322,32 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it("sends each row once with copies, and marks only the row whose copies the printer refused", async () => {
+    const printed: Array<Record<string, unknown>> = [];
+    fetchMock = stub({
+      printers: [{ id: "p1", name: "Printer 1" }],
+      print: (body) => {
+        printed.push(body);
+        const failed = [3, 4, 5].map((index) => ({ index, error: "boom" }));
+        return new Response(JSON.stringify({ total: 6, sent: 3, failed, jobs: 2 }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderConnect();
+    await browseSelectMaterialize();
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "3" } });
+    fireEvent.change(await screen.findByLabelText(/^printer$/i), { target: { value: "p1" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^print$/i }));
+
+    const failedRow = (await screen.findByText(/failed: boom/i)).closest('[role="row"]') as HTMLElement;
+    expect(within(failedRow).getByDisplayValue("Hammer")).toBeInTheDocument();
+    expect(screen.getAllByText(/failed: boom/i)).toHaveLength(1);
+    expect(printed[0].labels).toEqual([
+      { data: { name: "Drill" }, copies: 3 },
+      { data: { name: "Hammer" }, copies: 3 },
+    ]);
+  });
 
   it("browses, selects, maps, materializes rows into the grid", async () => {
     renderConnect();
@@ -1666,7 +1696,7 @@ describe("issue-386: sheet preview", () => {
     mode?: string; // asserted absent: /api/render has no mode
     template?: string;
     start_slot?: number;
-    labels?: Array<{ data: Record<string, unknown> }>;
+    labels?: Array<{ data: Record<string, unknown>; copies?: number }>;
   };
 
   async function selectSheetAndMaterialize(opts?: StubOptions, selectCount = 2) {
@@ -1694,9 +1724,14 @@ describe("issue-386: sheet preview", () => {
     await screen.findAllByRole("button", { name: "remove row" });
   }
 
-  it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/render preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
+  it("5.1 Sheet template with 3 valid rows, copies 2 and start slot 4: one POST /api/render preview request with 3 entries in row order, each with copies: 2, and start_slot: 4; activating Download then sends a body whose labels and start_slot deep-equal the preview's and reports 6 labels", async () => {
     let capturedBatchBodies: BatchPayload[] = [];
     await selectSheetAndMaterialize({
+      browseRows: [
+        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } },
+        { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
+        { id: { resource: "entities", key: "e3" }, cells: { name: "Saw" } },
+      ],
       batch: (body) => {
         capturedBatchBodies.push(body);
         return new Response(new Blob(["%PDF"]), {
@@ -1704,26 +1739,23 @@ describe("issue-386: sheet preview", () => {
           headers: { "content-type": "application/pdf" },
         });
       },
-    });
+    }, 3);
 
     await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
     capturedBatchBodies = [];
 
-    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "3" } });
-    fireEvent.change(screen.getByLabelText(/start slot/i), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText(/start slot/i), { target: { value: "4" } });
 
     await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
     const previewBody = capturedBatchBodies[0];
     expect(previewBody.mode).toBeUndefined();
     expect(previewBody.template).toBe("sheet-tpl");
-    expect(previewBody.start_slot).toBe(1);
+    expect(previewBody.start_slot).toBe(4);
     expect(previewBody.labels).toEqual([
-      { data: { name: "Drill" } },
-      { data: { name: "Drill" } },
-      { data: { name: "Drill" } },
-      { data: { name: "Hammer" } },
-      { data: { name: "Hammer" } },
-      { data: { name: "Hammer" } },
+      { data: { name: "Drill" }, copies: 2 },
+      { data: { name: "Hammer" }, copies: 2 },
+      { data: { name: "Saw" }, copies: 2 },
     ]);
     expect(screen.getByLabelText(/Sheet preview/i).tagName).toBe("OBJECT");
 
@@ -1735,6 +1767,7 @@ describe("issue-386: sheet preview", () => {
     const downloadBody = capturedBatchBodies[0];
     expect(downloadBody.labels).toEqual(previewBody.labels);
     expect(downloadBody.start_slot).toEqual(previewBody.start_slot);
+    expect(await screen.findByText("Downloaded 6 labels")).toBeInTheDocument();
   });
 
   it("5.2 Sheet template renders no input[name=\"preview-row\"]; a single template renders one radio per row and the existing selected-row preview tests stay green", async () => {
@@ -1834,7 +1867,7 @@ describe("issue-386: sheet preview", () => {
     expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled();
   });
 
-  it("5.8 Sheet template: a settled edit to a cell, then to copies, then to start slot, each sends one batch request carrying the new labels count or start_slot; a re-render with the batch unchanged sends none", async () => {
+  it("5.8 Sheet template: a settled edit to a cell, then to copies, then to start slot, each sends one batch request carrying the new data, copies or start_slot; a re-render with the batch unchanged sends none", async () => {
     const batchCalls: BatchPayload[] = [];
     await selectSheetAndMaterialize({
       printers: [{ id: "p1", name: "Printer 1" }],
@@ -1861,7 +1894,7 @@ describe("issue-386: sheet preview", () => {
     // 2. Edit copies
     fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "2" } });
     await waitFor(() => expect(batchCalls.length).toBe(3));
-    expect(batchCalls[2]?.labels?.length).toBe(4);
+    expect(batchCalls[2]?.labels?.map((l) => l.copies)).toEqual([2, 2]);
 
     // 3. Edit start slot
     fireEvent.change(screen.getByLabelText(/start slot/i), { target: { value: "3" } });
@@ -1935,8 +1968,8 @@ describe("issue-413: Connect reads the published parameter list", () => {
     await waitFor(() => expect(countCalls("/api/render")).toBe(1));
     const batchCall = fetchMock.mock.calls.find(([u]) => String(u) === "/api/render")!;
     expect(JSON.parse(String((batchCall[1] as RequestInit).body)).labels).toEqual([
-      { data: { name: "Drill", flag: false, on: true } },
-      { data: { name: "Hammer", flag: false, on: true } },
+      { data: { name: "Drill", flag: false, on: true }, copies: 1 },
+      { data: { name: "Hammer", flag: false, on: true }, copies: 1 },
     ]);
   });
 });

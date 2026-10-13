@@ -24,14 +24,12 @@ describe("labelGrid logic", () => {
     expect(MAX_BATCH_LABELS).toBe(500);
   });
 
-  it("resolveLabels applies dataFor and expands copies adjacently", () => {
+  it("resolveLabels applies dataFor and sends each row once carrying copies", () => {
     const rows = [row("a", { sku: "1", extra: "drop" }), row("b", { sku: "2", extra: "drop" })];
     const out = resolveLabels(rows, 2, (r) => ({ sku: r.data.sku }));
     expect(out).toEqual([
-      { data: { sku: "1" } },
-      { data: { sku: "1" } },
-      { data: { sku: "2" } },
-      { data: { sku: "2" } },
+      { data: { sku: "1" }, copies: 2 },
+      { data: { sku: "2" }, copies: 2 },
     ]);
   });
 

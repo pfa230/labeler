@@ -1556,7 +1556,7 @@ async fn run_batch(
                     "batch returned non-print for print mode",
                 ));
             };
-            let total = labels.len();
+            let total = units.iter().map(|u| u.indices.len()).sum();
             let jobs = units.len();
             let mut failed = Vec::new();
             for unit in &units {
@@ -1573,6 +1573,7 @@ async fn run_batch(
                         &crate::driver::PrintOptions {
                             artifact_format,
                             media_size,
+                            copies: unit.copies,
                         },
                     )
                     .await

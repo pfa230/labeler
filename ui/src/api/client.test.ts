@@ -21,7 +21,7 @@ describe("api client", () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
-    const body = { template: "t", printer: "p", labels: [{ data: {} }, { data: {} }] };
+    const body = { template: "t", printer: "p", labels: [{ data: {}, copies: 1 }, { data: {}, copies: 2 }] };
     expect(await printBatch(body)).toEqual(summary);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/print");
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual(body);
@@ -34,7 +34,7 @@ describe("api client", () => {
         headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="t.zip"' },
       }));
     vi.stubGlobal("fetch", fetchMock);
-    const body = { template: "t", labels: [{ data: {} }], format: "pdf" as const };
+    const body = { template: "t", labels: [{ data: {}, copies: 1 }], format: "pdf" as const };
     const result = await renderBatch(body);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/render");
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual(body);

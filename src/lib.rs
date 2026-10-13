@@ -2339,6 +2339,126 @@ layout: []
     }
 
     #[tokio::test]
+    async fn copies_is_an_optional_integer_of_at_least_one() {
+        let app = build_app();
+        let render = |copies: Option<Value>| {
+            let mut label = json!({ "data": { "message": "Hi", "code": "Q" } });
+            if let Some(c) = copies {
+                label["copies"] = c;
+            }
+            json!({ "template": "brother_24mm_qr", "labels": [label] })
+        };
+        for copies in [None, Some(json!(2))] {
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "POST",
+                    "/api/render",
+                    render(copies.clone()).to_string(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::OK, "{copies:?}");
+        }
+        for copies in [json!(0), json!(-1), json!(1.5), Value::Null] {
+            let (status, resp) =
+                post_batch(&app, "/api/render", render(Some(copies.clone()))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{copies}");
+            assert_eq!(
+                resp["error"]["details"]["reason"], "json_malformed",
+                "{copies}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn copies_count_toward_the_label_cap() {
+        let app = build_app();
+        let batch = |copies: &[u64], data: Value| {
+            let labels: Vec<Value> = copies
+                .iter()
+                .map(|c| json!({ "data": data, "copies": c }))
+                .collect();
+            json!({ "template": "brother_24mm_qr", "labels": labels })
+        };
+        let good = json!({ "message": "Hi", "code": "Q" });
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render",
+                batch(&[250, 250], good.clone()).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (status, resp) = post_batch(&app, "/api/render", batch(&[300, 300], good)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(resp["error"]["code"], "PayloadTooLarge");
+        // An undeclared key would be 422 if the entry were rendered before the count was checked.
+        let bad = json!({ "message": "Hi", "code": "Q", "nope": 1 });
+        let (status, _) = post_batch(&app, "/api/render", batch(&[u64::from(u32::MAX)], bad)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn copies_count_as_zip_labels() {
+        use std::io::Read as _;
+        let app = build_app();
+        let body = json!({
+            "template": "brother_24mm_qr",
+            "labels": [
+                { "data": { "message": "A", "code": "A" }, "copies": 2 },
+                { "data": { "message": "B", "code": "B" } }
+            ]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/render", body.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+        let entries: Vec<(String, Vec<u8>)> = (0..zip.len())
+            .map(|i| {
+                let mut entry = zip.by_index(i).unwrap();
+                let mut content = Vec::new();
+                entry.read_to_end(&mut content).unwrap();
+                (entry.name().to_string(), content)
+            })
+            .collect();
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["1.png", "2.png", "3.png"]);
+        assert!(entries[0].1 == entries[1].1, "1.png and 2.png are both A");
+        assert!(entries[1].1 != entries[2].1, "3.png is B");
+    }
+
+    #[tokio::test]
+    async fn a_failing_entry_fails_each_of_its_labels() {
+        let app = build_app();
+        let body = json!({
+            "template": "brother_24mm_qr",
+            "labels": [{ "data": { "message": "A", "code": "A", "nope": 1 }, "copies": 2 }]
+        });
+        let (status, resp) = post_batch(&app, "/api/render", body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(resp["error"]["code"], "BatchInvalid");
+        let failures: Vec<(u64, &str)> = resp["error"]["details"]["failures"]
+            .as_array()
+            .expect("failures")
+            .iter()
+            .map(|f| {
+                (
+                    f["index"].as_u64().unwrap(),
+                    f["details"]["reason"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(failures, [(0, "data_key_unknown"), (1, "data_key_unknown")]);
+    }
+
+    #[tokio::test]
     async fn print_takes_the_shared_body_limit() {
         let app = build_app();
         let body = |len: usize| {
@@ -6268,6 +6388,26 @@ layout:
         }
     }
 
+    #[test]
+    fn openapi_label_copies_is_an_optional_integer_of_at_least_one() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let schemas = doc.components.as_ref().unwrap().schemas.clone();
+        let schema = serde_json::to_value(&schemas["LabelInput"]).unwrap();
+        let copies = &schema["properties"]["copies"];
+        assert_eq!(copies["type"], "integer", "{schema}");
+        assert_eq!(copies["minimum"], 1, "{schema}");
+        assert_eq!(copies["default"], 1, "{schema}");
+        assert!(
+            !schema["required"]
+                .as_array()
+                .expect("required array")
+                .contains(&json!("copies")),
+            "{schema}"
+        );
+        assert!(!schema.to_string().contains("\"null\""), "{schema}");
+    }
+
     /// The printer bodies refuse `null` (errors spec, request body rejection), so the published
     /// schemas must not offer it, and the response omits unset fields rather than writing `null`.
     #[test]
@@ -6542,6 +6682,307 @@ layout:
             json!({ "uri": "ipp://fake.test/", "render": { "color_mode": "bilevel" } }),
         )
         .await;
+    }
+
+    /// What the loopback printer answers to a `Print-Job`.
+    #[derive(Clone, Copy)]
+    enum JobReply {
+        Accept,
+        Refuse,
+        /// Read the job, then close the connection without replying.
+        Close,
+    }
+
+    /// One `Print-Job` as it crossed the wire.
+    struct SentJob {
+        attributes: ipp::attribute::IppAttributes,
+        document: Vec<u8>,
+    }
+
+    impl SentJob {
+        fn attr(
+            &self,
+            group: ipp::model::DelimiterTag,
+            name: &str,
+        ) -> Option<ipp::value::IppValue> {
+            self.attributes
+                .groups_of(group)
+                .find_map(|g| g.attributes().get(name).map(|a| a.value().clone()))
+        }
+
+        fn job_attr(&self, name: &str) -> Option<ipp::value::IppValue> {
+            self.attr(ipp::model::DelimiterTag::JobAttributes, name)
+        }
+
+        fn y_dimension(&self) -> Option<i32> {
+            use ipp::value::IppValue;
+            let Some(IppValue::Collection(col)) = self.job_attr("media-col") else {
+                return None;
+            };
+            let Some(IppValue::Collection(size)) = col.get("media-size") else {
+                return None;
+            };
+            match size.get("y-dimension") {
+                Some(IppValue::Integer(y)) => Some(*y),
+                _ => None,
+            }
+        }
+    }
+
+    /// A loopback IPP printer that the real `CupsDriver` sends to. It advertises a bi-level PNG
+    /// printer, records every `Print-Job` with its attribute groups and document, and answers job n
+    /// as `replies[n]` says, accepting any job past the list. Returns its URI and the job log.
+    async fn loopback_printer(
+        replies: Vec<JobReply>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<SentJob>>>) {
+        use ipp::prelude::*;
+        use std::io::Read as _;
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let jobs = log.clone();
+        let handler = move |body: axum::body::Bytes| {
+            let (jobs, replies) = (jobs.clone(), replies.clone());
+            async move {
+                let request = ipp::parser::IppParser::new(std::io::Cursor::new(body.to_vec()))
+                    .parse()
+                    .expect("an IPP request");
+                let header = *request.header();
+                let mut status = StatusCode::SuccessfulOk;
+                let mut printer = Vec::new();
+                if header.operation_or_status == Operation::PrintJob as u16 {
+                    let attributes = request.attributes().clone();
+                    let mut document = Vec::new();
+                    request
+                        .into_payload()
+                        .read_to_end(&mut document)
+                        .expect("job document");
+                    let n = {
+                        let mut jobs = jobs.lock().unwrap();
+                        jobs.push(SentJob {
+                            attributes,
+                            document,
+                        });
+                        jobs.len() - 1
+                    };
+                    match replies.get(n).copied().unwrap_or(JobReply::Accept) {
+                        JobReply::Accept => {}
+                        JobReply::Refuse => {
+                            status = StatusCode::ClientErrorAttributesOrValuesNotSupported
+                        }
+                        // Unwinding without the panic hook ends the connection's task, which drops
+                        // its socket before a byte of reply is written.
+                        JobReply::Close => std::panic::resume_unwind(Box::new("no reply")),
+                    }
+                } else {
+                    let name = |s: &str| -> ipp::value::IppName { s.try_into().unwrap() };
+                    let mime = |s: &str| IppValue::MimeMediaType(s.try_into().unwrap());
+                    printer.push(IppAttribute::new(
+                        name("print-color-mode-supported"),
+                        IppValue::Keyword("bi-level".try_into().unwrap()),
+                    ));
+                    printer.push(IppAttribute::new(
+                        name("document-format-supported"),
+                        IppValue::Array(vec![mime("image/png"), mime("application/pdf")]),
+                    ));
+                }
+                let mut reply =
+                    IppRequestResponse::new_response(header.version, status, header.request_id)
+                        .unwrap();
+                for attr in printer {
+                    reply
+                        .attributes_mut()
+                        .add(DelimiterTag::PrinterAttributes, attr);
+                }
+                (
+                    [("content-type", "application/ipp")],
+                    reply.to_bytes().to_vec(),
+                )
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(
+            async move { axum::serve(listener, axum::Router::new().fallback(handler)).await },
+        );
+        (format!("ipp://127.0.0.1:{port}/ipp/print"), log)
+    }
+
+    /// Print `labels` of `template` to a fresh loopback printer; returns the summary and the jobs.
+    async fn print_to_loopback(
+        template: &str,
+        labels: Value,
+        replies: Vec<JobReply>,
+    ) -> (Value, Vec<SentJob>) {
+        let app = build_app();
+        let (uri, log) = loopback_printer(replies).await;
+        let printer = json!({ "id": "lp", "name": "lp", "uri": uri });
+        let (status, _) = post_batch(&app, "/api/printers", printer).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let body = json!({ "template": template, "printer": "lp", "labels": labels });
+        let (status, summary) = post_batch(&app, "/api/print", body).await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        let jobs = std::mem::take(&mut *log.lock().unwrap());
+        (summary, jobs)
+    }
+
+    fn failed_indices(summary: &Value) -> Vec<u64> {
+        summary["failed"]
+            .as_array()
+            .expect("failed array")
+            .iter()
+            .map(|f| f["index"].as_u64().unwrap())
+            .collect()
+    }
+
+    /// The bi-level PNG the print path renders for `data` of `brother_24mm_qr`, and its length in
+    /// hundredths of a millimetre.
+    fn bilevel_tape_label(data: &Value) -> (Vec<u8>, i32) {
+        let registry = crate::templates::load_all_for_tests().0;
+        let template = registry.get("brother_24mm_qr").expect("fixture");
+        let (settings, formats) = (
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+        );
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now: chrono::Local::now(),
+        };
+        let env = crate::render::resolve_environment(template, &settings, &datetime).unwrap();
+        let label = crate::render::render_single_label_as(
+            template,
+            &serde_json::from_value(data.clone()).unwrap(),
+            &env,
+            crate::render::SingleKind::Png,
+            crate::render::ImageRenderOptions {
+                color_mode: crate::render::ColorMode::BiLevel,
+                resolution_dpi: None,
+            },
+        )
+        .unwrap();
+        (label.bytes, crate::driver::hundredths_mm(label.width_mm))
+    }
+
+    #[tokio::test]
+    async fn three_copies_go_as_one_job_asking_for_exact_treatment() {
+        use ipp::model::DelimiterTag;
+        use ipp::value::IppValue;
+        let data = json!({ "message": "Hi", "code": "Q" });
+        let (summary, jobs) = print_to_loopback(
+            "brother_24mm_qr",
+            json!([{ "data": data, "copies": 3 }]),
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            (&summary["total"], &summary["sent"], &summary["jobs"]),
+            (&json!(3), &json!(3), &json!(1))
+        );
+        assert!(failed_indices(&summary).is_empty());
+        assert_eq!(jobs.len(), 1);
+        let job = &jobs[0];
+        assert_eq!(job.job_attr("copies"), Some(IppValue::Integer(3)));
+        assert_eq!(
+            job.attr(DelimiterTag::OperationAttributes, "ipp-attribute-fidelity"),
+            Some(IppValue::Boolean(true))
+        );
+        assert_eq!(job.y_dimension(), Some(bilevel_tape_label(&data).1));
+    }
+
+    #[tokio::test]
+    async fn one_copy_is_one_job_with_copies_one() {
+        use ipp::value::IppValue;
+        let (_, jobs) = print_to_loopback(
+            "brother_24mm_qr",
+            json!([{ "data": { "message": "Hi", "code": "Q" } }]),
+            vec![],
+        )
+        .await;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_attr("copies"), Some(IppValue::Integer(1)));
+    }
+
+    #[tokio::test]
+    async fn distinct_copies_entries_keep_their_jobs_and_order() {
+        use ipp::model::DelimiterTag;
+        use ipp::value::IppValue;
+        let a = json!({ "message": "a", "code": "A" });
+        let b = json!({ "message": "a much longer message on the tape", "code": "B" });
+        let (summary, jobs) = print_to_loopback(
+            "brother_24mm_qr",
+            json!([{ "data": a, "copies": 3 }, { "data": b, "copies": 3 }]),
+            vec![],
+        )
+        .await;
+        assert_eq!(summary["jobs"], 2);
+        assert_eq!(jobs.len(), 2);
+        let (a_png, a_len) = bilevel_tape_label(&a);
+        let (b_png, b_len) = bilevel_tape_label(&b);
+        assert_ne!(a_len, b_len, "the two labels must differ in length");
+        for (job, png, len) in [(&jobs[0], a_png, a_len), (&jobs[1], b_png, b_len)] {
+            assert_eq!(job.job_attr("copies"), Some(IppValue::Integer(3)));
+            assert_eq!(job.y_dimension(), Some(len));
+            assert!(job.document == png, "a job carries its own label's PNG");
+            assert_eq!(
+                job.attr(DelimiterTag::OperationAttributes, "document-format"),
+                Some(IppValue::MimeMediaType("image/png".try_into().unwrap()))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sheet_is_one_pdf_job_with_copies_one() {
+        use ipp::model::DelimiterTag;
+        use ipp::value::IppValue;
+        let data = json!({ "id": "A1", "url": "https://example.com/A1", "name": "Grinder" });
+        let (summary, jobs) = print_to_loopback(
+            "avery5163_asset_tag",
+            json!([{ "data": data, "copies": 3 }]),
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            (&summary["total"], &summary["jobs"]),
+            (&json!(3), &json!(1))
+        );
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_attr("copies"), Some(IppValue::Integer(1)));
+        assert_eq!(
+            jobs[0].attr(DelimiterTag::OperationAttributes, "document-format"),
+            Some(IppValue::MimeMediaType(
+                "application/pdf".try_into().unwrap()
+            ))
+        );
+        assert!(jobs[0].document.starts_with(b"%PDF"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_copies_job_fails_all_its_labels() {
+        let (summary, jobs) = print_to_loopback(
+            "brother_24mm_qr",
+            json!([
+                { "data": { "message": "A", "code": "A" } },
+                { "data": { "message": "B", "code": "B" }, "copies": 3 }
+            ]),
+            vec![JobReply::Accept, JobReply::Refuse],
+        )
+        .await;
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(
+            (&summary["total"], &summary["sent"], &summary["jobs"]),
+            (&json!(4), &json!(1), &json!(2))
+        );
+        assert_eq!(failed_indices(&summary), [1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn a_job_without_a_reply_is_not_resent() {
+        let (summary, jobs) = print_to_loopback(
+            "brother_24mm_qr",
+            json!([{ "data": { "message": "A", "code": "A" }, "copies": 3 }]),
+            vec![JobReply::Close],
+        )
+        .await;
+        assert_eq!(jobs.len(), 1, "the job was sent exactly once");
+        assert_eq!(failed_indices(&summary), [0, 1, 2]);
     }
 
     #[tokio::test]

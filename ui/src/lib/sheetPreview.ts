@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { ParamValue } from "../api/types";
-import type { ResolvedLabel } from "./labelGrid";
+import type { BatchLabel } from "./labelGrid";
 import type { PreviewState } from "../components/PreviewPane";
 
 export interface SheetPreviewInput {
   templateId: string;
-  labels: ResolvedLabel[];
+  labels: BatchLabel[];
   startSlot?: number;
 }
 
@@ -15,6 +15,7 @@ const sortObj = (o?: Record<string, ParamValue>) =>
 export function sheetPreviewKey(i: SheetPreviewInput): string {
   const sortedLabels = i.labels.map((l) => ({
     data: sortObj(l.data),
+    copies: l.copies,
   }));
   return JSON.stringify([i.templateId, sortedLabels, i.startSlot]);
 }

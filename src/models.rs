@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroU32;
 use utoipa::ToSchema;
 
 #[derive(Serialize, ToSchema)]
@@ -982,6 +983,15 @@ pub struct BatchSummary {
 #[serde(deny_unknown_fields)]
 pub struct LabelInput {
     pub data: HashMap<String, Value>,
+    /// How many labels this entry stands for (rendering, "Batch request").
+    #[serde(default = "one_copy")]
+    #[schema(value_type = u32, minimum = 1, default = 1)]
+    pub copies: NonZeroU32,
+}
+
+/// `NonZeroU32` has no `Default`, so serde needs a named default for an absent `copies`.
+fn one_copy() -> NonZeroU32 {
+    NonZeroU32::MIN
 }
 
 /// Deserialize a present key as `Some`. Paired with `#[serde(default)]`, an absent key stays `None`

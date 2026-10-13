@@ -4599,6 +4599,7 @@ layout:
     fn sheet_label(msg: &str) -> LabelInput {
         LabelInput {
             data: HashMap::from([("message".to_string(), json!(msg))]),
+            copies: std::num::NonZeroU32::MIN,
         }
     }
 
@@ -4638,6 +4639,7 @@ layout:
             sheet_label("a"),
             LabelInput {
                 data: HashMap::from([("message".to_string(), json!(["a", "b"]))]),
+                copies: std::num::NonZeroU32::MIN,
             },
         ];
         let err = render_sheet_pages(
@@ -4844,6 +4846,7 @@ layout:
 
         let labels = vec![LabelInput {
             data: HashMap::from([("message".to_string(), json!("Hello"))]),
+            copies: std::num::NonZeroU32::MIN,
         }];
 
         let pdf = render_sheet_pages(
@@ -4959,6 +4962,7 @@ layout:
                 "logo".to_string(),
                 json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
             )]),
+            copies: std::num::NonZeroU32::MIN,
         }];
         let pdf = render_sheet_pages(
             &template,
@@ -9721,6 +9725,7 @@ layout:
         };
         let labels = vec![LabelInput {
             data: HashMap::new(),
+            copies: std::num::NonZeroU32::MIN,
         }];
         let pdf = render_sheet_pages(
             &template,
@@ -10032,7 +10037,10 @@ layout:
         data.insert("description".to_string(), json!("Test asset"));
         data.insert("orientation".to_string(), json!("horizontal"));
         // outline is omitted (no default declared) -> outline container is inactive
-        let labels = vec![crate::models::LabelInput { data: data.clone() }];
+        let labels = vec![crate::models::LabelInput {
+            data: data.clone(),
+            copies: std::num::NonZeroU32::MIN,
+        }];
         let pdf = render_sheet_pages(
             template,
             &labels,

@@ -116,7 +116,7 @@ describe("PrintForm copies", () => {
     vi.restoreAllMocks();
   });
 
-  it("routes a tape Print to /api/print with the label repeated `copies` times", async () => {
+  it("routes a tape Print to /api/print as one label entry carrying `copies`", async () => {
     renderForm(tape);
     await fillAndSelectPrinter();
 
@@ -128,13 +128,12 @@ describe("PrintForm copies", () => {
 
     await waitFor(() => expect(countCalls("/api/print")).toBe(1));
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    const label = { data: { message: "hello" } };
-    expect(body).toEqual({ template: tape.id, printer: "p1", labels: [label, label, label] });
+    expect(body).toEqual({ template: tape.id, printer: "p1", labels: [{ data: { message: "hello" }, copies: 3 }] });
     expect(countCalls("/api/render")).toBe(0);
     expect(await screen.findByText("Sent 1 labels to Label Printer")).toBeInTheDocument();
   });
 
-  it("routes a sheet Print to /api/print with the label repeated `copies` times", async () => {
+  it("routes a sheet Print to /api/print as one label entry carrying `copies`", async () => {
     renderForm(sheet);
     await fillAndSelectPrinter();
 
@@ -146,11 +145,11 @@ describe("PrintForm copies", () => {
 
     await waitFor(() => expect(countCalls("/api/print")).toBe(1));
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    expect(body.labels.length).toBe(2);
+    expect(body.labels).toEqual([{ data: { message: "hello" }, copies: 2 }]);
     expect(body.mode).toBeUndefined();
   });
 
-  it("downloads a single template through /api/render with `copies` labels in the chosen format", async () => {
+  it("downloads a single template through /api/render as one entry carrying `copies`, in the chosen format", async () => {
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     renderForm(tape);
     const message = (await screen.findByLabelText("message")) as HTMLInputElement;
@@ -162,8 +161,7 @@ describe("PrintForm copies", () => {
 
     await waitFor(() => expect(countCalls("/api/render")).toBe(1));
     const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
-    const label = { data: { message: "hello" } };
-    expect(body).toEqual({ template: tape.id, labels: [label, label], format: "pdf" });
+    expect(body).toEqual({ template: tape.id, labels: [{ data: { message: "hello" }, copies: 2 }], format: "pdf" });
   });
 
   it("shows a refused label's own error after a Download", async () => {
@@ -596,7 +594,7 @@ describe("PrintForm empty template", () => {
     fireEvent.click(print);
     await waitFor(() => expect(countCalls("/api/print")).toBe(1));
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    expect(body.labels).toEqual([{ data: {} }]);
+    expect(body.labels).toEqual([{ data: {}, copies: 1 }]);
     expect(body.fields).toBeUndefined();
   });
 });

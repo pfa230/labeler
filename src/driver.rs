@@ -46,6 +46,8 @@ pub struct PrintOptions {
     pub artifact_format: ArtifactFormat,
     /// Present for a template declaring `media_width`.
     pub media_size: Option<MediaSize>,
+    /// IPP `copies`: a single entry's count, 1 for a sheet.
+    pub copies: u32,
 }
 
 impl Default for PrintOptions {
@@ -53,6 +55,7 @@ impl Default for PrintOptions {
         Self {
             artifact_format: ArtifactFormat::Pdf,
             media_size: None,
+            copies: 1,
         }
     }
 }
@@ -71,8 +74,9 @@ pub fn media_width_mm(media_width: f32, unit: &str) -> f64 {
     }
 }
 
-/// The IPP `Print-Job` request for one job: titled `labeler`, typed by the artifact, and carrying
-/// `media-col` when the template declares a media width.
+/// The IPP `Print-Job` request for one job: titled `labeler`, typed by the artifact, asking for
+/// exact treatment (`ipp-attribute-fidelity`) and `copies`, and carrying `media-col` when the
+/// template declares a media width.
 pub fn print_job_request(
     uri: ipp::prelude::Uri,
     artifact: &[u8],
@@ -81,11 +85,14 @@ pub fn print_job_request(
     use ipp::prelude::*;
     use std::collections::BTreeMap;
     let payload = IppPayload::new(std::io::Cursor::new(artifact.to_vec()));
+    let name = |s: &str| -> ipp::value::IppName { s.try_into().expect("static IPP name") };
+    let copies = i32::try_from(opts.copies)
+        .map_err(|_| PrintError::Transport(format!("copies {} out of range", opts.copies)))?;
     let mut builder = IppOperationBuilder::print_job(uri, payload)
         .document_format(ipp_document_format(opts.artifact_format))
-        .job_title("labeler");
+        .job_title("labeler")
+        .attribute(IppAttribute::new(name("copies"), IppValue::Integer(copies)));
     if let Some(m) = opts.media_size {
-        let name = |s: &str| -> ipp::value::IppName { s.try_into().expect("static IPP name") };
         let size = IppValue::Collection(BTreeMap::from([
             (name("x-dimension"), IppValue::Integer(m.x_dimension)),
             (name("y-dimension"), IppValue::Integer(m.y_dimension)),
@@ -93,10 +100,15 @@ pub fn print_job_request(
         let col = IppValue::Collection(BTreeMap::from([(name("media-size"), size)]));
         builder = builder.attribute(IppAttribute::new(name("media-col"), col));
     }
-    builder
+    let mut request: IppRequestResponse = builder
         .build()
         .map(Into::into)
-        .map_err(|err| PrintError::Transport(err.to_string()))
+        .map_err(|err| PrintError::Transport(err.to_string()))?;
+    request.attributes_mut().add(
+        DelimiterTag::OperationAttributes,
+        IppAttribute::new(name("ipp-attribute-fidelity"), IppValue::Boolean(true)),
+    );
+    Ok(request)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -981,6 +993,7 @@ mod tests {
                 x_dimension: 2400,
                 y_dimension: 6250,
             }),
+            copies: 1,
         };
         let Some(IppValue::Collection(col)) = media_col(&with) else {
             panic!("media-col missing or not a collection");
@@ -999,6 +1012,7 @@ mod tests {
         let without = PrintOptions {
             artifact_format: ArtifactFormat::Pdf,
             media_size: None,
+            copies: 1,
         };
         assert!(media_col(&without).is_none());
     }

@@ -80,7 +80,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     setBusy(true);
     try {
-      const labels = Array.from({ length: clampCopies(copies) }, () => label);
+      const labels = [{ ...label, copies: clampCopies(copies) }];
       const { blob, filename } = await renderBatch(
         isSheet
           ? { template: detail.id, labels, ...(startSlot ? { start_slot: startSlot } : {}) }
@@ -105,7 +105,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
       const summary = await printBatch({
         template: detail.id,
         printer,
-        labels: Array.from({ length: clampCopies(copies) }, () => label),
+        labels: [{ ...label, copies: clampCopies(copies) }],
         ...(startSlot ? { start_slot: startSlot } : {}),
       });
       showSummary(summary, printer);

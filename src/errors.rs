@@ -62,7 +62,7 @@ impl NotFoundKind {
 
 /// One label's failure within a batch: the label's 0-based index plus the error object it would
 /// have produced on its own.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BatchFailure {
     pub index: usize,
     pub code: &'static str,
@@ -168,8 +168,8 @@ impl AppError {
         )
     }
 
-    pub fn batch_too_large(count: usize, max: usize) -> Self {
-        Self::payload_too_large(format!("batch has {count} labels; the maximum is {max}"))
+    pub fn batch_too_large(max: usize) -> Self {
+        Self::payload_too_large(format!("batch has more than {max} labels"))
     }
 
     pub fn payload_too_large(message: impl Into<String>) -> Self {

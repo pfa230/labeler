@@ -33,17 +33,17 @@ export interface ResolvedLabel {
   data: Record<string, ParamValue>;
 }
 
+// A batch entry: one label sent once, standing for `copies` labels (rendering, "Batch request").
+export interface BatchLabel extends ResolvedLabel {
+  copies: number;
+}
+
 export function resolveLabels(
   rows: LabelGridRow[],
   copies: number,
   dataFor: (row: LabelGridRow) => Record<string, ParamValue>,
-): ResolvedLabel[] {
-  const out: ResolvedLabel[] = [];
-  for (const row of rows) {
-    const label: ResolvedLabel = { data: dataFor(row) };
-    for (let i = 0; i < copies; i += 1) out.push(label);
-  }
-  return out;
+): BatchLabel[] {
+  return rows.map((row) => ({ data: dataFor(row), copies }));
 }
 
 export function sheetPreviewBlock(total: number): string | undefined {

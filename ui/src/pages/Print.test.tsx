@@ -198,7 +198,7 @@ describe("Print screen", () => {
     await waitFor(() => expect(renderCall()).toBeDefined());
     await waitFor(() => expect(createUrl.mock.calls.length).toBe(beforeUrls + 1));
     const renderBody = JSON.parse((renderCall()![1] as RequestInit).body as string);
-    expect(renderBody).toEqual({ template: "t1", labels: [{ data: { message: "hello" } }], format: "png" });
+    expect(renderBody).toEqual({ template: "t1", labels: [{ data: { message: "hello" }, copies: 1 }], format: "png" });
 
     // Select the printer → Print enables.
     fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p1" } });
@@ -208,7 +208,7 @@ describe("Print screen", () => {
     fireEvent.click(print);
     await waitFor(() => expect(printCall()).toBeDefined());
     const printBody = JSON.parse((printCall()![1] as RequestInit).body as string);
-    expect(printBody).toEqual({ template: "t1", printer: "p1", labels: [{ data: { message: "hello" } }] });
+    expect(printBody).toEqual({ template: "t1", printer: "p1", labels: [{ data: { message: "hello" }, copies: 1 }] });
     expect(await screen.findByText("Sent 1 labels to Label Printer")).toBeInTheDocument();
   });
 

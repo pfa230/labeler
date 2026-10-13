@@ -1,5 +1,5 @@
 import type { ApiErrorBody, PrintSummary } from "./types";
-import type { ResolvedLabel } from "../lib/labelGrid";
+import type { BatchLabel } from "../lib/labelGrid";
 
 const BASE = "/api";
 
@@ -77,8 +77,8 @@ export async function fetchBlob(path: string, init?: RequestInit): Promise<{ blo
   return { blob: await res.blob(), filename: filenameFrom(res) };
 }
 
-export interface RenderBody { template: string; labels: ResolvedLabel[]; start_slot?: number; format?: "png" | "pdf" }
-export interface PrintBody { template: string; labels: ResolvedLabel[]; start_slot?: number; printer: string }
+export interface RenderBody { template: string; labels: BatchLabel[]; start_slot?: number; format?: "png" | "pdf" }
+export interface PrintBody { template: string; labels: BatchLabel[]; start_slot?: number; printer: string }
 
 // /api/render: a 2xx is always the file (ZIP for single, PDF for sheet); failure is the JSON error contract.
 export function renderBatch(body: RenderBody): Promise<{ blob: Blob; filename?: string }> {

@@ -408,6 +408,7 @@ layout:
     };
     let labels = vec![LabelInput {
         data: HashMap::new(),
+        copies: std::num::NonZeroU32::MIN,
     }];
     let settings = BTreeMap::new();
     let pdf_sheet = render_sheet_pages(
