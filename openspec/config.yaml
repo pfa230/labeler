@@ -4,6 +4,10 @@ context: |
   Labeler is a stateless label-rendering REST service in Rust (axum) with a React UI. It renders YAML
   label templates to PNG, PDF or ZIP through Typst. AGENTS.md holds the project rules; follow it.
 
+  The project is minimal by design (AGENTS.md "Simplicity"). A change builds only what its issue asks
+  for and the contract requires. It adds nothing for cases nobody has hit, for another system breaking
+  its own contract, or for keeping behavior the change replaces.
+
   The spec is one capability per domain under `openspec/specs/`: templates, parameters, interpolation,
   layout, text, rendering, errors, auth, printing, settings, connections, mcp, ui. Read only the domains a
   change touches. Every error `reason` slug is listed once, in the `errors` spec's "Reason slugs"
@@ -13,6 +17,7 @@ rules:
   proposal:
     - Include literal `Fixes #N` for the one GitHub issue this change implements.
     - Stay inside that issue's scope. Work found outside it becomes a new issue, never an extra task.
+    - Each listed change answers the issue's explicit request or a requirement the change amends. Drop the rest.
     - Changes with no behavior change set `skip_specs: true` in `.openspec.yaml`.
   specs:
     - Put each delta in the existing domain capability it belongs to. Create a new capability only for a genuinely new domain.
@@ -22,8 +27,11 @@ rules:
     - A new or removed reason slug edits the `errors` "Reason slugs" table.
   design:
     - State the decision and why it beat the alternatives.
+    - Choose the design with the fewest moving parts. Reject a simpler alternative only for a concrete failure it causes, named here; "safer", "more general" and "keeps today's behavior" are not failures.
+    - No detection of, fallback for or workaround to another system breaking its contract. Rely on what it promises.
   tasks:
     - Tasks are execution steps for this change only, never a backlog.
+    - No task for instrumentation, a hypothetical case or a defense the specs do not require.
 
 operations:
   apply:
@@ -31,3 +39,4 @@ operations:
       - Check a task only after performing it. Do not write a task whose completion nothing can show, such as opening a rendered image.
       - A test that cannot fail is worse than no test. Before accepting one, name what would have to break for it to fail.
       - Stay inside the change's scope. Do not widen a parser or change behavior for inputs the issue never mentions.
+      - Write the simplest code that meets the plan. Add no option, abstraction, fallback or defensive check the plan does not require.
