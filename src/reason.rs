@@ -57,6 +57,7 @@ reasons! {
     FieldNotApplicable => "field_not_applicable",
     FormatUnsupported => "format_unsupported",
     PrinterInvalid => "printer_invalid",
+    ChainAndContinueUnsupported => "chain_and_continue_unsupported",
     FilterInvalid => "filter_invalid",
     RowKeyInvalid => "row_key_invalid",
     RowLimitExceeded => "row_limit_exceeded",

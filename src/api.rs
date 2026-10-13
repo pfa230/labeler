@@ -189,6 +189,7 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/templates/{id}/thumbnail", get(thumbnail))
         .route("/printers", get(list_printers).post(create_printer))
         .route("/printers/probe", post(probe_printer))
+        .route("/printers/{id}/probe", post(probe_stored_printer))
         .route(
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
@@ -1003,6 +1004,8 @@ pub struct ProbeCapabilities {
     /// `"color"`, `"bilevel"`, or `"unknown"` (printer advertised no color/raster attribute).
     pub color: String,
     pub accepts_png: bool,
+    /// The printer advertises the `ptouch-chain` finishing template.
+    pub chain_and_continue: bool,
 }
 
 /// Result of a probe. Always returned inside a `200`; reachability is data, not the HTTP status.
@@ -1029,6 +1032,7 @@ impl ProbeResponse {
                 resolution_dpi: caps.resolution_dpi,
                 color: color.to_string(),
                 accepts_png: caps.accepts_png,
+                chain_and_continue: caps.supports_chain_and_continue,
             },
         }
     }
@@ -1046,7 +1050,30 @@ impl ProbeResponse {
 pub async fn probe_printer(
     Json(connection): Json<PrinterConnection>,
 ) -> Result<Json<ProbeResponse>, AppError> {
-    let driver = crate::driver::driver_for(&connection)
+    probe_connection(&connection).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/printers/{id}/probe",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses(
+        (status = 200, description = "Probe result (ok or unreachable)", body = ProbeResponse),
+        (status = 404, description = "Printer not found", body = ErrorResponse)
+    )
+)]
+pub async fn probe_stored_printer(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ProbeResponse>, AppError> {
+    let Some(connection) = state.store().get_printer_connection(&id).await? else {
+        return Err(AppError::not_found(NotFoundKind::Printer, id));
+    };
+    probe_connection(&connection).await
+}
+
+async fn probe_connection(connection: &PrinterConnection) -> Result<Json<ProbeResponse>, AppError> {
+    let driver = crate::driver::driver_for(connection)
         .map_err(|e| AppError::printer_invalid(e.to_string()))?;
     Ok(Json(match driver.probe().await {
         crate::driver::ProbeOutcome::Ok(c) => ProbeResponse::ok(c),
@@ -1437,8 +1464,14 @@ fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str)
 
 /// Where a batch goes: a file for `/render`, a printer for `/print`.
 enum BatchTarget<'a> {
-    File { format: Option<&'a str> },
-    Printer { id: &'a str, actor: &'a str },
+    File {
+        format: Option<&'a str>,
+    },
+    Printer {
+        id: &'a str,
+        actor: &'a str,
+        chain_and_continue: bool,
+    },
 }
 
 /// Shared by `/render` and `/print`: decides the request-level faults, then renders every label
@@ -1506,6 +1539,7 @@ async fn run_batch(
         BatchTarget::Printer {
             id: printer_id,
             actor,
+            chain_and_continue,
         } => {
             let connection = state
                 .store()
@@ -1524,11 +1558,17 @@ async fn run_batch(
                 } => Some(crate::driver::media_width_mm(*w, &template.unit)),
                 _ => None,
             };
-            // Capabilities only feed negotiation (printing, "Render negotiation").
-            let caps = if ovr.color_mode.is_none() || ovr.resolution_dpi.is_none() {
-                driver.capabilities().await
+            // One query feeds job finishing and render negotiation (printing, "Render negotiation").
+            let caps = driver.capabilities().await;
+            let finishing = if chain_and_continue {
+                if !caps.as_ref().is_some_and(|c| c.supports_chain_and_continue) {
+                    return Err(AppError::chain_and_continue_unsupported());
+                }
+                Some(crate::driver::Finishing::ChainAndContinue)
             } else {
-                None
+                caps.as_ref()
+                    .filter(|c| c.supports_trim)
+                    .map(|_| crate::driver::Finishing::Trim)
             };
             let render_opts = crate::driver::effective_render(&ovr, caps.as_ref());
             let artifact_format =
@@ -1574,6 +1614,7 @@ async fn run_batch(
                             artifact_format,
                             media_size,
                             copies: unit.copies,
+                            finishing,
                         },
                     )
                     .await
@@ -1671,6 +1712,7 @@ pub async fn print_labels(
         BatchTarget::Printer {
             id: &req.printer,
             actor: &principal.actor_id(),
+            chain_and_continue: req.chain_and_continue,
         },
     )
     .await

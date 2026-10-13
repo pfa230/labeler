@@ -96,6 +96,7 @@ export interface ProbeCapabilities {
   resolution_dpi?: number | null;
   color: "color" | "bilevel" | "unknown";
   accepts_png: boolean;
+  chain_and_continue: boolean;
 }
 export type ProbeResult =
   | { status: "ok"; capabilities: ProbeCapabilities }

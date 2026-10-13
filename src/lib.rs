@@ -4855,6 +4855,20 @@ layout:
         assert_eq!(v["capabilities"]["color"], "bilevel");
         assert_eq!(v["capabilities"]["model"], "Brother PT-2730");
         assert_eq!(v["capabilities"]["resolution_dpi"], 180);
+        assert_eq!(v["capabilities"]["chain_and_continue"], false);
+    }
+
+    #[tokio::test]
+    async fn probe_reports_chain_and_continue_support() {
+        let app = build_app();
+        let body = json!({ "uri": "ipp://fake.test/?chain=1" }).to_string();
+        let resp = app
+            .oneshot(json_req("POST", "/api/printers/probe", body))
+            .await
+            .expect("request");
+        let v = json_response(resp).await;
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["capabilities"]["chain_and_continue"], true);
     }
 
     #[tokio::test]
@@ -6365,7 +6379,13 @@ layout:
             ),
             (
                 "PrintRequest",
-                &["template", "labels", "start_slot", "printer"][..],
+                &[
+                    "template",
+                    "labels",
+                    "start_slot",
+                    "printer",
+                    "chain_and_continue",
+                ][..],
                 &["template", "labels", "printer"][..],
             ),
         ] {
@@ -6729,18 +6749,29 @@ layout:
         }
     }
 
+    /// What a loopback printer received.
+    #[derive(Default)]
+    struct PrinterLog {
+        jobs: Vec<SentJob>,
+        /// `Get-Printer-Attributes` requests.
+        probes: usize,
+    }
+
     /// A loopback IPP printer that the real `CupsDriver` sends to. It advertises a bi-level PNG
-    /// printer, records every `Print-Job` with its attribute groups and document, and answers job n
-    /// as `replies[n]` says, accepting any job past the list. Returns its URI and the job log.
+    /// printer plus the current `advert`, or refuses a capability query while it is `None`; records
+    /// every `Print-Job` with its attribute groups and document, and answers job n as `replies[n]`
+    /// says, accepting any job past the list. Returns its URI and the log.
     async fn loopback_printer(
         replies: Vec<JobReply>,
-    ) -> (String, Arc<std::sync::Mutex<Vec<SentJob>>>) {
+        advert: Arc<std::sync::Mutex<Option<Vec<ipp::attribute::IppAttribute>>>>,
+    ) -> (String, Arc<std::sync::Mutex<PrinterLog>>) {
         use ipp::prelude::*;
         use std::io::Read as _;
-        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = Arc::new(std::sync::Mutex::new(PrinterLog::default()));
         let jobs = log.clone();
         let handler = move |body: axum::body::Bytes| {
             let (jobs, replies) = (jobs.clone(), replies.clone());
+            let advert = advert.lock().unwrap().clone();
             async move {
                 let request = ipp::parser::IppParser::new(std::io::Cursor::new(body.to_vec()))
                     .parse()
@@ -6756,7 +6787,7 @@ layout:
                         .read_to_end(&mut document)
                         .expect("job document");
                     let n = {
-                        let mut jobs = jobs.lock().unwrap();
+                        let jobs = &mut jobs.lock().unwrap().jobs;
                         jobs.push(SentJob {
                             attributes,
                             document,
@@ -6772,7 +6803,9 @@ layout:
                         // its socket before a byte of reply is written.
                         JobReply::Close => std::panic::resume_unwind(Box::new("no reply")),
                     }
-                } else {
+                } else if let Some(advert) = advert {
+                    jobs.lock().unwrap().probes += 1;
+                    printer.extend(advert);
                     let name = |s: &str| -> ipp::value::IppName { s.try_into().unwrap() };
                     let mime = |s: &str| IppValue::MimeMediaType(s.try_into().unwrap());
                     printer.push(IppAttribute::new(
@@ -6783,6 +6816,9 @@ layout:
                         name("document-format-supported"),
                         IppValue::Array(vec![mime("image/png"), mime("application/pdf")]),
                     ));
+                } else {
+                    jobs.lock().unwrap().probes += 1;
+                    status = StatusCode::ServerErrorServiceUnavailable;
                 }
                 let mut reply =
                     IppRequestResponse::new_response(header.version, status, header.request_id)
@@ -6812,16 +6848,34 @@ layout:
         labels: Value,
         replies: Vec<JobReply>,
     ) -> (Value, Vec<SentJob>) {
-        let app = build_app();
-        let (uri, log) = loopback_printer(replies).await;
-        let printer = json!({ "id": "lp", "name": "lp", "uri": uri });
-        let (status, _) = post_batch(&app, "/api/printers", printer).await;
-        assert_eq!(status, StatusCode::CREATED);
-        let body = json!({ "template": template, "printer": "lp", "labels": labels });
-        let (status, summary) = post_batch(&app, "/api/print", body).await;
+        let body = json!({ "template": template, "labels": labels });
+        let (status, summary, log, _) =
+            print_via_loopback(json!({}), Some(vec![]), body, replies).await;
         assert_eq!(status, StatusCode::OK, "{summary}");
-        let jobs = std::mem::take(&mut *log.lock().unwrap());
-        (summary, jobs)
+        (summary, log.jobs)
+    }
+
+    /// Store a loopback printer `lp` with the extra printer `fields` and capability `advert`, then
+    /// send it the print `request`; returns the response, the printer's log and the logged job
+    /// statuses.
+    async fn print_via_loopback(
+        mut fields: Value,
+        advert: Option<Vec<ipp::attribute::IppAttribute>>,
+        mut request: Value,
+        replies: Vec<JobReply>,
+    ) -> (StatusCode, Value, PrinterLog, Vec<String>) {
+        let (app, state) = build_app_with_state();
+        let (uri, log) = loopback_printer(replies, Arc::new(std::sync::Mutex::new(advert))).await;
+        fields["id"] = json!("lp");
+        fields["name"] = json!("lp");
+        fields["uri"] = json!(uri);
+        let (status, _) = post_batch(&app, "/api/printers", fields).await;
+        assert_eq!(status, StatusCode::CREATED);
+        request["printer"] = json!("lp");
+        let (status, body) = post_batch(&app, "/api/print", request).await;
+        let log = std::mem::take(&mut *log.lock().unwrap());
+        let statuses = state.store().job_statuses().await.unwrap();
+        (status, body, log, statuses)
     }
 
     fn failed_indices(summary: &Value) -> Vec<u64> {
@@ -6836,6 +6890,11 @@ layout:
     /// The bi-level PNG the print path renders for `data` of `brother_24mm_qr`, and its length in
     /// hundredths of a millimetre.
     fn bilevel_tape_label(data: &Value) -> (Vec<u8>, i32) {
+        bilevel_tape_label_at(data, None)
+    }
+
+    /// [`bilevel_tape_label`] rendered at `resolution_dpi`.
+    fn bilevel_tape_label_at(data: &Value, resolution_dpi: Option<u32>) -> (Vec<u8>, i32) {
         let registry = crate::templates::load_all_for_tests().0;
         let template = registry.get("brother_24mm_qr").expect("fixture");
         let (settings, formats) = (
@@ -6854,7 +6913,7 @@ layout:
             crate::render::SingleKind::Png,
             crate::render::ImageRenderOptions {
                 color_mode: crate::render::ColorMode::BiLevel,
-                resolution_dpi: None,
+                resolution_dpi,
             },
         )
         .unwrap();
@@ -6983,6 +7042,473 @@ layout:
         .await;
         assert_eq!(jobs.len(), 1, "the job was sent exactly once");
         assert_eq!(failed_indices(&summary), [0, 1, 2]);
+    }
+
+    /// The PT-2730's finishing advertisement: trim among other enums, and the chain template.
+    fn pt2730_advert() -> Vec<ipp::attribute::IppAttribute> {
+        use ipp::attribute::IppAttribute;
+        use ipp::value::IppValue;
+        let keyword = |s: &str| IppValue::Keyword(s.try_into().unwrap());
+        vec![
+            IppAttribute::with_name(
+                "finishings-supported",
+                IppValue::Array(vec![IppValue::Enum(3), IppValue::Enum(11)]),
+            )
+            .unwrap(),
+            IppAttribute::with_name("finishings-col-supported", keyword("finishing-template"))
+                .unwrap(),
+            IppAttribute::with_name(
+                "finishing-template-supported",
+                IppValue::Array(vec![keyword("ptouch-trim"), keyword("ptouch-chain")]),
+            )
+            .unwrap(),
+        ]
+    }
+
+    /// A printer advertising trim and no finishing template.
+    fn trim_only_advert() -> Vec<ipp::attribute::IppAttribute> {
+        vec![pt2730_advert().remove(0)]
+    }
+
+    /// A job's (`finishings`, `finishings-col`).
+    fn finishing_of(job: &SentJob) -> (Option<ipp::value::IppValue>, Option<ipp::value::IppValue>) {
+        (job.job_attr("finishings"), job.job_attr("finishings-col"))
+    }
+
+    fn chained() -> (Option<ipp::value::IppValue>, Option<ipp::value::IppValue>) {
+        use ipp::value::IppValue;
+        let col = IppValue::Collection(std::collections::BTreeMap::from([(
+            "finishing-template".try_into().unwrap(),
+            IppValue::Keyword("ptouch-chain".try_into().unwrap()),
+        )]));
+        (None, Some(col))
+    }
+
+    fn trimmed() -> (Option<ipp::value::IppValue>, Option<ipp::value::IppValue>) {
+        (Some(ipp::value::IppValue::Enum(11)), None)
+    }
+
+    /// `POST` with no body, as the print form sends a stored-printer probe.
+    async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let status = resp.status();
+        (status, json_response(resp).await)
+    }
+
+    #[tokio::test]
+    async fn checked_copies_continue_in_one_chained_job() {
+        use ipp::model::DelimiterTag;
+        use ipp::value::IppValue;
+        let data = json!({ "message": "Hi", "code": "Q" });
+        let request = json!({
+            "template": "brother_24mm_qr",
+            "labels": [{ "data": data, "copies": 3 }],
+            "chain_and_continue": true
+        });
+        let (status, summary, log, statuses) =
+            print_via_loopback(json!({}), Some(pt2730_advert()), request, vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        assert_eq!(
+            (&summary["total"], &summary["sent"], &summary["jobs"]),
+            (&json!(3), &json!(3), &json!(1))
+        );
+        assert!(failed_indices(&summary).is_empty());
+        assert_eq!(log.probes, 1, "one capability query per print request");
+        assert_eq!(log.jobs.len(), 1);
+        let job = &log.jobs[0];
+        assert_eq!(finishing_of(job), chained());
+        assert_eq!(job.job_attr("copies"), Some(IppValue::Integer(3)));
+        assert_eq!(
+            job.attr(DelimiterTag::OperationAttributes, "ipp-attribute-fidelity"),
+            Some(IppValue::Boolean(true))
+        );
+        let (png, len) = bilevel_tape_label(&data);
+        assert_eq!(job.y_dimension(), Some(len));
+        assert!(job.document == png);
+        assert_eq!(statuses, ["ok"]);
+    }
+
+    #[tokio::test]
+    async fn every_checked_entry_continues_including_the_last() {
+        let labels: Vec<Value> = ["a", "bb", "a much longer message"]
+            .iter()
+            .map(|m| json!({ "message": m, "code": "Q" }))
+            .collect();
+        let request = json!({
+            "template": "brother_24mm_qr",
+            "labels": labels.iter().map(|d| json!({ "data": d })).collect::<Vec<_>>(),
+            "chain_and_continue": true
+        });
+        let (status, summary, log, _) =
+            print_via_loopback(json!({}), Some(pt2730_advert()), request, vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        assert_eq!(summary["jobs"], 3);
+        assert_eq!(log.jobs.len(), 3);
+        for (job, data) in log.jobs.iter().zip(&labels) {
+            assert_eq!(finishing_of(job), chained());
+            assert!(
+                job.document == bilevel_tape_label(data).0,
+                "jobs keep their order"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_printing_trims_every_job_when_trim_is_advertised() {
+        let labels = json!([
+            { "data": { "message": "a", "code": "A" } },
+            { "data": { "message": "b", "code": "B" }, "copies": 2 }
+        ]);
+        for continuation in [json!({}), json!({ "chain_and_continue": false })] {
+            let mut request = json!({ "template": "brother_24mm_qr", "labels": labels });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(continuation.as_object().unwrap().clone());
+            let (status, summary, log, _) =
+                print_via_loopback(json!({}), Some(pt2730_advert()), request, vec![]).await;
+            assert_eq!(status, StatusCode::OK, "{summary}");
+            assert_eq!(summary["sent"], 3);
+            assert_eq!(log.jobs.len(), 2);
+            for job in &log.jobs {
+                assert_eq!(finishing_of(job), trimmed(), "{continuation}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_printing_without_trim_omits_finishing() {
+        // A printer advertising no finishing, and one whose capability query fails.
+        for advert in [Some(vec![]), None] {
+            let request = json!({
+                "template": "brother_24mm_qr",
+                "labels": [{ "data": { "message": "a", "code": "A" }, "copies": 2 }]
+            });
+            let (status, summary, log, _) =
+                print_via_loopback(json!({}), advert, request, vec![]).await;
+            assert_eq!(status, StatusCode::OK, "{summary}");
+            assert_eq!(summary["sent"], 2);
+            assert_eq!(log.jobs.len(), 1);
+            assert_eq!(finishing_of(&log.jobs[0]), (None, None));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_checked_sheet_is_one_chained_pdf_job() {
+        use ipp::value::IppValue;
+        let data = json!({ "id": "A1", "url": "https://example.com/A1", "name": "Grinder" });
+        let request = json!({
+            "template": "avery5163_asset_tag",
+            "labels": [{ "data": data, "copies": 3 }],
+            "chain_and_continue": true
+        });
+        let (status, summary, log, _) =
+            print_via_loopback(json!({}), Some(pt2730_advert()), request, vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        assert_eq!(
+            (&summary["total"], &summary["jobs"]),
+            (&json!(3), &json!(1))
+        );
+        assert_eq!(log.jobs.len(), 1);
+        assert_eq!(finishing_of(&log.jobs[0]), chained());
+        assert_eq!(log.jobs[0].job_attr("copies"), Some(IppValue::Integer(1)));
+        assert!(log.jobs[0].document.starts_with(b"%PDF"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_continued_job_adds_no_cut_or_replay() {
+        let labels: Vec<Value> = ["a", "b", "c"]
+            .iter()
+            .map(|m| json!({ "data": { "message": m, "code": "Q" } }))
+            .collect();
+        for (replies, failed, statuses) in [
+            (
+                vec![JobReply::Accept, JobReply::Refuse, JobReply::Accept],
+                [1],
+                ["ok", "failed", "ok"],
+            ),
+            (
+                vec![JobReply::Accept, JobReply::Accept, JobReply::Close],
+                [2],
+                ["ok", "ok", "failed"],
+            ),
+        ] {
+            let request = json!({
+                "template": "brother_24mm_qr",
+                "labels": labels,
+                "chain_and_continue": true
+            });
+            let (status, summary, log, logged) =
+                print_via_loopback(json!({}), Some(pt2730_advert()), request, replies).await;
+            assert_eq!(status, StatusCode::OK, "{summary}");
+            assert_eq!(
+                (&summary["total"], &summary["sent"], &summary["jobs"]),
+                (&json!(3), &json!(2), &json!(3))
+            );
+            assert_eq!(failed_indices(&summary), failed);
+            assert_eq!(logged, statuses);
+            assert_eq!(
+                log.jobs.len(),
+                3,
+                "each job is sent once and nothing follows"
+            );
+            for (job, label) in log.jobs.iter().zip(&labels) {
+                assert_eq!(finishing_of(job), chained());
+                assert!(job.document == bilevel_tape_label(&label["data"]).0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_continuation_is_refused_before_any_label() {
+        // A label with an undeclared key: the continuation refusal outranks it.
+        let request = json!({
+            "template": "brother_24mm_qr",
+            "labels": [{ "data": { "message": "a", "code": "A", "nope": 1 } }],
+            "chain_and_continue": true
+        });
+        for advert in [Some(trim_only_advert()), Some(vec![]), None] {
+            let (status, body, log, statuses) =
+                print_via_loopback(json!({}), advert, request.clone(), vec![]).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"]["code"], "InvalidRequest");
+            assert_eq!(
+                body["error"]["details"]["reason"],
+                "chain_and_continue_unsupported"
+            );
+            assert!(body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("chain_and_continue"));
+            assert!(log.jobs.is_empty());
+            assert!(statuses.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn continuation_lost_since_the_form_probe_is_refused() {
+        let app = build_app();
+        let advert = Arc::new(std::sync::Mutex::new(Some(pt2730_advert())));
+        let (uri, log) = loopback_printer(vec![], advert.clone()).await;
+        let printer = json!({ "id": "lp", "name": "lp", "uri": uri });
+        let (status, _) = post_batch(&app, "/api/printers", printer).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (_, probe) = post_empty(&app, "/api/printers/lp/probe").await;
+        assert_eq!(probe["capabilities"]["chain_and_continue"], true);
+
+        *advert.lock().unwrap() = Some(trim_only_advert());
+        let request = json!({
+            "template": "brother_24mm_qr",
+            "printer": "lp",
+            "labels": [{ "data": { "message": "a", "code": "A" } }],
+            "chain_and_continue": true
+        });
+        let (status, body) = post_batch(&app, "/api/print", request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "chain_and_continue_unsupported"
+        );
+        assert!(log.lock().unwrap().jobs.is_empty(), "no trim job instead");
+    }
+
+    #[tokio::test]
+    async fn render_overrides_do_not_bypass_finishing_discovery() {
+        use ipp::model::DelimiterTag;
+        use ipp::value::IppValue;
+        let data = json!({ "message": "Hi", "code": "Q" });
+        let request = json!({
+            "template": "brother_24mm_qr",
+            "labels": [{ "data": data }],
+            "chain_and_continue": true
+        });
+        // The loopback negotiates bi-level PNG at the template dpi; each override must still win.
+        let color = json!({ "render": { "color_mode": "color", "resolution": 300 } });
+        let (status, summary, log, _) =
+            print_via_loopback(color, Some(pt2730_advert()), request.clone(), vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        assert_eq!(log.probes, 1);
+        assert_eq!(finishing_of(&log.jobs[0]), chained());
+        assert_eq!(
+            log.jobs[0].attr(DelimiterTag::OperationAttributes, "document-format"),
+            Some(IppValue::MimeMediaType(
+                "application/pdf".try_into().unwrap()
+            ))
+        );
+
+        let bilevel = json!({ "render": { "color_mode": "bilevel", "resolution": 300 } });
+        let (status, summary, log, _) =
+            print_via_loopback(bilevel, Some(pt2730_advert()), request, vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        assert_eq!(log.probes, 1);
+        assert_eq!(finishing_of(&log.jobs[0]), chained());
+        let (at_300, _) = bilevel_tape_label_at(&data, Some(300));
+        assert!(at_300 != bilevel_tape_label(&data).0, "300 dpi must differ");
+        assert!(log.jobs[0].document == at_300);
+    }
+
+    #[tokio::test]
+    async fn continuation_is_a_strict_print_only_boolean() {
+        let app = build_app();
+        for (id, uri) in [
+            ("plain", "ipp://fake.test/"),
+            ("chain", "ipp://fake.test/?chain=1"),
+        ] {
+            let body = json!({ "id": id, "name": id, "uri": uri });
+            assert_eq!(
+                post_batch(&app, "/api/printers", body).await.0,
+                StatusCode::CREATED
+            );
+        }
+        let labels = json!([{ "data": { "message": "Hi", "code": "Q" } }]);
+        let print = |printer: &str, extra: Value| {
+            let mut body =
+                json!({ "template": "brother_24mm_qr", "printer": printer, "labels": labels });
+            if let Value::Object(extra) = extra {
+                body.as_object_mut().unwrap().extend(extra);
+            }
+            body
+        };
+        for body in [
+            print("plain", json!({})),
+            print("plain", json!({ "chain_and_continue": false })),
+            print("chain", json!({ "chain_and_continue": true })),
+        ] {
+            let (status, summary) = post_batch(&app, "/api/print", body.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{body}: {summary}");
+            assert_eq!(summary["sent"], 1);
+        }
+        let malformed = [
+            (
+                "/api/print",
+                print("chain", json!({ "chain_and_continue": null })),
+            ),
+            (
+                "/api/print",
+                print("chain", json!({ "chain_and_continue": "true" })),
+            ),
+            (
+                "/api/print",
+                print("chain", json!({ "chain_and_continue": 1 })),
+            ),
+            (
+                "/api/render",
+                json!({ "template": "brother_24mm_qr", "labels": labels, "chain_and_continue": false }),
+            ),
+        ];
+        for (uri, body) in malformed {
+            let (status, error) = post_batch(&app, uri, body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(
+                error["error"]["details"]["reason"], "json_malformed",
+                "{body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_probe_reads_capabilities_without_printing_or_changing_the_printer() {
+        let app = build_app();
+        let advert = Arc::new(std::sync::Mutex::new(Some(pt2730_advert())));
+        let (uri, log) = loopback_printer(vec![], advert).await;
+        let printer = json!({ "id": "lp", "name": "lp", "uri": uri });
+        assert_eq!(
+            post_batch(&app, "/api/printers", printer).await.0,
+            StatusCode::CREATED
+        );
+        let before = get_json(&app, "/api/printers/lp").await;
+        let (status, probe) = post_empty(&app, "/api/printers/lp/probe").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(probe["status"], "ok");
+        assert_eq!(probe["capabilities"]["color"], "bilevel");
+        assert_eq!(probe["capabilities"]["chain_and_continue"], true);
+        {
+            let log = log.lock().unwrap();
+            assert_eq!(log.probes, 1);
+            assert!(log.jobs.is_empty());
+        }
+        assert_eq!(get_json(&app, "/api/printers/lp").await, before);
+    }
+
+    #[tokio::test]
+    async fn a_stored_probe_uses_the_saved_password_and_transport_privately() {
+        let app = build_app();
+        let uri = "ipp://fake.test/?chain=1&password=hunter2-secret&insecure=1";
+        for (id, password, insecure) in [
+            ("right", "hunter2-secret", true),
+            ("wrong-password", "other", true),
+            ("wrong-transport", "hunter2-secret", false),
+        ] {
+            let body = json!({
+                "id": id, "name": id, "uri": uri, "password": password, "insecure": insecure
+            });
+            assert_eq!(
+                post_batch(&app, "/api/printers", body).await.0,
+                StatusCode::CREATED
+            );
+        }
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/printers/right/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(!text.contains("hunter2"), "{text}");
+        let probe: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(probe["capabilities"]["chain_and_continue"], true, "{text}");
+        for id in ["wrong-password", "wrong-transport"] {
+            let (_, probe) = post_empty(&app, &format!("/api/printers/{id}/probe")).await;
+            assert_eq!(probe["status"], "unreachable", "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_probe_of_an_unknown_printer_is_404() {
+        let app = build_app();
+        let (status, body) = post_empty(&app, "/api/printers/nope/probe").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "NotFound");
+        assert_eq!(
+            body["error"]["details"],
+            json!({ "kind": "printer", "id": "nope" })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_stored_printer_probes_as_unreachable() {
+        let app = build_app();
+        let body =
+            json!({ "id": "down", "name": "down", "uri": "ipp://fake.test/?probe=unreachable" });
+        assert_eq!(
+            post_batch(&app, "/api/printers", body).await.0,
+            StatusCode::CREATED
+        );
+        let before = get_json(&app, "/api/printers/down").await;
+        let (status, probe) = post_empty(&app, "/api/printers/down/probe").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(probe["status"], "unreachable");
+        assert!(probe["detail"].is_string());
+        assert_eq!(get_json(&app, "/api/printers/down").await, before);
     }
 
     #[tokio::test]

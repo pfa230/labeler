@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../../app/toast";
 import { PrintForm } from "./PrintForm";
@@ -43,10 +43,25 @@ const sheet: TemplateDetail = {
 const printers = [{ id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false }];
 const summary = { total: 1, sent: 1, failed: [], jobs: 1 };
 
-function stubFetch(printersList: unknown[] = printers, defaultPrinterId: string | null = null) {
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const probeOk = (chain: boolean) => ({
+  status: "ok",
+  capabilities: { color: "bilevel", accepts_png: true, chain_and_continue: chain },
+});
+
+// `probes` answers each stored printer's probe by id; a printer it does not name probes without
+// chain support.
+function stubFetch(
+  printersList: unknown[] = printers,
+  defaultPrinterId: string | null = null,
+  probes: Record<string, () => Promise<Response>> = {},
+) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     void init;
     const url = typeof input === "string" ? input : input.toString();
+    const probed = url.match(/^\/api\/printers\/([^/]+)\/probe$/);
+    if (probed) return probes[probed[1]]?.() ?? json(probeOk(false));
     if (url === "/api/settings") {
       return new Response(
         JSON.stringify({ default_printer_id: { value: defaultPrinterId, is_default: defaultPrinterId === null } }),
@@ -668,5 +683,199 @@ describe("issue-413: two-state checkbox", () => {
     await waitFor(() => expect(countCalls("/api/print")).toBe(2));
     const toggled = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     expect(toggled.labels[0].data).toEqual({ plain: true, off: false, on: false, tokened: true });
+  });
+});
+
+describe("PrintForm chain and continue", () => {
+  const two = [
+    { id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false },
+    { id: "p2", name: "Backup Printer", uri: "ipp://p2/q", insecure: false },
+  ];
+  const supported = async () => json(probeOk(true));
+  const chainBox = () => screen.queryByRole("checkbox", { name: "Chain and continue" });
+  const findChainBox = () => screen.findByRole("checkbox", { name: "Chain and continue" });
+  const bodyOf = (call: unknown[]) => JSON.parse((call[1] as RequestInit).body as string);
+  const printBody = () => bodyOf(lastCall("/api/print")!);
+  const ordinary = (printer: string, copies = 1) => ({
+    template: tape.id,
+    printer,
+    labels: [{ data: { message: "hello" }, copies }],
+  });
+  const use = (mock: ReturnType<typeof stubFetch>) => {
+    fetchMock = mock;
+    vi.stubGlobal("fetch", fetchMock);
+  };
+  const clickPrint = async (n: number) => {
+    const print = screen.getByRole("button", { name: /^print$/i });
+    await waitFor(() => expect(print).toBeEnabled());
+    fireEvent.click(print);
+    await waitFor(() => expect(countCalls("/api/print")).toBe(n));
+  };
+
+  beforeEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("offers an unchecked box beside Print on confirmed support and sends true only when checked", async () => {
+    use(stubFetch(printers, null, { p1: supported }));
+    renderForm(tape);
+    await fillAndSelectPrinter();
+    const box = await findChainBox();
+    expect(box).not.toBeChecked();
+    expect(box).toHaveAccessibleDescription(/last one attached for the next print/);
+    const print = screen.getByRole("button", { name: /^print$/i });
+    expect(print.closest("div[class*='sticky']")).toContainElement(box);
+    expect((lastCall("/api/printers/p1/probe")![1] as RequestInit).method).toBe("POST");
+
+    await clickPrint(1);
+    expect(printBody()).toEqual(ordinary("p1"));
+
+    fireEvent.click(box);
+    fireEvent.change(screen.getByLabelText("copies"), { target: { value: "3" } });
+    await clickPrint(2);
+    expect(printBody()).toEqual({ ...ordinary("p1", 3), chain_and_continue: true });
+    expect(box).toBeChecked();
+  });
+
+  it("hides the box while support is loading, unsupported or unreachable, keeping Print usable", async () => {
+    const cases: Record<string, () => Promise<Response>> = {
+      loading: () => new Promise<Response>(() => {}),
+      unsupported: async () => json(probeOk(false)),
+      unreachable: async () => json({ status: "unreachable", detail: "down" }),
+      failed: async () => json({ error: { code: "Internal", message: "boom" } }, 500),
+    };
+    for (const [name, answer] of Object.entries(cases)) {
+      use(stubFetch(printers, null, { p1: answer }));
+      renderForm(tape);
+      await fillAndSelectPrinter();
+      await waitFor(() => expect(countCalls("/api/printers/p1/probe")).toBe(1));
+      await clickPrint(1);
+      expect(chainBox(), name).toBeNull();
+      expect(printBody(), name).toEqual(ordinary("p1"));
+      cleanup();
+    }
+  });
+
+  it("hides the box and probes nothing with no printer selected", async () => {
+    use(stubFetch(two, null, { p1: supported, p2: supported }));
+    renderForm(tape);
+    await screen.findByLabelText("printer");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(chainBox()).toBeNull();
+    expect(countCalls("/api/printers/p1/probe") + countCalls("/api/printers/p2/probe")).toBe(0);
+  });
+
+  it("clears the choice on a printer switch, even to a printer whose support is already known", async () => {
+    use(stubFetch(two, null, { p1: supported, p2: supported }));
+    renderForm(tape);
+    const printer = await screen.findByLabelText("printer");
+    await screen.findByRole("option", { name: "Backup Printer" });
+    fireEvent.change(printer, { target: { value: "p2" } });
+    await findChainBox();
+    await fillAndSelectPrinter();
+    fireEvent.click(await findChainBox());
+    expect(chainBox()).toBeChecked();
+
+    // p2's cached result confirms support at once, so only the switch itself clears the choice.
+    fireEvent.change(printer, { target: { value: "p2" } });
+    expect(chainBox()).not.toBeChecked();
+    await clickPrint(1);
+    expect(printBody()).toEqual(ordinary("p2"));
+  });
+
+  it("does not let the previous printer's late probe enable the box for the new one", async () => {
+    let answerP1: (r: Response) => void = () => {};
+    use(
+      stubFetch(two, null, {
+        p1: () => new Promise((r) => (answerP1 = r)),
+        p2: async () => json(probeOk(false)),
+      }),
+    );
+    renderForm(tape);
+    await fillAndSelectPrinter();
+    await waitFor(() => expect(countCalls("/api/printers/p1/probe")).toBe(1));
+    fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p2" } });
+    await waitFor(() => expect(countCalls("/api/printers/p2/probe")).toBe(1));
+    answerP1(json(probeOk(true)));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(chainBox()).toBeNull();
+    await clickPrint(1);
+    expect(printBody()).toEqual(ordinary("p2"));
+  });
+
+  it("clears a checked choice once the printer's latest probe no longer confirms support", async () => {
+    let answer = supported;
+    use(stubFetch(printers, null, { p1: () => answer() }));
+    const qc = renderForm(tape);
+    await fillAndSelectPrinter();
+    fireEvent.click(await findChainBox());
+
+    const failed = async () => json({ error: { code: "Internal", message: "boom" } }, 500);
+    for (const lost of [async () => json(probeOk(false)), failed]) {
+      answer = lost;
+      await qc.invalidateQueries({ queryKey: ["printers"] });
+      await waitFor(() => expect(chainBox()).toBeNull());
+
+      answer = supported;
+      await qc.invalidateQueries({ queryKey: ["printers"] });
+      const box = await findChainBox();
+      expect(box).not.toBeChecked();
+      fireEvent.click(box);
+    }
+    answer = async () => json(probeOk(false));
+    await qc.invalidateQueries({ queryKey: ["printers"] });
+    await waitFor(() => expect(chainBox()).toBeNull());
+    await clickPrint(1);
+    expect(printBody()).toEqual(ordinary("p1"));
+  });
+
+  it("shows an unsupported-continuation refusal through the print error presentation", async () => {
+    const base = stubFetch(printers, null, { p1: supported });
+    const refusal = {
+      error: {
+        code: "InvalidRequest",
+        message: "chain_and_continue is not supported: the printer does not advertise it",
+        details: { reason: "chain_and_continue_unsupported" },
+      },
+    };
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === "/api/print" ? json(refusal, 400) : base(input, init),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderForm(tape);
+    await fillAndSelectPrinter();
+    fireEvent.click(await findChainBox());
+    await clickPrint(1);
+    expect(printBody().chain_and_continue).toBe(true);
+    expect(await screen.findByText(refusal.error.message)).toBeInTheDocument();
+  });
+
+  it("keeps continuation out of preview and download requests", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    const cases = [
+      { detail: tape, field: "download format", value: "pdf", extra: { format: "pdf" } },
+      { detail: sheet, field: "start slot", value: "2", extra: { start_slot: 2 } },
+    ];
+    for (const { detail, field, value, extra } of cases) {
+      use(stubFetch(printers, null, { p1: supported }));
+      renderForm(detail);
+      await fillAndSelectPrinter();
+      fireEvent.click(await findChainBox());
+      fireEvent.change(screen.getByLabelText(field), { target: { value } });
+      await waitFor(() => expect(countCalls("/api/render/label") + countCalls("/api/render")).toBeGreaterThan(0));
+      fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+
+      // A download carries copies; a sheet preview through the same path does not.
+      const downloads = () =>
+        fetchMock.mock.calls.filter(([u]) => String(u) === "/api/render").map(bodyOf).filter((b) => b.labels[0].copies);
+      await waitFor(() => expect(downloads()).toHaveLength(1));
+      expect(downloads()[0]).toEqual({ template: detail.id, labels: [{ data: { message: "hello" }, copies: 1 }], ...extra });
+      const renders = fetchMock.mock.calls.filter(([u]) => String(u).startsWith("/api/render"));
+      expect(renders.length).toBeGreaterThan(1);
+      for (const call of renders) expect(bodyOf(call)).not.toHaveProperty("chain_and_continue");
+      cleanup();
+    }
   });
 });

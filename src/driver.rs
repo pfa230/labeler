@@ -41,6 +41,15 @@ pub struct MediaSize {
     pub y_dimension: i32,
 }
 
+/// The job finishing a print request resolves to (printing, "Print job finishing").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Finishing {
+    /// `finishings` enum 11.
+    Trim,
+    /// `finishings-col` with `finishing-template: ptouch-chain`.
+    ChainAndContinue,
+}
+
 #[derive(Debug, Clone)]
 pub struct PrintOptions {
     pub artifact_format: ArtifactFormat,
@@ -48,6 +57,8 @@ pub struct PrintOptions {
     pub media_size: Option<MediaSize>,
     /// IPP `copies`: a single entry's count, 1 for a sheet.
     pub copies: u32,
+    /// Absent for ordinary printing on a printer that does not advertise trim.
+    pub finishing: Option<Finishing>,
 }
 
 impl Default for PrintOptions {
@@ -56,6 +67,7 @@ impl Default for PrintOptions {
             artifact_format: ArtifactFormat::Pdf,
             media_size: None,
             copies: 1,
+            finishing: None,
         }
     }
 }
@@ -75,8 +87,8 @@ pub fn media_width_mm(media_width: f32, unit: &str) -> f64 {
 }
 
 /// The IPP `Print-Job` request for one job: titled `labeler`, typed by the artifact, asking for
-/// exact treatment (`ipp-attribute-fidelity`) and `copies`, and carrying `media-col` when the
-/// template declares a media width.
+/// exact treatment (`ipp-attribute-fidelity`) and `copies`, carrying `media-col` when the
+/// template declares a media width and the job's finishing when it has one.
 pub fn print_job_request(
     uri: ipp::prelude::Uri,
     artifact: &[u8],
@@ -99,6 +111,19 @@ pub fn print_job_request(
         ]));
         let col = IppValue::Collection(BTreeMap::from([(name("media-size"), size)]));
         builder = builder.attribute(IppAttribute::new(name("media-col"), col));
+    }
+    match opts.finishing {
+        Some(Finishing::Trim) => {
+            builder = builder.attribute(IppAttribute::new(name("finishings"), IppValue::Enum(11)));
+        }
+        Some(Finishing::ChainAndContinue) => {
+            let col = IppValue::Collection(BTreeMap::from([(
+                name("finishing-template"),
+                IppValue::Keyword("ptouch-chain".try_into().expect("static IPP keyword")),
+            )]));
+            builder = builder.attribute(IppAttribute::new(name("finishings-col"), col));
+        }
+        None => {}
     }
     let mut request: IppRequestResponse = builder
         .build()
@@ -353,6 +378,11 @@ pub struct PrinterCapabilities {
     pub loaded_media_width_mm: Option<f32>,
     /// `printer-make-and-model`, when reported.
     pub model: Option<String>,
+    /// `finishings-supported` includes enum 11.
+    pub supports_trim: bool,
+    /// `finishings-col-supported` includes `finishing-template` and `finishing-template-supported`
+    /// includes `ptouch-chain`.
+    pub supports_chain_and_continue: bool,
 }
 
 const COLOR_RASTER_TYPES: &[&str] = &["srgb_8", "sgray_8", "cmyk_8", "adobe-rgb_8", "srgb_16"];
@@ -403,6 +433,8 @@ impl PrinterCapabilities {
             resolution_dpi,
             loaded_media_width_mm: None,
             model,
+            supports_trim: false,
+            supports_chain_and_continue: false,
         }
     }
 
@@ -464,6 +496,31 @@ impl PrinterCapabilities {
             strings("printer-make-and-model").into_iter().next(),
         );
         caps.loaded_media_width_mm = loaded_media_width_mm(x_hundredths);
+        // Each advertisement is one value or a 1setOf; any other type establishes nothing.
+        let values = |name: &str| -> &[ipp::value::IppValue] {
+            match group
+                .and_then(|g| g.attributes().get(name))
+                .map(|a| a.value())
+            {
+                Some(ipp::value::IppValue::Array(items)) => items,
+                Some(v) => std::slice::from_ref(v),
+                None => &[],
+            }
+        };
+        caps.supports_trim =
+            values("finishings-supported").contains(&ipp::value::IppValue::Enum(11));
+        caps.supports_chain_and_continue = values("finishings-col-supported").iter().any(
+            |v| matches!(v, ipp::value::IppValue::Keyword(k) if k.as_str() == "finishing-template"),
+        ) && values("finishing-template-supported").iter().any(
+            |v| match v {
+                ipp::value::IppValue::Keyword(k) => k.as_str() == "ptouch-chain",
+                ipp::value::IppValue::NameWithoutLanguage(n) => n.as_str() == "ptouch-chain",
+                ipp::value::IppValue::NameWithLanguage { name, .. } => {
+                    name.as_str() == "ptouch-chain"
+                }
+                _ => false,
+            },
+        );
         caps
     }
 }
@@ -503,18 +560,22 @@ pub fn effective_render(
 
 /// Test-only driver for `ipp://fake.test/?<knobs>`: records nothing and succeeds or fails, for
 /// exercising the `/print` dispatch without a real printer. Knobs: `fail=1`, `probe=unreachable`,
-/// `password=<s>`, and capabilities `bilevel`, `png` (0/1), `dpi`, `media` (loaded width, mm),
-/// `model`; the printer reports capabilities iff at least one capability knob is present.
+/// `password=<s>`, `insecure` (0/1), and capabilities `bilevel`, `png`, `trim`, `chain` (0/1), `dpi`,
+/// `media` (loaded width, mm), `model`; the printer reports capabilities iff at least one capability
+/// knob is present.
 #[cfg(test)]
 struct FakeDriver {
     fail: bool,
     render: RenderOverride,
     caps: Option<PrinterCapabilities>,
     probe_unreachable: bool,
-    /// `send` fails unless this equals the connection's password (absent on both sides is equal),
-    /// so a test can observe the stored secret reaching dispatch.
+    /// `probe` and `send` fail unless this equals the connection's password (absent on both sides
+    /// is equal), so a test can observe the stored secret reaching the printer.
     expected_password: Option<String>,
     password: Option<String>,
+    /// `probe` and `send` fail unless the connection's `insecure` matches this knob when present.
+    expected_insecure: Option<bool>,
+    insecure: bool,
     /// `send` fails unless the job's `media-size` matches each knob present (`media_x`, `media_y`),
     /// like a printer refusing media it does not have.
     expected_media_x: Option<i32>,
@@ -532,7 +593,7 @@ impl FakeDriver {
             url.query_pairs().into_owned().collect();
         let knob = |k: &str| knobs.get(k).map(String::as_str);
         let number = |k: &str| knob(k).map(|v| v.parse::<u32>().expect("numeric fake knob"));
-        let has_caps = ["bilevel", "png", "dpi", "media", "model"]
+        let has_caps = ["bilevel", "png", "trim", "chain", "dpi", "media", "model"]
             .iter()
             .any(|k| knobs.contains_key(*k));
         let bilevel = knob("bilevel") == Some("1");
@@ -543,6 +604,8 @@ impl FakeDriver {
             resolution_dpi: number("dpi"),
             loaded_media_width_mm: number("media").map(|mm| mm as f32),
             model: knob("model").map(str::to_string),
+            supports_trim: knob("trim") == Some("1"),
+            supports_chain_and_continue: knob("chain") == Some("1"),
         });
         Some(Self {
             fail: knob("fail") == Some("1"),
@@ -551,6 +614,8 @@ impl FakeDriver {
             probe_unreachable: knob("probe") == Some("unreachable"),
             expected_password: knob("password").map(str::to_string),
             password: connection.password.clone(),
+            expected_insecure: knob("insecure").map(|v| v == "1"),
+            insecure: connection.insecure,
             expected_media_x: knob("media_x").map(|v| v.parse().expect("numeric fake knob")),
             expected_media_y: knob("media_y").map(|v| v.parse().expect("numeric fake knob")),
         })
@@ -558,6 +623,16 @@ impl FakeDriver {
 
     fn capabilities_sync(&self) -> Option<PrinterCapabilities> {
         self.caps.clone()
+    }
+
+    fn connection_refused(&self) -> Option<String> {
+        if self.password != self.expected_password {
+            return Some("fake: wrong password".to_string());
+        }
+        if self.expected_insecure.is_some_and(|i| i != self.insecure) {
+            return Some("fake: wrong transport settings".to_string());
+        }
+        None
     }
 }
 
@@ -572,6 +647,9 @@ impl PrinterDriver for FakeDriver {
         if self.probe_unreachable {
             return ProbeOutcome::Unreachable("fake unreachable".to_string());
         }
+        if let Some(refused) = self.connection_refused() {
+            return ProbeOutcome::Unreachable(refused);
+        }
         match self.capabilities_sync() {
             Some(c) => ProbeOutcome::Ok(c),
             None => ProbeOutcome::Unreachable("fake: no capabilities".to_string()),
@@ -582,8 +660,8 @@ impl PrinterDriver for FakeDriver {
         if self.fail {
             return Err(PrintError::Transport("fake failure".to_string()));
         }
-        if self.password != self.expected_password {
-            return Err(PrintError::Transport("fake: wrong password".to_string()));
+        if let Some(refused) = self.connection_refused() {
+            return Err(PrintError::Transport(refused));
         }
         let sent = opts.media_size;
         if self
@@ -715,6 +793,109 @@ mod tests {
                 .as_deref(),
             Some("Brother PT-2730")
         );
+    }
+
+    /// Capabilities read from a printer-attributes group holding exactly `attrs`.
+    fn caps_from(attrs: Vec<(&str, ipp::value::IppValue)>) -> PrinterCapabilities {
+        use ipp::attribute::{IppAttribute, IppAttributeGroup, IppAttributes};
+        use ipp::model::DelimiterTag;
+        let mut group = IppAttributeGroup::new(DelimiterTag::PrinterAttributes);
+        for (name, value) in attrs {
+            let attr = IppAttribute::with_name(name, value).unwrap();
+            group.attributes_mut().insert(attr.name().clone(), attr);
+        }
+        let mut all = IppAttributes::new();
+        all.groups_mut().push(group);
+        PrinterCapabilities::from_attributes(&all)
+    }
+
+    fn keyword(s: &str) -> ipp::value::IppValue {
+        ipp::value::IppValue::Keyword(s.try_into().unwrap())
+    }
+
+    #[test]
+    fn chain_support_needs_the_collection_member_and_the_template() {
+        use ipp::value::IppValue;
+        let name = IppValue::NameWithoutLanguage("ptouch-chain".try_into().unwrap());
+        let set = |vs: &[IppValue]| IppValue::Array(vs.to_vec());
+        let chain = |member: IppValue, template: IppValue| {
+            caps_from(vec![
+                ("finishings-col-supported", member),
+                ("finishing-template-supported", template),
+            ])
+            .supports_chain_and_continue
+        };
+        // Scalar and set forms, keyword or name template.
+        assert!(chain(
+            keyword("finishing-template"),
+            keyword("ptouch-chain")
+        ));
+        assert!(chain(
+            set(&[keyword("media-size"), keyword("finishing-template")]),
+            set(&[keyword("ptouch-trim"), name.clone()])
+        ));
+        // Wrongly typed advertisements establish nothing.
+        assert!(!chain(
+            IppValue::TextWithoutLanguage("finishing-template".try_into().unwrap()),
+            keyword("ptouch-chain")
+        ));
+        assert!(!chain(
+            keyword("finishing-template"),
+            IppValue::TextWithoutLanguage("ptouch-chain".try_into().unwrap())
+        ));
+        // Another template or member is not support.
+        assert!(!chain(
+            keyword("finishing-template"),
+            keyword("ptouch-trim")
+        ));
+        assert!(!chain(keyword("media-size"), keyword("ptouch-chain")));
+        // Either advertisement alone is not support.
+        assert!(
+            !caps_from(vec![(
+                "finishing-template-supported",
+                keyword("ptouch-chain")
+            )])
+            .supports_chain_and_continue
+        );
+        assert!(
+            !caps_from(vec![(
+                "finishings-col-supported",
+                keyword("finishing-template")
+            )])
+            .supports_chain_and_continue
+        );
+    }
+
+    #[test]
+    fn trim_support_is_enum_eleven_and_establishes_no_chain() {
+        use ipp::value::IppValue;
+        let enums = caps_from(vec![(
+            "finishings-supported",
+            IppValue::Array(vec![IppValue::Enum(3), IppValue::Enum(11)]),
+        )]);
+        assert!(enums.supports_trim && !enums.supports_chain_and_continue);
+        assert!(caps_from(vec![("finishings-supported", IppValue::Enum(11))]).supports_trim);
+        assert!(!caps_from(vec![("finishings-supported", IppValue::Enum(3))]).supports_trim);
+        assert!(!caps_from(vec![("finishings-supported", IppValue::Integer(11))]).supports_trim);
+        let silent = caps_from(vec![]);
+        assert!(!silent.supports_trim && !silent.supports_chain_and_continue);
+    }
+
+    #[test]
+    fn finishing_leaves_the_other_capabilities_alone() {
+        use ipp::value::IppValue;
+        let caps = caps_from(vec![
+            ("print-color-mode-supported", keyword("bi-level")),
+            (
+                "document-format-supported",
+                IppValue::MimeMediaType("image/png".try_into().unwrap()),
+            ),
+            ("finishings-supported", IppValue::Enum(11)),
+            ("finishings-col-supported", keyword("finishing-template")),
+            ("finishing-template-supported", keyword("ptouch-chain")),
+        ]);
+        assert!(caps.bilevel && caps.color_known && caps.accepts_png);
+        assert!(caps.supports_trim && caps.supports_chain_and_continue);
     }
 
     #[test]
@@ -994,6 +1175,7 @@ mod tests {
                 y_dimension: 6250,
             }),
             copies: 1,
+            finishing: None,
         };
         let Some(IppValue::Collection(col)) = media_col(&with) else {
             panic!("media-col missing or not a collection");
@@ -1013,8 +1195,92 @@ mod tests {
             artifact_format: ArtifactFormat::Pdf,
             media_size: None,
             copies: 1,
+            finishing: None,
         };
         assert!(media_col(&without).is_none());
+    }
+
+    /// The job request's attributes for `finishing`, encoded and parsed back as a printer reads them.
+    fn decoded_job(finishing: Option<Finishing>) -> ipp::prelude::IppRequestResponse {
+        use ipp::prelude::*;
+        let uri: Uri = "ipp://printer.test/ipp/print".parse().unwrap();
+        let opts = PrintOptions {
+            artifact_format: ArtifactFormat::Png,
+            media_size: Some(MediaSize {
+                x_dimension: 2400,
+                y_dimension: 6250,
+            }),
+            copies: 3,
+            finishing,
+        };
+        let bytes = print_job_request(uri, b"\x89PNG-label", &opts)
+            .expect("request")
+            .to_bytes();
+        ipp::parser::IppParser::new(std::io::Cursor::new(bytes.to_vec()))
+            .parse()
+            .expect("decodes")
+    }
+
+    fn attr(
+        req: &ipp::prelude::IppRequestResponse,
+        group: ipp::model::DelimiterTag,
+        name: &str,
+    ) -> Option<ipp::value::IppValue> {
+        req.attributes()
+            .groups_of(group)
+            .find_map(|g| g.attributes().get(name).map(|a| a.value().clone()))
+    }
+
+    #[test]
+    fn a_job_carries_one_finishing_representation_or_neither() {
+        use ipp::model::DelimiterTag::{JobAttributes, OperationAttributes};
+        use ipp::value::IppValue;
+        let chain = IppValue::Collection(std::collections::BTreeMap::from([(
+            "finishing-template".try_into().unwrap(),
+            keyword("ptouch-chain"),
+        )]));
+        for (finishing, enums, col) in [
+            (Some(Finishing::Trim), Some(IppValue::Enum(11)), None),
+            (Some(Finishing::ChainAndContinue), None, Some(chain)),
+            (None, None, None),
+        ] {
+            let req = decoded_job(finishing);
+            assert_eq!(
+                attr(&req, JobAttributes, "finishings"),
+                enums,
+                "{finishing:?}"
+            );
+            assert_eq!(
+                attr(&req, JobAttributes, "finishings-col"),
+                col,
+                "{finishing:?}"
+            );
+            // The rest of the job is untouched.
+            assert_eq!(
+                attr(&req, JobAttributes, "copies"),
+                Some(IppValue::Integer(3))
+            );
+            assert_eq!(
+                attr(&req, OperationAttributes, "ipp-attribute-fidelity"),
+                Some(IppValue::Boolean(true))
+            );
+            assert_eq!(
+                attr(&req, OperationAttributes, "job-name"),
+                Some(IppValue::NameWithoutLanguage("labeler".try_into().unwrap()))
+            );
+            assert_eq!(
+                attr(&req, OperationAttributes, "document-format"),
+                Some(IppValue::MimeMediaType("image/png".try_into().unwrap()))
+            );
+            let Some(IppValue::Collection(media)) = attr(&req, JobAttributes, "media-col") else {
+                panic!("media-col missing");
+            };
+            let Some(IppValue::Collection(size)) = media.get("media-size") else {
+                panic!("media-size missing");
+            };
+            assert_eq!(size.get("x-dimension"), Some(&IppValue::Integer(2400)));
+            assert_eq!(size.get("y-dimension"), Some(&IppValue::Integer(6250)));
+        }
     }
 
     #[tokio::test]

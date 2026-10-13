@@ -276,6 +276,13 @@ impl AppError {
         Self::invalid_request(Reason::PrinterInvalid, message)
     }
 
+    pub fn chain_and_continue_unsupported() -> Self {
+        Self::invalid_request(
+            Reason::ChainAndContinueUnsupported,
+            "chain_and_continue is not supported: the printer does not advertise the ptouch-chain finishing template",
+        )
+    }
+
     pub fn template_invalid(reason: Reason, message: impl Into<String>) -> Self {
         Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,

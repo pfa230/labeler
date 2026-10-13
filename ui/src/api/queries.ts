@@ -181,6 +181,16 @@ export function useProbePrinter() {
   });
 }
 
+// Probe a stored printer with its saved connection; keyed under ["printers"] so saving or deleting a
+// printer refreshes it.
+export function usePrinterProbe(id: string | undefined) {
+  return useQuery({
+    queryKey: ["printers", id, "probe"],
+    queryFn: () => sendJson<ProbeResult>("POST", `/printers/${encodeURIComponent(id!)}/probe`, undefined),
+    enabled: !!id,
+  });
+}
+
 export interface UserSummary {
   id: string;
   username: string;

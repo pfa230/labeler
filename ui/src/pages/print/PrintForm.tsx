@@ -4,7 +4,7 @@ import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
 import { pruneDataForSubmit } from "../../lib/labelInputs";
 import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../../api/client";
-import { usePrinters, useSettings } from "../../api/queries";
+import { usePrinterProbe, usePrinters, useSettings } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 import type { PrintSummary, TemplateDetail } from "../../api/types";
 import { PreviewPane } from "../../components/PreviewPane";
@@ -47,6 +47,19 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     return all.find((p) => p.id === defaultPrinterId)?.id ?? (all.length === 1 ? all[0].id : undefined);
   }, [printers, defaultPrinterId]);
   const effectivePrinter = value.printer === undefined ? preselect : value.printer || undefined;
+
+  // Chain and continue is offered only while this printer's own probe confirms support, and its
+  // choice belongs to that printer: a switch or a lost confirmation clears it.
+  const probe = usePrinterProbe(effectivePrinter);
+  const chainSupported =
+    probe.isSuccess && probe.data.status === "ok" && probe.data.capabilities.chain_and_continue;
+  const [chain, setChain] = useState(false);
+  const [chainPrinter, setChainPrinter] = useState(effectivePrinter);
+  if (chainPrinter !== effectivePrinter) {
+    setChainPrinter(effectivePrinter);
+    setChain(false);
+  }
+  if (chain && !chainSupported) setChain(false);
 
   const showSummary = (summary: PrintSummary, printer: string) => {
     const name = printers?.find((p) => p.id === printer)?.name ?? printer;
@@ -107,6 +120,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
         printer,
         labels: [{ ...label, copies: clampCopies(copies) }],
         ...(startSlot ? { start_slot: startSlot } : {}),
+        ...(chain ? { chain_and_continue: true } : {}),
       });
       showSummary(summary, printer);
     } catch (err) {
@@ -207,6 +221,24 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
           >
             Print
           </button>
+          {chainSupported && (
+            <div className="flex flex-col">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={chain}
+                  onChange={(e) => setChain(e.target.checked)}
+                  aria-describedby="chain-help"
+                  className="h-4 w-4 rounded border"
+                  style={{ accentColor: "var(--accent)" }}
+                />
+                <span className="font-medium">Chain and continue</span>
+              </label>
+              <span id="chain-help" className="text-xs" style={{ color: "var(--muted)" }}>
+                Separates the labels and keeps the last one attached for the next print; printing normally next finishes the run.
+              </span>
+            </div>
+          )}
         </div>
       </div>
 

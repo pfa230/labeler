@@ -403,6 +403,15 @@ impl Store {
         Ok(())
     }
 
+    /// Each logged job's status, oldest first.
+    #[cfg(test)]
+    pub async fn job_statuses(&self) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare("SELECT status FROM jobs ORDER BY id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub async fn list_favorites(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare(

@@ -78,7 +78,9 @@ export async function fetchBlob(path: string, init?: RequestInit): Promise<{ blo
 }
 
 export interface RenderBody { template: string; labels: BatchLabel[]; start_slot?: number; format?: "png" | "pdf" }
-export interface PrintBody { template: string; labels: BatchLabel[]; start_slot?: number; printer: string }
+export interface PrintBody {
+  template: string; labels: BatchLabel[]; start_slot?: number; printer: string; chain_and_continue?: boolean;
+}
 
 // /api/render: a 2xx is always the file (ZIP for single, PDF for sheet); failure is the JSON error contract.
 export function renderBatch(body: RenderBody): Promise<{ blob: Blob; filename?: string }> {

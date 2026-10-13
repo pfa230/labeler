@@ -971,6 +971,9 @@ pub struct PrintRequest {
     #[schema(nullable = false)]
     pub start_slot: Option<u32>,
     pub printer: String,
+    /// Ask every job to chain and continue (printing, "Print job finishing").
+    #[serde(default)]
+    pub chain_and_continue: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

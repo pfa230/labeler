@@ -40,6 +40,7 @@ use crate::{
         api::replace_printer,
         api::delete_printer,
         api::probe_printer,
+        api::probe_stored_printer,
         api::get_variables,
         api::put_variable,
         api::get_settings,
