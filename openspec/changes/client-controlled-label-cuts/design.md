@@ -60,4 +60,12 @@ Submit `chain_and_continue: true` only when the supported checkbox is checked. U
 
 ## Migration Plan
 
-No stored data, template, printer configuration or print-server deployment change is needed. Review and commit the revised plan locally, then implement through the repository's supervised loop. Tests must capture the collection at the IPP boundary and prove checkbox gating and state isolation. Record PT-2730 observations from the changed labeler path for a checked three-copy job, checked multi-entry continuation across an idle gap and an unchecked subsequent print that releases/finishes the run; upstream observations do not establish labeler acceptance. Keep run artifacts under `.agent-runs/`. Complete the touched-diff gates and keep changes local until spec sync and archival; integration requires the repository's human review.
+No stored data, template, printer configuration or print-server deployment change is needed. Review and commit the revised plan locally, then implement through the repository's supervised loop. Tests must capture the collection at the IPP boundary and prove checkbox gating and state isolation. Keep run artifacts under `.agent-runs/`. Complete the touched-diff gates and keep changes local until spec sync and archival; integration requires the repository's human review.
+
+### Physical acceptance occurs immediately before archival
+
+Implementation, automated checks and implementation review complete before the attended physical acceptance in task 4.1. Task 4.1 is an archival gate, not an implementation or implementation-review gate: it stays unchecked during automated implementation and review. The implementer must not invent owner confirmation or mark physical acceptance complete from IPP captures. The automated gates in task 4.2 can finish independently of task 4.1.
+
+Use the loop's existing staged advancement to stop at the boundary before archival. After implementation and its review are complete and the loop's integration stage has finished, perform the attended check immediately before advancing archival. Record the printer revision, submitted attributes and owner-confirmed observations from the changed labeler path for a checked three-copy job, checked multi-entry continuation across an idle gap and an unchecked subsequent print that releases and finishes the healthy run. Upstream server observations do not establish labeler hardware acceptance.
+
+Only after the recorded physical results pass may task 4.1 be checked, its evidence reference committed, and archival advanced. If physical acceptance is pending or fails, leave the change unarchived. This decision preserves the physical acceptance requirement while placing it after implementation and review, as requested by the user.
