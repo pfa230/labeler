@@ -13,7 +13,6 @@
 
 - [ ] 3.1 Send each label once with `copies`: the print form's one entry, and one entry per row from `resolveLabels` for Connect and Import print, download and sheet preview; count labels as rows times Copies for the preview cap and the download message, and include `copies` in `sheetPreviewKey`. Verify the print form sends one entry with `copies: 3`; the sheet preview and Download send 3 entries with `copies: 2` and equal `start_slot`; changing Copies after a completed sheet preview sends a new preview request; Connect and Import each report "Downloaded 6 labels" for 3 rows at Copies 2; and on each page a summary failing indices 3–5 with Copies 3 marks row 2 only.
 
-## 4. Acceptance and gates
+## 4. Gates
 
-- [ ] 4.1 Through labeler's `/print`, print to the PT-2730 one label with three copies and a two-label request with three copies each; record the submitted attributes, the job count and the owner-confirmed physical result (label count, cuts) under `.agent-runs/` before claiming hardware success.
-- [ ] 4.2 Run the cut pass, and name for each new test the regression that makes it fail; verify `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `npm --prefix ui run lint`, `npm --prefix ui run test`, `npm --prefix ui run build` and `npx --no-install openspec validate --all --strict --no-interactive` pass.
+- [ ] 4.1 Run the cut pass, and name for each new test the regression that makes it fail; verify `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `npm --prefix ui run lint`, `npm --prefix ui run test`, `npm --prefix ui run build` and `npx --no-install openspec validate --all --strict --no-interactive` pass.

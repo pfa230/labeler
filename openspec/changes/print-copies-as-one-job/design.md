@@ -54,4 +54,4 @@ The dispatch loop has no retry today, and none is added. A job whose reply never
 
 ## Migration Plan
 
-No stored data or configuration changes. The MCP adapter keeps sending `{data}` entries, which default to one copy. Physical acceptance: through labeler's `/print`, print one PT-2730 label with three copies and one two-label request with three copies each. Record the submitted attributes and the owner-observed result (label count, cuts) under `.agent-runs/` before claiming hardware success.
+No stored data or configuration changes. The MCP adapter keeps sending `{data}` entries, which default to one copy. Physical acceptance is not part of this change's tasks. The loop runs unattended and ends with automated verification. Afterwards, in an interactive session with the owner, print one PT-2730 label with three copies and one two-label request with three copies each through labeler's `/print`, and record the submitted attributes and the owner-observed result (label count, cuts) under `.agent-runs/` before claiming hardware success.
