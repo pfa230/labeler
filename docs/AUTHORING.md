@@ -211,6 +211,33 @@ A container groups items into a new frame, its padded inner box, and may paint a
 
 and gates three top-level containers on them: a stroked, empty border under `when: { outline: yes }`, and one container per orientation. `outline` has no default, so a request omitting it gets no border; `orientation` defaults to `horizontal`.
 
+A scalar condition never matches an absent parameter. To gate on emptiness instead, write `{ empty: true }`, which matches when the parameter is absent or reads as the empty string, or `{ empty: false }`, which matches otherwise. One string `code` then picks between two branches, with no separate checkbox:
+
+```yaml
+  - type: container
+    when: { code: { empty: false } }
+    at: [0, 0]
+    size: [12, 12]
+    background: black
+    items:
+      - type: text
+        value: "{code}"
+        size: [fill, fill]
+        font_size: 8
+        color: white
+  - type: container
+    when: { code: { empty: true } }
+    at: [0, 0]
+    size: [12, 12]
+    items:
+      - type: text
+        value: "{title}"
+        size: [fill, fill]
+        font_size: 8
+```
+
+A value of only spaces is not empty, so `" "` selects the `empty: false` branch.
+
 The `vertical` branch is a portrait design rotated onto the landscape slot. `rotate` (container only, multiples of 90, counter-clockwise) leaves the container's footprint in its parent unchanged and swaps its inner canvas for 90 and 270, so children are authored against a 2×4 canvas:
 
 ```yaml

@@ -4,8 +4,9 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, DynamicDimension, DynamicValue, Fit, LabelInput, Layout, LayoutItem, ParamSpec,
-    ParamType, ParamValue, Placement, Point, Position, Rotation, Shape, Stroke, TemplateFormat,
+    resolve_coord, Condition, DynamicDimension, DynamicValue, Fit, LabelInput, Layout, LayoutItem,
+    ParamSpec, ParamType, ParamValue, Placement, Point, Position, Rotation, Shape, Stroke,
+    TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::{TemplateContent, TemplateDefinition};
@@ -1071,12 +1072,17 @@ impl<'a> RenderContext<'a> {
 
     pub(crate) fn is_item_active(&self, item: &LayoutItem) -> bool {
         if let Some(when) = item.when() {
-            when.iter().all(
-                |(param_name, expected_val)| match self.data.get(param_name) {
-                    Some(val) => &value_to_string(val) == expected_val,
-                    None => false,
-                },
-            )
+            when.iter().all(|(param_name, condition)| {
+                let value = self.data.get(param_name);
+                match condition {
+                    Condition::Equals(expected) => {
+                        value.is_some_and(|val| &value_to_string(val) == expected)
+                    }
+                    Condition::Empty(flag) => {
+                        value.is_none_or(|val| value_to_string(val).is_empty()) == *flag
+                    }
+                }
+            })
         } else {
             true
         }
@@ -3313,7 +3319,10 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
-                when: Some(BTreeMap::from([("show".to_string(), "yes".to_string())])),
+                when: Some(BTreeMap::from([(
+                    "show".to_string(),
+                    crate::models::Condition::Equals("yes".to_string()),
+                )])),
                 shape: Shape::Rect,
                 stroke: None,
                 background: None,
@@ -11638,6 +11647,35 @@ mod parameter_value_tests {
             "  - type: container\n    when: { bold: false }\n    at: [0, 0]\n    size: [80, 10]\n    items:\n      - type: text\n        value: \"plain\"\n        at: [0, 0]\n        size: [80, 8]\n        font_size: 6\n",
         ));
         assert_eq!(printed(&template, json!({}), &[]).unwrap(), vec!["plain"]);
+    }
+
+    #[test]
+    fn an_empty_test_selects_a_branch_by_whether_the_value_is_empty() {
+        let gated = |flag: bool, value: &str| {
+            format!(
+                "  - type: container\n    when: {{ code: {{ empty: {flag} }} }}\n    at: [0, 0]\n    size: [80, 10]\n    items:\n      - type: text\n        value: \"{value}\"\n        at: [0, 0]\n        size: [80, 8]\n        font_size: 6\n"
+            )
+        };
+        let template = load(&single(
+            "  - name: code\n    type: string\n",
+            &(gated(true, "empty") + &gated(false, "filled")),
+        ));
+        assert_eq!(
+            [
+                json!({}),
+                json!({ "code": "" }),
+                json!({ "code": "XT30" }),
+                json!({ "code": " " }),
+            ]
+            .map(|data| shown(printed(&template, data, &[]))),
+            [
+                lines(&["empty"]),
+                lines(&["empty"]),
+                lines(&["filled"]),
+                lines(&["filled"]),
+            ],
+            "[omitted, \"\", XT30, \" \"]"
+        );
     }
 
     // A13

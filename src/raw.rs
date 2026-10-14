@@ -4,8 +4,8 @@ use serde_yaml_ng::{Mapping, Value};
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, Color, DynamicValue, ErrorCorrection, Fit, FlowOverflow, FontSize, Overflow,
-    Position, SheetPosition, Stroke,
+    Alignment, Color, Condition, DynamicValue, ErrorCorrection, Fit, FlowOverflow, FontSize,
+    Overflow, Position, SheetPosition, Stroke,
 };
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -46,36 +46,60 @@ pub struct RawParamEntry {
 
 pub type Dynamic<T> = DynamicValue<T>;
 
-pub(crate) fn deserialize_when_map<'de, D>(
-    deserializer: D,
-) -> Result<Option<BTreeMap<String, String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum WhenScalar {
-        String(String),
-        Bool(bool),
-        Int(i64),
-        Float(f64),
-    }
+/// A `when:` condition: a scalar, held as its text, or `{ empty: <bool> }`. Written by hand
+/// because an untagged enum reports a bad condition mapping only as "did not match any variant".
+impl<'de> Deserialize<'de> for Condition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct EmptyTest {
+            empty: bool,
+        }
 
-    impl std::fmt::Display for WhenScalar {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                WhenScalar::String(s) => write!(f, "{s}"),
-                WhenScalar::Bool(b) => write!(f, "{b}"),
-                WhenScalar::Int(i) => write!(f, "{i}"),
-                WhenScalar::Float(v) => write!(f, "{v}"),
+        struct ConditionVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ConditionVisitor {
+            type Value = Condition;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a scalar or an { empty: <boolean> } mapping")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(Condition::Equals(v.to_string()))
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(Condition::Equals(v.to_string()))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(Condition::Equals(v.to_string()))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(Condition::Equals(v.to_string()))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(Condition::Equals(v.to_string()))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let EmptyTest { empty } =
+                    EmptyTest::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(Condition::Empty(empty))
             }
         }
-    }
 
-    let map = BTreeMap::<String, WhenScalar>::deserialize(deserializer)?;
-    Ok(Some(
-        map.into_iter().map(|(k, v)| (k, v.to_string())).collect(),
-    ))
+        deserializer.deserialize_any(ConditionVisitor)
+    }
 }
 
 /// `format.width`: a number or reference, or a `{min, max}` range. Written by
@@ -296,8 +320,8 @@ pub struct TextRaw {
     pub alignment: Alignment,
     #[serde(default)]
     pub overflow: Overflow,
-    #[serde(default, deserialize_with = "deserialize_when_map")]
-    pub when: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub when: Option<BTreeMap<String, Condition>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,8 +334,8 @@ pub struct QrRaw {
     pub module_size: Option<f32>,
     #[serde(default)]
     pub quiet_zone: f32,
-    #[serde(default, deserialize_with = "deserialize_when_map")]
-    pub when: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub when: Option<BTreeMap<String, Condition>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,8 +344,8 @@ pub struct ImageRaw {
     pub src: String,
     #[serde(default)]
     pub fit: Fit,
-    #[serde(default, deserialize_with = "deserialize_when_map")]
-    pub when: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub when: Option<BTreeMap<String, Condition>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -331,8 +355,8 @@ pub struct LineRaw {
     pub at: Position,
     pub to: Position,
     pub stroke: Stroke,
-    #[serde(default, deserialize_with = "deserialize_when_map")]
-    pub when: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub when: Option<BTreeMap<String, Condition>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -353,8 +377,8 @@ pub struct FlowRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerRaw {
-    #[serde(default, deserialize_with = "deserialize_when_map")]
-    pub when: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub when: Option<BTreeMap<String, Condition>>,
     #[serde(default)]
     pub shape: Option<String>,
     #[serde(default)]

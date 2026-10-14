@@ -805,6 +805,14 @@ pub fn font_weight_ok(weight: i64) -> bool {
     (100..=900).contains(&weight) && weight % 100 == 0
 }
 
+/// One `when:` condition (`layout`, "when gates an item"): a scalar held as its text, or
+/// `{ empty: <bool> }`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Condition {
+    Equals(String),
+    Empty(bool),
+}
+
 #[derive(Debug, Clone)]
 pub enum LayoutItem {
     Text {
@@ -817,7 +825,7 @@ pub enum LayoutItem {
         line_spacing: Option<f32>,
         alignment: Alignment,
         overflow: Overflow,
-        when: Option<BTreeMap<String, String>>,
+        when: Option<BTreeMap<String, Condition>>,
     },
     Qr {
         value: String,
@@ -825,23 +833,23 @@ pub enum LayoutItem {
         error_correction: ErrorCorrection,
         module_size: Option<f32>,
         quiet_zone: f32,
-        when: Option<BTreeMap<String, String>>,
+        when: Option<BTreeMap<String, Condition>>,
     },
     Image {
         src: String,
         placement: Placement,
         fit: Fit,
-        when: Option<BTreeMap<String, String>>,
+        when: Option<BTreeMap<String, Condition>>,
     },
     Line {
         at: Position,
         to: Position,
         stroke: Stroke,
-        when: Option<BTreeMap<String, String>>,
+        when: Option<BTreeMap<String, Condition>>,
     },
     Container {
         placement: Placement,
-        when: Option<BTreeMap<String, String>>,
+        when: Option<BTreeMap<String, Condition>>,
         shape: Shape,
         stroke: Option<Stroke>,
         background: Option<Color>,
@@ -867,7 +875,7 @@ impl LayoutItem {
         }
     }
 
-    pub fn when(&self) -> Option<&BTreeMap<String, String>> {
+    pub fn when(&self) -> Option<&BTreeMap<String, Condition>> {
         match self {
             LayoutItem::Text { when, .. }
             | LayoutItem::Qr { when, .. }

@@ -6,9 +6,9 @@ use thiserror::Error;
 
 use crate::errors::TemplateError;
 use crate::models::{
-    resolve_coord, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow, FontSize,
-    Layout, LayoutItem, ParamControl, ParamEntry, ParamSpec, ParamType, Placement, Point, Size,
-    SizeValue, TemplateDetail, TemplateFormat, TemplateSummary,
+    resolve_coord, Condition, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow,
+    FontSize, Layout, LayoutItem, ParamControl, ParamEntry, ParamSpec, ParamType, Placement, Point,
+    Size, SizeValue, TemplateDetail, TemplateFormat, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -675,13 +675,13 @@ fn check_param_ref(
 }
 
 fn validate_when_references(
-    when: Option<&std::collections::BTreeMap<String, String>>,
+    when: Option<&std::collections::BTreeMap<String, Condition>>,
     params: &indexmap::IndexMap<String, ParamSpec>,
     path: &str,
     repeated_names: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     if let Some(when) = when {
-        for (name, val) in when {
+        for (name, condition) in when {
             let key_path = format!("{path}.when.{name}");
             let spec = params
                 .get(name)
@@ -691,7 +691,9 @@ fn validate_when_references(
                     "{key_path}: references list parameter '{name}'; list parameters cannot be used in when conditions"
                 ));
             }
-            if let ParamType::Enum { values } = &spec.param_type {
+            if let (ParamType::Enum { values }, Condition::Equals(val)) =
+                (&spec.param_type, condition)
+            {
                 if !values.iter().any(|v| v == val) {
                     return Err(format!(
                         "{key_path}: '{val}' is not in the enum values of '{name}'"
@@ -1415,13 +1417,17 @@ fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), Str
     Ok(())
 }
 
-fn validate_when(when: Option<&std::collections::BTreeMap<String, String>>) -> Result<(), String> {
+fn validate_when(
+    when: Option<&std::collections::BTreeMap<String, Condition>>,
+) -> Result<(), String> {
     if let Some(when) = when {
         if when.is_empty() {
             return Err("when must not be empty".to_string());
         }
-        for (name, value) in when {
-            if name.trim().is_empty() || value.trim().is_empty() {
+        for (name, condition) in when {
+            let blank_value =
+                matches!(condition, Condition::Equals(value) if value.trim().is_empty());
+            if name.trim().is_empty() || blank_value {
                 return Err("when must not contain empty values".to_string());
             }
         }
@@ -1546,8 +1552,8 @@ mod tests {
     use super::{validate_template_id_stem, TemplateContent, TemplateDefinition, TemplateRegistry};
     use crate::errors::TemplateError;
     use crate::models::{
-        Alignment, Color, Dimension, DynamicDimension, DynamicValue, FontSize, Layout, LayoutItem,
-        ParamControl, Position, Shape, Size, SizeValue, Stroke, TemplateFormat,
+        Alignment, Color, Condition, Dimension, DynamicDimension, DynamicValue, FontSize, Layout,
+        LayoutItem, ParamControl, Position, Shape, Size, SizeValue, Stroke, TemplateFormat,
     };
     use indexmap::IndexMap;
     use serde_json::json;
@@ -3096,6 +3102,87 @@ layout:
                 _ => panic!("expected dynamic dimension"),
             },
             _ => panic!("expected single format"),
+        }
+    }
+
+    /// A template whose one container carries `when: {when}`, over a string `code`, a boolean
+    /// `bold`, an enum `size` and a list `tags`.
+    fn gated_yaml(when: &str) -> String {
+        format!(
+            "name: T\nunit: mm\ndpi: 200\nparams:\n  - name: code\n    type: string\n  - name: bold\n    type: boolean\n  - name: size\n    type: enum\n    values: [small, large]\n  - name: tags\n    type: list\nformat: {{ type: single, width: 50, height: 20 }}\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [50, 20]\n    when: {when}\n    items: []\n"
+        )
+    }
+
+    fn gate_of(when: &str) -> BTreeMap<String, Condition> {
+        let template = parse_template_ok(&gated_yaml(when));
+        let Layout::Items(items) = &template.layout;
+        items[0].when().expect("when").clone()
+    }
+
+    #[test]
+    fn when_conditions_load_as_scalar_text_or_an_empty_test() {
+        let single =
+            |name: &str, condition: Condition| BTreeMap::from([(name.to_string(), condition)]);
+        assert_eq!(
+            [
+                gate_of("{ code: { empty: true } }"),
+                gate_of("{ code: { empty: false } }"),
+                gate_of("{ bold: true }"),
+                gate_of("{ bold: \"true\" }"),
+                gate_of("{ size: { empty: true } }"),
+            ],
+            [
+                single("code", Condition::Empty(true)),
+                single("code", Condition::Empty(false)),
+                single("bold", Condition::Equals("true".to_string())),
+                single("bold", Condition::Equals("true".to_string())),
+                single("size", Condition::Empty(true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_when_conditions_are_refused_naming_the_key() {
+        for (when, names) in [
+            ("{ code: { empty: \"yes\" } }", None),
+            ("{ code: { empty: true, also: 1 } }", Some("also")),
+            ("{ code: { not: \"\" } }", Some("not")),
+            ("{ code: {} }", Some("empty")),
+            ("{ code: [a] }", None),
+        ] {
+            let err = parse_and_validate(&gated_yaml(when)).expect_err(when);
+            assert!(
+                err.contains("layout[0]") && err.contains("when.code"),
+                "{when}: {err}"
+            );
+            if let Some(name) = names {
+                assert!(err.contains(&format!("`{name}`")), "{when}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn when_reference_rules_hold_for_both_condition_forms() {
+        for (when, expected) in [
+            (
+                "{ nope: { empty: true } }",
+                "layout[0].when.nope: undeclared parameter 'nope'",
+            ),
+            (
+                "{ tags: { empty: false } }",
+                "references list parameter 'tags'",
+            ),
+            ("{ tags: KIDS }", "references list parameter 'tags'"),
+            ("{ nope: KIDS }", "undeclared parameter 'nope'"),
+            (
+                "{ size: medium }",
+                "layout[0].when.size: 'medium' is not in the enum values of 'size'",
+            ),
+            ("{ code: \"\" }", "when must not contain empty values"),
+            ("{}", "when must not be empty"),
+        ] {
+            let err = parse_and_validate(&gated_yaml(when)).expect_err(when);
+            assert!(err.contains(expected), "{when}: {err}");
         }
     }
 
