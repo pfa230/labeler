@@ -214,7 +214,7 @@ On `POST /api/render/label`, `POST /api/render` and `POST /api/print`, every key
 
 The value a token reads for a declared parameter SHALL come from the label's `data`, or failing that from its default, and from nothing else. A parameter that neither supplies is absent: an `enum` is not its first value, and a `datetime` is not the render instant. A `boolean` is never absent, because it always has a default.
 
-An absent parameter SHALL read as empty: a token naming it prints nothing, with or without a reader (`interpolation`), and an active container's `repeat:` over it draws no instance (`layout`). An absent parameter in a `when:` makes that predicate false (`layout`). A parameter reference from a layout attribute is never absent, because its parameter declares a default (see "Parameter references from layout attributes").
+An absent parameter SHALL read as empty: a token naming it prints nothing, with or without a reader (`interpolation`), and an active container's `repeat:` over it draws no instance (`layout`). An absent parameter matches a `when:` condition only when that condition is `{ empty: true }` (`layout`). A parameter reference from a layout attribute is never absent, because its parameter declares a default (see "Parameter references from layout attributes").
 
 #### Scenario: An omitted boolean is false
 
