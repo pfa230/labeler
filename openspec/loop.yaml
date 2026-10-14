@@ -3,10 +3,10 @@ worktrees: .worktrees
 agents:
   codex: [loop-codex, --ignore-user-config, -s, read-only, -c, model_reasoning_effort=high]
   mimo: [loop-opencode, -m, openrouter/xiaomi/mimo-v2.6-flash]
-  muse: [loop-opencode, -m, meta/muse-spark-1.3-contributor]
+  claude: [loop-claude, --permission-mode, auto]
 roles:
   proposalReviewer: codex
-  planReviser: muse
+  planReviser: claude
   implementer: mimo
   implementationReviewer: codex
 attempts:
