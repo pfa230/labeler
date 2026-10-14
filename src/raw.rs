@@ -46,6 +46,15 @@ pub struct RawParamEntry {
 
 pub type Dynamic<T> = DynamicValue<T>;
 
+pub(crate) fn deserialize_when_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, Condition>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    BTreeMap::<String, Condition>::deserialize(deserializer).map(Some)
+}
+
 /// A `when:` condition: a scalar, held as its text, or `{ empty: <bool> }`. Written by hand
 /// because an untagged enum reports a bad condition mapping only as "did not match any variant".
 impl<'de> Deserialize<'de> for Condition {
@@ -320,7 +329,7 @@ pub struct TextRaw {
     pub alignment: Alignment,
     #[serde(default)]
     pub overflow: Overflow,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, Condition>>,
 }
 
@@ -334,7 +343,7 @@ pub struct QrRaw {
     pub module_size: Option<f32>,
     #[serde(default)]
     pub quiet_zone: f32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, Condition>>,
 }
 
@@ -344,7 +353,7 @@ pub struct ImageRaw {
     pub src: String,
     #[serde(default)]
     pub fit: Fit,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, Condition>>,
 }
 
@@ -355,7 +364,7 @@ pub struct LineRaw {
     pub at: Position,
     pub to: Position,
     pub stroke: Stroke,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, Condition>>,
 }
 
@@ -377,7 +386,7 @@ pub struct FlowRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerRaw {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, Condition>>,
     #[serde(default)]
     pub shape: Option<String>,
