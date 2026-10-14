@@ -18,7 +18,7 @@ A `when:` map is `BTreeMap<String, String>` from parse to render. `raw.rs` `dese
 
 **A `Condition` enum replaces the `String` value.** `models.rs` gains `enum Condition { Equals(String), Empty(bool) }`, and every item's `when` becomes `Option<BTreeMap<String, Condition>>`. Keeping `String` and encoding emptiness in a sentinel text would collide with a real parameter value; a separate `empty_when` map per item would put one gate in two places.
 
-**Deserialization extends the existing untagged value.** `deserialize_when_map` adds a variant for a mapping struct `{ empty: bool }` with `deny_unknown_fields`, so a non-boolean `empty`, an extra key, a mapping without `empty`, and a sequence all fail in serde with the path `serde_path_to_error` already attaches (`layout[i].when.<key>`). No new error kind or reason slug.
+**Deserialization stays in `deserialize_when_map`, written by hand.** Its condition type becomes a hand-written `Deserialize` with a visitor, as `RawDimension` already is: `visit_str`, `visit_bool`, `visit_i64`, `visit_u64` and `visit_f64` yield `Equals` holding the scalar's text, and `visit_map` deserializes a `deny_unknown_fields` struct `{ empty: bool }` through `MapAccessDeserializer` and yields `Empty`. A non-boolean `empty`, an extra key, a mapping without `empty`, a sequence and a null all fail in serde with the path `serde_path_to_error` already attaches (`layout[i].when.<key>`), and serde's own message names the offending key (an unknown field `also`, a missing field `empty`, or a type error at `.empty`), as the templates spec's "Template file keys" requires. An untagged enum would not: it reports every malformed mapping as "did not match any variant" and drops the key. No new error kind or reason slug.
 
 **Validation applies the scalar rules to scalars only.** `validate_when`'s blank-value check and `validate_when_references`' enum-membership check skip `Empty`; the empty-map, blank-key, undeclared-name and list rules apply to both forms.
 
@@ -26,4 +26,4 @@ A `when:` map is `BTreeMap<String, String>` from parse to render. `raw.rs` `dese
 
 ## Risks / Trade-offs
 
-- [The untagged enum reports a malformed condition as "did not match any variant"] → the message still names the key's path, which is what the spec requires; the existing scalar refusals already read this way.
+- [A hand-written visitor is more code than an untagged enum] → it is the only way serde reports the offending key inside the condition mapping; `RawDimension` is the existing precedent.
