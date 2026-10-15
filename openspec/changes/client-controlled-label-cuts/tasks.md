@@ -22,3 +22,5 @@
 ## Owner handoff before archival
 
 Not an implementation or verification task; the autonomous run neither performs nor checks it. After the tasks above and their review are complete and the loop's integration stage has finished, the loop stops before archival and hands off to the owner. The owner prints through the changed labeler path on the PT-2730: a checked three-copy job, checked multi-entry continuation, another checked print after an idle gap, and an unchecked subsequent print. The owner records the PT-2730 revision, submitted attributes, ordered jobs and the observed physical results under `.agent-runs/`: separated labels, the held last end, release by the next print, initial leader only on a fresh run, and ordinary finalization. Archival advances only after those recorded results pass and their evidence reference is committed; if they are pending or fail, the change stays unarchived.
+
+Accepted by the owner on 2026-10-15 after printing through the changed labeler path on the PT-2730; the printer revision, attributes and per-print observations were not recorded.
