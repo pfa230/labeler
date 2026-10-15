@@ -193,10 +193,9 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
               −
             </button>
             <input
-              type="number"
+              type="text"
+              inputMode="numeric"
               aria-label="copies"
-              min={MIN_COPIES}
-              max={MAX_COPIES}
               value={copies}
               onChange={(e) => setCopies(clampCopies(Number(e.target.value)))}
               className="h-11 w-16 rounded-md border px-2 py-1 text-center"

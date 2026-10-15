@@ -227,6 +227,14 @@ describe("PrintForm copies", () => {
     fireEvent.change(copies, { target: { value: "0" } });
     expect(copies.value).toBe("1");
   });
+
+  it("offers one copies stepper: the buttons beside a text box, not a spin button", async () => {
+    renderForm(tape);
+    expect(await screen.findByRole("textbox", { name: "copies" })).toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton", { name: "copies" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "decrease copies" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "increase copies" })).toBeInTheDocument();
+  });
 });
 
 describe("PrintForm printer preselect", () => {
