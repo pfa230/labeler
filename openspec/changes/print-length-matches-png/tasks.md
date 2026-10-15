@@ -5,8 +5,8 @@
 
 ## 2. Tests
 
-- [ ] 2.1 In `src/render/mod.rs`, replace the ±1 px tolerance check in `a_rendered_single_label_reports_its_resolved_width` with: a 20 mm `width_template` rendered as PNG with `resolution_dpi: Some(180)` is 142 px wide and reports `y_dimension` `2004`, and as PDF reports `2000`. Keep the 62.5 mm (`6250`) and 2 in (`5080`) checks for PDF, and the content-sized check that the longer message reports the larger `y_dimension`. Verify the test fails with the PNG branch temporarily set to `hundredths_mm` of the page width (2000) and with the template's 200 DPI in place of the rasterized one (1994), then passes with task 1.1's value.
-- [ ] 2.2 Update the `src/batch.rs` and `src/lib.rs` tests that read `width_mm` to read `y_dimension`, keeping their comparisons, and verify `cargo test` passes.
+- [ ] 2.1 In `src/render/mod.rs`, replace the ±1 px tolerance check in `a_rendered_single_label_reports_its_resolved_width` with: a 20 mm `width_template` rendered as PNG with `resolution_dpi: Some(180)` is 142 px wide and reports `y_dimension` `2004`, and as PDF reports `2000`. Keep the 62.5 mm (`6250`) and 2 in (`5080`) checks for PDF, and the content-sized check that the longer message reports the larger `y_dimension`. Verify the test fails with the PNG branch temporarily set to `hundredths_mm` of the page width (2000) and with both rasterization and the length calculation at the template's 200 DPI instead of the rasterized 180 DPI (157 px, 1994), then passes with task 1.1's value.
+- [ ] 2.2 Update the `src/batch.rs` and `src/lib.rs` tests that read `width_mm` to read `y_dimension`, keeping their comparisons; in `every_job_carries_the_template_media_size` render the expected value with `SingleKind::Pdf` instead of `SingleKind::Png`, preserving its assertions, and verify `cargo test` passes.
 
 ## 3. Gates
 
