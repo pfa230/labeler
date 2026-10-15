@@ -1562,10 +1562,10 @@ async fn run_batch(
             for unit in &units {
                 let media_size =
                     media_width_mm
-                        .zip(unit.width_mm)
+                        .zip(unit.y_dimension)
                         .map(|(x, y)| crate::driver::MediaSize {
                             x_dimension: crate::driver::hundredths_mm(x),
-                            y_dimension: crate::driver::hundredths_mm(y),
+                            y_dimension: y,
                         });
                 match driver
                     .send(

@@ -27,13 +27,13 @@ pub struct BatchEnv<'a> {
 
 /// One print job's bytes plus the label indices it covers (single: one entry's labels; sheet: all
 /// labels), the IPP `copies` it asks for (single: the entry's count; sheet: 1), and for a single
-/// label its resolved width in millimetres.
+/// label the length its job declares along the feed, in hundredths of a millimetre.
 #[derive(Debug)]
 pub struct PrintUnit {
     pub bytes: Vec<u8>,
     pub indices: Vec<usize>,
     pub copies: u32,
-    pub width_mm: Option<f64>,
+    pub y_dimension: Option<i32>,
 }
 
 #[derive(Debug)]
@@ -135,7 +135,7 @@ fn render_single_batch(
                     bytes: label.bytes,
                     indices: indices.collect(),
                     copies,
-                    width_mm: Some(label.width_mm),
+                    y_dimension: Some(label.y_dimension),
                 })
                 .collect(),
         }),
@@ -197,7 +197,7 @@ fn render_sheet_batch(
                 bytes: pdf,
                 indices: (0..labels.len()).collect(),
                 copies: 1,
-                width_mm: None,
+                y_dimension: None,
             }],
         }),
     }
@@ -379,11 +379,11 @@ mod tests {
             "brother_24mm_qr",
             &[label("a"), label("a much longer message on the tape")],
         );
-        let widths: Vec<f64> = units
+        let lengths: Vec<i32> = units
             .iter()
-            .map(|u| u.width_mm.expect("single width"))
+            .map(|u| u.y_dimension.expect("single length"))
             .collect();
-        assert!(widths[1] > widths[0], "{widths:?}");
+        assert!(lengths[1] > lengths[0], "{lengths:?}");
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         let units = print_units("avery5163_asset_tag", &[label.clone(), label]);
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].indices, vec![0, 1]);
-        assert_eq!(units[0].width_mm, None);
+        assert_eq!(units[0].y_dimension, None);
     }
 
     #[test]

@@ -665,10 +665,13 @@ pub enum SingleKind {
     Pdf,
 }
 
-/// One rendered `single` label and its resolved width (the page's), in millimetres.
+/// One rendered `single` label and the length its print job declares along the feed, in hundredths
+/// of a millimetre (the IPP `y-dimension`): a PNG's pixel length at the DPI it was rasterized at,
+/// rounded up so the printer truncates back to exactly the image; a PDF's page length, rounded to
+/// the nearest.
 pub struct RenderedSingle {
     pub bytes: Vec<u8>,
-    pub width_mm: f64,
+    pub y_dimension: i32,
 }
 
 pub fn render_single_label_as(
@@ -683,22 +686,27 @@ pub fn render_single_label_as(
         .pages()
         .first()
         .ok_or_else(|| AppError::internal("typst did not produce any pages"))?;
-    let width_mm = page.frame.width().to_mm();
-    let bytes = match kind {
+    let (bytes, y_dimension) = match kind {
         SingleKind::Png => {
             let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
             let mut pixmap = typst_render::render(page, &render_options(dpi as f32 / 72.0));
             if opts.color_mode == ColorMode::BiLevel {
                 binarize_rgba(pixmap.data_mut());
             }
-            pixmap
+            let y_dimension = (pixmap.width() * 2540).div_ceil(dpi) as i32;
+            let bytes = pixmap
                 .encode_png()
-                .map_err(|err| AppError::internal(format!("failed to encode png: {err}")))?
+                .map_err(|err| AppError::internal(format!("failed to encode png: {err}")))?;
+            (bytes, y_dimension)
         }
-        SingleKind::Pdf => typst_pdf::pdf(&doc, &Default::default())
-            .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))?,
+        SingleKind::Pdf => {
+            let bytes = typst_pdf::pdf(&doc, &Default::default())
+                .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))?;
+            let y_dimension = crate::driver::hundredths_mm(page.frame.width().to_mm());
+            (bytes, y_dimension)
+        }
     };
-    Ok(RenderedSingle { bytes, width_mm })
+    Ok(RenderedSingle { bytes, y_dimension })
 }
 
 pub fn render_single_label_image(
@@ -7714,38 +7722,70 @@ layout:
         let settings = BTreeMap::new();
         let dt = resolver();
         let data = |message: &str| HashMap::from([("message".to_string(), json!(message))]);
-        let render = |template: &TemplateContent, message: &str, kind: super::SingleKind| {
+        let render = |template: &TemplateContent,
+                      message: &str,
+                      kind: super::SingleKind,
+                      opts: super::ImageRenderOptions| {
             let env = super::resolve_environment(template, &settings, &dt).unwrap();
-            super::render_single_label_as(template, &data(message), &env, kind, Default::default())
-                .unwrap()
+            super::render_single_label_as(template, &data(message), &env, kind, opts).unwrap()
         };
 
-        let fixed = width_template("mm", "62.5", 18.0);
-        for kind in [super::SingleKind::Png, super::SingleKind::Pdf] {
-            let label = render(&fixed, "Hi", kind);
-            assert_eq!((label.width_mm * 100.0).round() as i64, 6250, "{kind:?}");
-        }
-        // An inch template reports millimetres: 2 in = 50.8 mm.
-        let inches = width_template("in", "2", 0.7);
+        // 20 mm at 180 DPI rasterizes to 142 px (141.73): the PNG job declares its image's
+        // length, 142 × 2540 / 180 rounded up = 2004, not the page's 2000.
+        let twenty = width_template("mm", "20", 18.0);
+        let png = render(
+            &twenty,
+            "Hi",
+            super::SingleKind::Png,
+            super::ImageRenderOptions {
+                resolution_dpi: Some(180),
+                ..Default::default()
+            },
+        );
+        assert_eq!(image::load_from_memory(&png.bytes).unwrap().width(), 142);
+        assert_eq!(png.y_dimension, 2004);
         assert_eq!(
-            (render(&inches, "Hi", super::SingleKind::Pdf).width_mm * 100.0).round() as i64,
+            render(&twenty, "Hi", super::SingleKind::Pdf, Default::default()).y_dimension,
+            2000
+        );
+
+        assert_eq!(
+            render(
+                &width_template("mm", "62.5", 18.0),
+                "Hi",
+                super::SingleKind::Pdf,
+                Default::default()
+            )
+            .y_dimension,
+            6250
+        );
+        // An inch template reports millimetres: 2 in = 50.8 mm.
+        assert_eq!(
+            render(
+                &width_template("in", "2", 0.7),
+                "Hi",
+                super::SingleKind::Pdf,
+                Default::default()
+            )
+            .y_dimension,
             5080
         );
 
-        // Content-sized: each reported width matches the PNG actually encoded, within pixel rounding.
+        // Content-sized: the longer message reports the larger length.
         let fitted = width_template("mm", "{ min: 5, max: 200 }", 18.0);
-        let mut widths = Vec::new();
-        for message in ["Hi", "A much longer message on the tape"] {
-            let label = render(&fitted, message, super::SingleKind::Png);
-            let png_px = image::load_from_memory(&label.bytes).unwrap().width();
-            let expected_px = label.width_mm / 25.4 * f64::from(fitted.dpi);
-            assert!(
-                (f64::from(png_px) - expected_px).abs() <= 1.0,
-                "{message}: {png_px}px vs {expected_px}"
-            );
-            widths.push(label.width_mm);
-        }
-        assert!(widths[1] > widths[0], "{widths:?}");
+        let short = render(&fitted, "Hi", super::SingleKind::Png, Default::default());
+        let long = render(
+            &fitted,
+            "A much longer message on the tape",
+            super::SingleKind::Png,
+            Default::default(),
+        );
+        assert!(
+            long.y_dimension > short.y_dimension,
+            "{} vs {}",
+            short.y_dimension,
+            long.y_dimension
+        );
     }
 
     #[test]

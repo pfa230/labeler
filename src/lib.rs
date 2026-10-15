@@ -6858,7 +6858,7 @@ layout:
             },
         )
         .unwrap();
-        (label.bytes, crate::driver::hundredths_mm(label.width_mm))
+        (label.bytes, label.y_dimension)
     }
 
     #[tokio::test]
@@ -7009,11 +7009,11 @@ layout:
                 template,
                 &data,
                 &env,
-                crate::render::SingleKind::Png,
+                crate::render::SingleKind::Pdf,
                 Default::default(),
             )
             .unwrap();
-            crate::driver::hundredths_mm(label.width_mm)
+            label.y_dimension
         };
         let short_y = length(&short);
         assert_ne!(
