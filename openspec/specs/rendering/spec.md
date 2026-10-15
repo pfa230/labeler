@@ -48,10 +48,11 @@ The API SHALL be served under `/api` on `0.0.0.0:$PORT` (default `8080`); paths 
 | `start_slot` | integer ≥ 0 | no | `sheet` only, default `0`; at or past the sheet's slot count is `400` `start_slot_out_of_range`. |
 | `format` | `png`, `pdf` | no | `/render` of a `single` template only, default `png`; unknown is `400` `format_unknown`. |
 | `printer` | string | `/print` only, required | Unknown is `404 NotFound`. |
+| `chain_and_continue` | boolean | `/print` only, optional | Default false; job finishing is defined by `printing`. |
 
 An entry's `copies` SHALL default to `1`; a value that is not an integer of at least `1`, or `null`, is `400 InvalidRequest` with reason `json_malformed`. An entry with `copies: N` SHALL stand for N labels with its `data`, in its place in the request. Labels SHALL be counted and indexed from 0 in that order, so the label cap, ZIP entries, sheet slots, failure indices and the print summary all count these labels.
 
-A field sent where its row does not apply (`start_slot` for a `single` template, even `0`; `format` for a `sheet` template) SHALL be `400 InvalidRequest` with reason `field_not_applicable`, whatever its value. `format` on `/print` and `printer` on `/render` are unlisted keys (`errors`).
+A field sent where its row does not apply (`start_slot` for a `single` template, even `0`; `format` for a `sheet` template) SHALL be `400 InvalidRequest` with reason `field_not_applicable`, whatever its value. `format` on `/print`, and `printer` or `chain_and_continue` on `/render` are unlisted keys (`errors`).
 
 Output by format and endpoint:
 
@@ -98,6 +99,16 @@ Output by format and endpoint:
 - **WHEN** a `single` batch carries `start_slot: 0`
 - **THEN** the response is `400 InvalidRequest` with reason `field_not_applicable`
 
+#### Scenario: Continuation is print-only
+
+- **WHEN** a client sends `chain_and_continue` to `/render`
+- **THEN** the response is `400 InvalidRequest` with reason `json_malformed`
+
+#### Scenario: Malformed continuation value
+
+- **WHEN** a print request carries a non-boolean or null `chain_and_continue` value
+- **THEN** the response is `400 InvalidRequest` with reason `json_malformed`
+
 ### Requirement: Sheet pagination
 
 A `sheet` batch SHALL fill the sheet's `positions` in declared order with labels in request order, starting at `start_slot` on page 1 and at slot 0 on each later page, adding pages as needed. Each label SHALL be clipped to a box of the sheet's label size.
@@ -109,12 +120,17 @@ A `sheet` batch SHALL fill the sheet's `positions` in declared order with labels
 
 ### Requirement: All-or-nothing validation
 
-`/render` and `/print` SHALL judge every label before executing anything: its `data` keys name declared parameters, its parameters resolve (both `parameters`), and it measures and renders. If any label fails, the request SHALL return `422 BatchInvalid` whose `details.failures` (shape: `errors`) holds one entry per failing label, and SHALL produce no file, page or print job. Request-level refusals (unknown template or printer, label cap, empty batch, `format`, `start_slot`, a template whose snapshot does not resolve: `interpolation`) SHALL keep their own status and are decided before any label (`errors`).
+`/render` and `/print` SHALL judge every label before executing anything: its `data` keys name declared parameters, its parameters resolve (both `parameters`), and it measures and renders. If any label fails, the request SHALL return `422 BatchInvalid` whose `details.failures` (shape: `errors`) holds one entry per failing label, and SHALL produce no file, page or print job. Request-level refusals (unknown template or printer, label cap, empty batch, `format`, `start_slot`, unsupported continuation (`printing`), a template whose snapshot does not resolve: `interpolation`) SHALL keep their own status and are decided before any label (`errors`).
 
 #### Scenario: Two labels failing different ways
 
 - **WHEN** label 0 carries an undeclared key and label 1 sends `abc` for an `integer` parameter
 - **THEN** the response is `422 BatchInvalid` with index 0 reason `data_key_unknown` and index 1 reason `param_value_invalid`, and no ZIP
+
+#### Scenario: Unsupported continuation outranks a label fault
+
+- **WHEN** a print request sets `chain_and_continue: true` without printer support and a label has invalid data
+- **THEN** the request reports the continuation refusal defined by `printing` and dispatches no jobs
 
 ### Requirement: Print summary
 

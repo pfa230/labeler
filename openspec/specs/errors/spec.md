@@ -86,6 +86,7 @@ Each `code` SHALL be returned with exactly the status below, and with the listed
 | `template_id_invalid` | InvalidRequest | A template id is empty or contains characters other than letters, digits, `-` and `_`. |
 | `printer_id_invalid` | InvalidRequest | A printer id is empty or contains disallowed characters. |
 | `printer_invalid` | InvalidRequest | A printer record has a blank name or a field that breaks its rule. |
+| `chain_and_continue_unsupported` | InvalidRequest | Explicit chain-and-continue printing was requested without the printer advertising the required finishing template support. |
 | `variable_key_invalid` | InvalidRequest | A variable key is empty or contains disallowed characters. |
 | `setting_value_invalid` | InvalidRequest | A setting's value fails its type or range rule. |
 | `datetime_pattern_invalid` | InvalidRequest | A datetime format pattern is not valid. |
@@ -120,7 +121,7 @@ A request that renders several labels and has any failing label SHALL return `42
 
 ### Requirement: One fault per answer
 
-A request with several faults SHALL report one of them, and which one is unspecified, except that authentication and origin checks come first (see "Admission before body and path mapping") and request-level faults (unknown template or printer, label cap, empty batch, a field that does not apply, a template whose snapshot does not resolve) SHALL be decided before any label of a batch is judged. A failing label SHALL get one failure entry reporting one of its faults.
+A request with several faults SHALL report one of them, and which one is unspecified, except that authentication and origin checks come first (see "Admission before body and path mapping") and request-level faults (unknown template or printer, label cap, empty batch, a field that does not apply, unsupported continuation (`printing`), a template whose snapshot does not resolve) SHALL be decided before any label of a batch is judged. A failing label SHALL get one failure entry reporting one of its faults.
 
 #### Scenario: A request fault outranks label faults
 
