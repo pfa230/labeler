@@ -5523,10 +5523,7 @@ layout:
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            v["rows"][0]["url"],
-            "https://public.homebox.domain/entity/e1"
-        );
+        assert_eq!(v["rows"][0]["url"], "https://public.homebox.domain/item/e1");
 
         // Clear public_url by omitting it from the PUT
         let res = router
@@ -5561,7 +5558,7 @@ layout:
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let v: Value = serde_json::from_slice(&body).unwrap();
-        let expected_url = format!("{}/entity/e1", hb.uri().trim_end_matches('/'));
+        let expected_url = format!("{}/item/e1", hb.uri().trim_end_matches('/'));
         assert_eq!(v["rows"][0]["url"], expected_url);
     }
 

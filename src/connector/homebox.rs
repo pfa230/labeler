@@ -152,10 +152,15 @@ fn external_base_url(conn: &Connection) -> &str {
         .trim_end_matches('/')
 }
 
-fn build_entity_url(base: &str, id: &str) -> String {
+fn build_row_url(base: &str, resource: &str, id: &str) -> String {
     let trimmed_base = base.trim_end_matches('/');
+    let route = if resource == "locations" {
+        "location"
+    } else {
+        "item"
+    };
     let encoded_id = urlencoding::encode(id);
-    format!("{trimmed_base}/entity/{encoded_id}")
+    format!("{trimmed_base}/{route}/{encoded_id}")
 }
 
 struct EffectiveHomeboxFilters {
@@ -440,12 +445,12 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
         "description".into(),
         CellValue::Text(e.description.clone().unwrap_or_default()),
     );
-    let entity_url = build_entity_url(base_url, &e.id);
+    let row_url = build_row_url(base_url, resource, &e.id);
     if resource == "locations" {
         if let Some(n) = e.item_count {
             cells.insert("itemCount".into(), CellValue::Number(n));
         }
-        cells.insert("location_url".into(), CellValue::Text(entity_url.clone()));
+        cells.insert("location_url".into(), CellValue::Text(row_url.clone()));
     } else {
         cells.insert(
             "assetId".into(),
@@ -473,7 +478,7 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
         if let Some(ref s) = e.serial_number {
             cells.insert("serialNumber".into(), CellValue::Text(s.clone()));
         }
-        cells.insert("item_url".into(), CellValue::Text(entity_url.clone()));
+        cells.insert("item_url".into(), CellValue::Text(row_url.clone()));
     }
     if let Some(ref fields) = e.fields {
         for f in fields {
@@ -494,7 +499,7 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
             key: e.id.clone(),
         },
         cells,
-        url: Some(entity_url),
+        url: Some(row_url),
     }
 }
 
@@ -530,7 +535,7 @@ fn extract_field(
         return RowValue::List(names);
     }
     match key {
-        "item_url" | "location_url" => RowValue::Text(build_entity_url(base_url, id)),
+        "item_url" | "location_url" => RowValue::Text(build_row_url(base_url, resource, id)),
         "location" => RowValue::Text(json_name(&detail.get("parent").cloned())),
         k if k.starts_with("custom:") => {
             let want = &k["custom:".len()..];
@@ -747,7 +752,7 @@ mod tests {
         );
         assert_eq!(
             cells.get("item_url").unwrap(),
-            &CellValue::Text(format!("{}/entity/e1", server.uri()))
+            &CellValue::Text(format!("{}/item/e1", server.uri()))
         );
         assert_eq!(
             cells.get("custom:Warranty").unwrap(),
@@ -875,7 +880,7 @@ mod tests {
         assert_eq!(rows[0].data["manufacturer"], RowValue::Text("Acme".into()));
         assert_eq!(
             rows[0].data["item_url"],
-            RowValue::Text(format!("{}/entity/e1", server.uri()))
+            RowValue::Text(format!("{}/item/e1", server.uri()))
         );
         // On entities, tags yields RowValue::List
         assert_eq!(rows[0].data["tags"], RowValue::List(vec![]));
@@ -948,7 +953,7 @@ mod tests {
             .await;
         let egress = crate::egress::Egress::new();
         let c = conn(&server.uri());
-        let expected = format!("{}/entity/e1", c.base_url.trim_end_matches('/'));
+        let expected = format!("{}/item/e1", c.base_url.trim_end_matches('/'));
         let page = HomeboxConnector
             .browse(
                 &c,
@@ -995,6 +1000,12 @@ mod tests {
             .unwrap();
         let row = &page.rows[0];
         assert_eq!(row.id.resource, "locations");
+        let expected_url = format!("{}/location/l1", server.uri().trim_end_matches('/'));
+        assert_eq!(row.url.as_deref(), Some(expected_url.as_str()));
+        assert_eq!(
+            row.cells.get("location_url"),
+            Some(&CellValue::Text(expected_url))
+        );
         assert!(matches!(row.cells.get("name"), Some(CellValue::Text(s)) if s == "Garage"));
         assert!(matches!(row.cells.get("itemCount"), Some(CellValue::Number(n)) if *n == 7.0));
         assert_eq!(
@@ -1032,11 +1043,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             page.rows[0].url.as_deref(),
-            Some("https://public.homebox.domain/entity/e1")
+            Some("https://public.homebox.domain/item/e1")
         );
         assert_eq!(
             page.rows[0].cells.get("item_url").unwrap(),
-            &CellValue::Text("https://public.homebox.domain/entity/e1".into())
+            &CellValue::Text("https://public.homebox.domain/item/e1".into())
         );
     }
 
@@ -1066,7 +1077,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let expected = format!("{}/entity/e1", server.uri().trim_end_matches('/'));
+        let expected = format!("{}/item/e1", server.uri().trim_end_matches('/'));
         assert_eq!(page.rows[0].url.as_deref(), Some(expected.as_str()));
         assert_eq!(
             page.rows[0].cells.get("item_url").unwrap(),
@@ -1113,7 +1124,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].data["item_url"],
-            RowValue::Text("https://public.homebox.domain/entity/e1".into())
+            RowValue::Text("https://public.homebox.domain/item/e1".into())
         );
 
         let loc_rows = HomeboxConnector
@@ -1134,23 +1145,23 @@ mod tests {
         assert_eq!(loc_rows.len(), 1);
         assert_eq!(
             loc_rows[0].data["location_url"],
-            RowValue::Text("https://public.homebox.domain/entity/loc1".into())
+            RowValue::Text("https://public.homebox.domain/location/loc1".into())
         );
     }
 
     #[test]
-    fn build_entity_url_escapes_entity_id() {
+    fn build_row_url_picks_route_by_resource_and_escapes_id() {
         assert_eq!(
-            build_entity_url("https://hb.example.com", "item 123"),
-            "https://hb.example.com/entity/item%20123"
+            build_row_url("https://hb.example.com", "entities", "item 123"),
+            "https://hb.example.com/item/item%20123"
         );
         assert_eq!(
-            build_entity_url("https://hb.example.com/", "a/b?c#d"),
-            "https://hb.example.com/entity/a%2Fb%3Fc%23d"
+            build_row_url("https://hb.example.com/", "entities", "a/b?c#d"),
+            "https://hb.example.com/item/a%2Fb%3Fc%23d"
         );
         assert_eq!(
-            build_entity_url("http://localhost:7745", "simple-id_1"),
-            "http://localhost:7745/entity/simple-id_1"
+            build_row_url("http://localhost:7745", "locations", "simple-id_1"),
+            "http://localhost:7745/location/simple-id_1"
         );
     }
 
