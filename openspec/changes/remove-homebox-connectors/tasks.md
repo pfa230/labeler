@@ -11,7 +11,7 @@
 
 ## 3. Retire the contract and update current documentation
 
-- [ ] 3.1 Update the UI spec Purpose directly to describe the remaining screens, remove the retired domain from active lists in `AGENTS.md` and `openspec/config.yaml`, and update `README.md`/`docs/VISION.md` (issue #452); verify current documentation no longer advertises built-in inventory connectors and generic Homebox QR fixtures/examples and historical archives remain intact; retain `retire_capabilities: true` so normal spec synchronization/archive deletes the connections capability.
+- [ ] 3.1 Delete `openspec/specs/connections/spec.md` and its directory during implementation, before synchronization/archive, retaining the connections removal delta as the retirement record; update the UI spec Purpose directly to describe the remaining screens, remove the retired domain from active lists in `AGENTS.md` and `openspec/config.yaml`, and update `README.md`/`docs/VISION.md` (removed `connections` requirements; issue #452); verify the main connections capability is absent, current documentation no longer advertises built-in inventory connectors, and generic Homebox QR fixtures/examples and historical archives remain intact.
 
 ## 4. Verify the complete removal
 

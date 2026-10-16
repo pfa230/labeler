@@ -20,7 +20,7 @@ None.
 
 ### Modified Capabilities
 
-- `connections`: Remove every inventory connection and connector requirement.
+- `connections`: Retired; every inventory connection and connector requirement removed.
 - `settings`: Remove the default inventory connection setting and define cleanup of persisted connector state.
 - `ui`: Remove the connector screens and mapping requirements; scope shared batch behavior to Import.
 - `errors`: Remove connector-only codes, reason slugs and record kinds, and move the malformed-body example to a retained endpoint.
