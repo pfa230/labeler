@@ -58,9 +58,6 @@ reasons! {
     FormatUnsupported => "format_unsupported",
     PrinterInvalid => "printer_invalid",
     ChainAndContinueUnsupported => "chain_and_continue_unsupported",
-    FilterInvalid => "filter_invalid",
-    RowKeyInvalid => "row_key_invalid",
-    RowLimitExceeded => "row_limit_exceeded",
     StartSlotOutOfRange => "start_slot_out_of_range",
     BatchEmpty => "batch_empty",
     FormatUnknown => "format_unknown",
@@ -70,23 +67,12 @@ reasons! {
     SettingValueInvalid => "setting_value_invalid",
     DatetimePatternInvalid => "datetime_pattern_invalid",
     WidthBoundsInverted => "width_bounds_inverted",
-    ConnectorUnknown => "connector_unknown",
-    ConnectionConnectorMissing => "connection_connector_missing",
-    CredentialRequired => "credential_required",
-    BaseUrlInvalid => "base_url_invalid",
-    PublicUrlInvalid => "public_url_invalid",
     DataKeyUnknown => "data_key_unknown",
     ColorModeUnknown => "color_mode_unknown",
     ResolutionInvalid => "resolution_invalid",
     BilevelRequiresPng => "bilevel_requires_png",
     UsernameEmpty => "username_empty",
     PasswordEmpty => "password_empty",
-
-    // Upstream
-    Auth => "auth",
-    Unreachable => "unreachable",
-    RateLimited => "rate_limited",
-    BadResponse => "bad_response",
 }
 
 #[cfg(test)]

@@ -20,33 +20,6 @@ pub struct ApiToken {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Connection {
-    pub id: String,
-    pub connector: String,
-    pub name: String,
-    pub base_url: String,
-    pub public_url: Option<String>,
-    pub credential: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct NewConnection<'a> {
-    pub connector: &'a str,
-    pub name: &'a str,
-    pub base_url: &'a str,
-    pub public_url: Option<&'a str>,
-    pub credential: &'a str,
-}
-
-#[derive(Debug, Clone)]
-pub struct UpdateConnection<'a> {
-    pub name: &'a str,
-    pub base_url: &'a str,
-    pub public_url: Option<&'a str>,
-    pub credential: Option<&'a str>,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
@@ -179,6 +152,12 @@ fn migrations() -> Migrations<'static> {
             created_at   TEXT NOT NULL DEFAULT (datetime('now'))
         );",
         ),
+        // Inventory connections and the default-connection override are gone with the connector
+        // subsystem (issue #452); nothing else in the store depends on them.
+        M::up(
+            "DROP TABLE connections;
+        DELETE FROM app_settings WHERE key = 'default_connection_id';",
+        ),
     ])
 }
 
@@ -295,7 +274,9 @@ impl Store {
     }
 
     /// Delete a printer and, in the same transaction, the `default_printer_id` setting when it named
-    /// that printer; see `delete_connection_and_default` for why there is no plain delete.
+    /// that printer. There is deliberately no plain `delete_printer`: a delete that does not clear
+    /// the setting would leave a default naming a printer that no longer exists, and `GET
+    /// /api/settings` takes no lock, so a second statement is a window a reader can land in.
     pub async fn delete_printer_and_default(&self, id: &str) -> Result<bool, StoreError> {
         let mut conn = self.conn.lock().expect("store lock");
         let tx = conn.transaction()?;
@@ -709,95 +690,6 @@ impl Store {
             rusqlite::params![id, owner],
         )? > 0)
     }
-
-    // Connections
-    pub async fn create_connection(
-        &self,
-        new: NewConnection<'_>,
-    ) -> Result<Connection, StoreError> {
-        let id = crate::auth::random_secret();
-        let conn = self.conn.lock().expect("store lock");
-        conn.execute(
-            "INSERT INTO connections (id, connector, name, base_url, public_url, credential) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![id, new.connector, new.name, new.base_url, new.public_url, new.credential],
-        )?;
-        Ok(Connection {
-            id,
-            connector: new.connector.to_string(),
-            name: new.name.to_string(),
-            base_url: new.base_url.to_string(),
-            public_url: new.public_url.map(ToString::to_string),
-            credential: new.credential.to_string(),
-        })
-    }
-
-    pub async fn get_connection(&self, id: &str) -> Result<Option<Connection>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
-        conn.query_row(
-            "SELECT id, connector, name, base_url, credential, public_url FROM connections WHERE id = ?1",
-            [id],
-            row_to_connection,
-        )
-        .optional()
-        .map_err(Into::into)
-    }
-
-    pub async fn list_connections(&self) -> Result<Vec<Connection>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
-        let mut stmt = conn.prepare(
-            "SELECT id, connector, name, base_url, credential, public_url FROM connections ORDER BY name, id",
-        )?;
-        let rows = stmt.query_map([], row_to_connection)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    pub async fn update_connection(
-        &self,
-        id: &str,
-        update: UpdateConnection<'_>,
-    ) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
-        let n = match update.credential {
-            Some(credential) => conn.execute(
-                "UPDATE connections SET name = ?1, base_url = ?2, public_url = ?3, credential = ?4 WHERE id = ?5",
-                rusqlite::params![update.name, update.base_url, update.public_url, credential, id],
-            )?,
-            None => conn.execute(
-                "UPDATE connections SET name = ?1, base_url = ?2, public_url = ?3 WHERE id = ?4",
-                rusqlite::params![update.name, update.base_url, update.public_url, id],
-            )?,
-        };
-        Ok(n > 0)
-    }
-
-    /// Delete a connection and, in the same transaction, the `default_connection_id` setting when it
-    /// named that connection. There is deliberately no plain `delete_connection`: a delete that does
-    /// not clear the setting would leave a default naming a connection that no longer exists, and
-    /// `GET /api/settings` takes no lock, so a second statement is a window a reader can land in.
-    pub async fn delete_connection_and_default(&self, id: &str) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().expect("store lock");
-        let tx = conn.transaction()?;
-        let existed = tx.execute("DELETE FROM connections WHERE id = ?1", [id])? > 0;
-        if existed {
-            tx.execute(
-                "DELETE FROM app_settings WHERE key = ?1 AND value = ?2",
-                rusqlite::params![crate::settings::DEFAULT_CONNECTION_ID, id],
-            )?;
-        }
-        tx.commit()?;
-        Ok(existed)
-    }
-}
-
-fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
-    Ok(Connection {
-        id: r.get(0)?,
-        connector: r.get(1)?,
-        name: r.get(2)?,
-        base_url: r.get(3)?,
-        credential: r.get(4)?,
-        public_url: r.get(5)?,
-    })
 }
 
 const SELECT_PRINTER: &str =
@@ -1041,94 +933,6 @@ mod migration_tests {
     }
 
     #[test]
-    fn migration_adds_public_url_to_connections() {
-        let mut conn = SqlConnection::open_in_memory().expect("open");
-        let migrations = migrations();
-        // Version 10 is before public_url was added in migration 11
-        migrations
-            .to_version(&mut conn, 10)
-            .expect("migrate to version before public_url");
-
-        conn.execute(
-            "INSERT INTO connections (id, connector, name, base_url, credential, enabled)
-             VALUES ('c1', 'homebox', 'Home', 'http://hb.lan', 'secret', 1)",
-            [],
-        )
-        .expect("seed connection");
-
-        migrations.to_latest(&mut conn).expect("migrate to latest");
-
-        let (name, public_url): (String, Option<String>) = conn
-            .query_row(
-                "SELECT name, public_url FROM connections WHERE id = 'c1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .expect("connection survives with public_url as NULL");
-        assert_eq!(name, "Home");
-        assert_eq!(public_url, None);
-    }
-
-    /// #416: the connection record has no `enabled` and no `transforms`. An existing database drops
-    /// both columns, and its connections survive with every field the record keeps.
-    #[test]
-    fn migration_drops_enabled_and_transforms_from_connections() {
-        let mut conn = SqlConnection::open_in_memory().expect("open");
-        let migrations = migrations();
-        // Version 12 is before both columns were dropped in migration 13
-        migrations
-            .to_version(&mut conn, 12)
-            .expect("migrate to the version before the drop");
-
-        conn.execute(
-            "INSERT INTO connections (id, connector, name, base_url, public_url, credential, enabled, transforms)
-             VALUES ('c1', 'homebox', 'Home', 'http://hb.lan', 'https://pub.lan', 'secret', 0, '[]')",
-            [],
-        )
-        .expect("seed a disabled connection with a transform rule");
-
-        migrations.to_latest(&mut conn).expect("migrate to latest");
-
-        let row: (String, String, String, String, Option<String>, String) = conn
-            .query_row(
-                "SELECT id, connector, name, base_url, public_url, credential FROM connections",
-                [],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                    ))
-                },
-            )
-            .expect("the connection survives the migration");
-        assert_eq!(
-            row,
-            (
-                "c1".to_string(),
-                "homebox".to_string(),
-                "Home".to_string(),
-                "http://hb.lan".to_string(),
-                Some("https://pub.lan".to_string()),
-                "secret".to_string()
-            )
-        );
-
-        for column in ["enabled", "transforms"] {
-            let err = conn
-                .prepare(&format!("SELECT {column} FROM connections"))
-                .expect_err("the column must be gone");
-            assert!(
-                err.to_string().contains(column),
-                "expected a no-such-column error, got: {err}"
-            );
-        }
-    }
-
-    #[test]
     fn migration_flattens_printers_and_moves_the_default() {
         let mut conn = SqlConnection::open_in_memory().expect("open");
         let migrations = migrations();
@@ -1235,128 +1039,139 @@ mod migration_tests {
         conn.prepare("SELECT owner FROM api_tokens")
             .expect("api_tokens has an owner column");
     }
-}
 
-#[cfg(test)]
-mod connection_tests {
-    use super::*;
-
-    fn store() -> Store {
-        Store::open_in_memory().unwrap()
+    /// Every column of every row, as text, so two dumps of a table compare without caring what
+    /// types the columns are.
+    fn dump(conn: &SqlConnection, sql: &str) -> Vec<Vec<String>> {
+        let mut stmt = conn.prepare(sql).expect("prepare dump");
+        let columns = stmt.column_count();
+        let mut rows = stmt.query([]).expect("run dump");
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().expect("next row") {
+            let mut cells = Vec::new();
+            for i in 0..columns {
+                cells.push(match row.get_ref(i).expect("cell") {
+                    rusqlite::types::ValueRef::Null => "<null>".to_string(),
+                    rusqlite::types::ValueRef::Integer(n) => n.to_string(),
+                    rusqlite::types::ValueRef::Real(f) => f.to_string(),
+                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    rusqlite::types::ValueRef::Blob(b) => format!("{b:?}"),
+                });
+            }
+            out.push(cells);
+        }
+        out
     }
 
-    #[tokio::test]
-    async fn connection_crud() {
-        let s = store();
-        let c = s
-            .create_connection(NewConnection {
-                connector: "homebox",
-                name: "home",
-                base_url: "http://hb.lan:7745",
-                public_url: None,
-                credential: "hb_secret",
-            })
-            .await
-            .unwrap();
-        assert_eq!(c.connector, "homebox");
-        assert_eq!(c.credential, "hb_secret");
-        assert_eq!(c.public_url, None);
-        assert!(s.get_connection(&c.id).await.unwrap().is_some());
-        assert_eq!(s.list_connections().await.unwrap().len(), 1);
-        // update name + keep credential (None = unchanged)
-        assert!(s
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "renamed",
-                    base_url: "http://hb.lan:7745",
-                    public_url: None,
-                    credential: None,
-                },
-            )
-            .await
-            .unwrap());
-        let g = s.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(g.name, "renamed");
-        assert_eq!(g.credential, "hb_secret"); // unchanged
-        assert_eq!(g.public_url, None);
-        // update credential
-        assert!(s
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "renamed",
-                    base_url: "http://hb.lan:7745",
-                    public_url: None,
-                    credential: Some("hb_new"),
-                },
-            )
-            .await
-            .unwrap());
-        assert_eq!(
-            s.get_connection(&c.id).await.unwrap().unwrap().credential,
-            "hb_new"
-        );
-        assert!(s.delete_connection_and_default(&c.id).await.unwrap());
-        assert!(s.get_connection(&c.id).await.unwrap().is_none());
-    }
+    /// #452: an upgrade drops the inventory connections and the default-connection override and
+    /// leaves every other stored value alone. A freshly built database never holds that state, so
+    /// this seeds one at the version before the drop and reads it back afterwards.
+    #[test]
+    fn migration_drops_inventory_connections_and_preserves_other_state() {
+        let mut conn = SqlConnection::open_in_memory().expect("open");
+        let migrations = migrations();
+        // Version 15 is the last one that still keeps the connections table.
+        migrations
+            .to_version(&mut conn, 15)
+            .expect("migrate to the version before the drop");
 
-    #[tokio::test]
-    async fn connection_crud_with_public_url_and_update_fields() {
-        let store = Store::open_in_memory().unwrap();
-        let c = store
-            .create_connection(NewConnection {
-                connector: "homebox",
-                name: "Home",
-                base_url: "http://homebox.lan:7745",
-                public_url: Some("https://homebox.example.com"),
-                credential: "token123",
-            })
-            .await
-            .unwrap();
-        assert_eq!(c.public_url.as_deref(), Some("https://homebox.example.com"));
-
-        let fetched = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(
-            fetched.public_url.as_deref(),
-            Some("https://homebox.example.com")
-        );
-
-        // An update replaces the record: no public_url clears it
-        store
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "Home Updated",
-                    base_url: "http://homebox.lan:7745",
-                    public_url: None,
-                    credential: None,
-                },
+        conn.execute(
+            "INSERT INTO connections (id, connector, name, base_url, public_url, credential)
+             VALUES ('c1', 'homebox', 'Home', 'http://hb.lan', 'https://pub.lan', 'hb_secret')",
+            [],
+        )
+        .expect("seed a connection");
+        for (key, value) in [
+            ("default_connection_id", "c1"),
+            ("default_printer_id", "p1"),
+            ("datetime_formats", "{\"day\":\"%d\"}"),
+        ] {
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, value],
             )
-            .await
-            .unwrap();
-        let cleared = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(cleared.name, "Home Updated");
-        assert_eq!(cleared.public_url, None);
-        assert_eq!(cleared.credential, "token123");
+            .expect("seed a setting");
+        }
+        conn.execute(
+            "INSERT INTO printers (id, name, uri, username, password, insecure, color_mode, resolution)
+             VALUES ('p1', 'P1', 'ipp://h/p', 'u', 'pw', 0, 'color', 203)",
+            [],
+        )
+        .expect("seed a printer");
+        conn.execute(
+            "INSERT INTO variables (key, value) VALUES ('qr_base_url', 'https://qr.example')",
+            [],
+        )
+        .expect("seed a variable");
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash)
+             VALUES ('u1', 'alice', 'phc-hash')",
+            [],
+        )
+        .expect("seed a user");
+        conn.execute(
+            "INSERT INTO sessions (id, user_id, expires_at)
+             VALUES ('s1', 'u1', '2030-01-01')",
+            [],
+        )
+        .expect("seed a session");
+        conn.execute(
+            "INSERT INTO api_tokens (id, owner, name, token_hash)
+             VALUES ('t1', 'u1', 'ci', 'h1')",
+            [],
+        )
+        .expect("seed a token");
+        conn.execute(
+            "INSERT INTO favorites (user_id, template_id) VALUES ('u1', 'brother_18mm')",
+            [],
+        )
+        .expect("seed a favorite");
+        conn.execute(
+            "INSERT INTO jobs (template, printer, status, error, user_id)
+             VALUES ('brother_18mm', 'p1', 'ok', NULL, 'u1')",
+            [],
+        )
+        .expect("seed a job");
 
-        store
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "Home Updated",
-                    base_url: "http://homebox.lan:7745",
-                    public_url: Some("https://new.example.com"),
-                    credential: None,
-                },
-            )
-            .await
-            .unwrap();
-        let set_again = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(
-            set_again.public_url.as_deref(),
-            Some("https://new.example.com")
-        );
+        let tables = [
+            ("printers", "SELECT * FROM printers ORDER BY id"),
+            ("variables", "SELECT * FROM variables ORDER BY key"),
+            ("app_settings", "SELECT * FROM app_settings ORDER BY key"),
+            ("jobs", "SELECT * FROM jobs ORDER BY id"),
+            ("users", "SELECT * FROM users ORDER BY id"),
+            ("sessions", "SELECT * FROM sessions ORDER BY id"),
+            ("api_tokens", "SELECT * FROM api_tokens ORDER BY id"),
+            (
+                "favorites",
+                "SELECT * FROM favorites ORDER BY user_id, template_id",
+            ),
+        ];
+        let before: Vec<Vec<Vec<String>>> =
+            tables.iter().map(|(_, sql)| dump(&conn, sql)).collect();
+
+        migrations.to_latest(&mut conn).expect("migrate to latest");
+
+        conn.prepare("SELECT id FROM connections")
+            .expect_err("the connections table must be gone");
+        for ((name, sql), was) in tables.iter().zip(&before) {
+            let now = dump(&conn, sql);
+            let (was, now) = if *name == "app_settings" {
+                let keep = |rows: &[Vec<String>]| -> Vec<Vec<String>> {
+                    rows.iter()
+                        .filter(|r| r[0] != "default_connection_id")
+                        .cloned()
+                        .collect()
+                };
+                assert!(
+                    now.iter().all(|r| r[0] != "default_connection_id"),
+                    "the default inventory connection override must be gone"
+                );
+                (keep(was), keep(&now))
+            } else {
+                (was.clone(), now)
+            };
+            assert_eq!(now, was, "{name} must survive the upgrade unchanged");
+        }
     }
 }
 
@@ -1435,78 +1250,5 @@ mod auth_tests {
             .await
             .unwrap()
             .is_none());
-    }
-
-    #[tokio::test]
-    async fn list_connections_orders_by_name_then_id() {
-        let s = store();
-        {
-            let conn = s.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO connections (id, connector, name, base_url, credential) VALUES ('b', 'homebox', 'Homebox', 'http://b.lan', 'sec')",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO connections (id, connector, name, base_url, credential) VALUES ('a', 'homebox', 'Homebox', 'http://a.lan', 'sec')",
-                [],
-            )
-            .unwrap();
-        }
-        let list = s.list_connections().await.unwrap();
-        assert_eq!(list.len(), 2);
-        assert_eq!(list[0].id, "a");
-        assert_eq!(list[1].id, "b");
-    }
-
-    #[tokio::test]
-    async fn delete_connection_and_default_cascade() {
-        let s = store();
-        let c1 = s
-            .create_connection(NewConnection {
-                connector: "homebox",
-                name: "c1",
-                base_url: "http://c1.lan",
-                public_url: None,
-                credential: "sec",
-            })
-            .await
-            .unwrap();
-        let c2 = s
-            .create_connection(NewConnection {
-                connector: "homebox",
-                name: "c2",
-                base_url: "http://c2.lan",
-                public_url: None,
-                credential: "sec",
-            })
-            .await
-            .unwrap();
-
-        s.set_setting("default_connection_id", &c1.id)
-            .await
-            .unwrap();
-        assert_eq!(
-            s.get_setting("default_connection_id").await.unwrap(),
-            Some(c1.id.clone())
-        );
-
-        // Deleting unknown id returns false and clears nothing
-        assert!(!s.delete_connection_and_default("unknown-id").await.unwrap());
-        assert_eq!(
-            s.get_setting("default_connection_id").await.unwrap(),
-            Some(c1.id.clone())
-        );
-
-        // Deleting non-default connection c2 returns true and leaves default_connection_id intact
-        assert!(s.delete_connection_and_default(&c2.id).await.unwrap());
-        assert_eq!(
-            s.get_setting("default_connection_id").await.unwrap(),
-            Some(c1.id.clone())
-        );
-
-        // Deleting default connection c1 returns true and clears default_connection_id
-        assert!(s.delete_connection_and_default(&c1.id).await.unwrap());
-        assert_eq!(s.get_setting("default_connection_id").await.unwrap(), None);
     }
 }

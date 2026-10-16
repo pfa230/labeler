@@ -22,7 +22,6 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
-    connector::{BrowsePage, BrowseRequest, ConnectorSchema, LabelRow, MaterializeRequest},
     errors::{AppError, NotFoundKind},
     extract::{Json, Path},
     fs_safe::{self, PublishResult},
@@ -63,8 +62,6 @@ pub struct AppState {
     ui_dir: PathBuf,
     trust_proxy: bool,
     no_auth: bool,
-    egress: crate::egress::Egress,
-    connectors: crate::connector::ConnectorRegistry,
     /// Fires in a create after validation and before the file is published, for the interleaving a
     /// request cannot stage: a file arriving at the destination name. Compiled out of the shipped
     /// binary; without it no test tells the exclusive publish from a stat-then-rename.
@@ -90,8 +87,6 @@ impl AppState {
             no_auth: std::env::var("LABELER_NO_AUTH")
                 .map(|v| v == "true")
                 .unwrap_or(false),
-            egress: crate::egress::Egress::new(),
-            connectors: crate::connector::ConnectorRegistry::default(),
         }
     }
 
@@ -119,14 +114,6 @@ impl AppState {
 
     pub fn no_auth(&self) -> bool {
         self.no_auth
-    }
-
-    pub fn egress(&self) -> &crate::egress::Egress {
-        &self.egress
-    }
-
-    pub fn connectors(&self) -> &crate::connector::ConnectorRegistry {
-        &self.connectors
     }
 
     /// Install the validated-but-not-yet-published hook. Test-only; see the field.
@@ -193,22 +180,6 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
-        )
-        .route(
-            "/connections",
-            get(list_connections).post(create_connection),
-        )
-        .route(
-            "/connections/{id}",
-            get(get_connection_h)
-                .put(update_connection_h)
-                .delete(delete_connection_h),
-        )
-        .route("/connections/{id}/schema", get(connection_schema))
-        .route("/connections/{id}/browse", post(connection_browse))
-        .route(
-            "/connections/{id}/materialize",
-            post(connection_materialize),
         )
         .route("/variables", get(get_variables))
         .route("/variables/{key}", put(put_variable))
@@ -823,14 +794,12 @@ pub async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Response
 fn resolved_setting(key: &str, stored: Option<String>) -> Result<ResolvedSetting, AppError> {
     use crate::settings::{
         resolve_datetime_formats_from, resolve_default_id_from, DATETIME_FORMATS,
-        DEFAULT_CONNECTION_ID, DEFAULT_PRINTER_ID,
+        DEFAULT_PRINTER_ID,
     };
     let is_default = stored.is_none();
     let value = match key {
         DATETIME_FORMATS => resolve_datetime_formats_from(stored).map(|v| serde_json::json!(v)),
-        DEFAULT_CONNECTION_ID | DEFAULT_PRINTER_ID => {
-            resolve_default_id_from(key, stored).map(|v| serde_json::json!(v))
-        }
+        DEFAULT_PRINTER_ID => resolve_default_id_from(key, stored).map(|v| serde_json::json!(v)),
         _ => return Err(AppError::internal(format!("unknown setting '{key}'"))),
     }
     .map_err(|e| AppError::internal(e.to_string()))?;
@@ -861,12 +830,6 @@ pub async fn put_setting(
         .map_err(|err| AppError::invalid_request(Reason::SettingValueInvalid, err))?;
     let _guard = state.write_lock.lock().await;
     let missing = match key.as_str() {
-        crate::settings::DEFAULT_CONNECTION_ID => state
-            .store()
-            .get_connection(&canonical)
-            .await?
-            .is_none()
-            .then_some("connection"),
         crate::settings::DEFAULT_PRINTER_ID => state
             .store()
             .get_printer(&canonical)
@@ -1079,372 +1042,6 @@ async fn probe_connection(connection: &PrinterConnection) -> Result<Json<ProbeRe
         crate::driver::ProbeOutcome::Ok(c) => ProbeResponse::ok(c),
         crate::driver::ProbeOutcome::Unreachable(d) => ProbeResponse::Unreachable { detail: d },
     }))
-}
-
-#[derive(serde::Serialize, utoipa::ToSchema, Debug, PartialEq)]
-pub struct ConnectionView {
-    pub id: String,
-    pub connector: String,
-    pub name: String,
-    pub base_url: String,
-    pub public_url: Option<String>,
-    pub has_credential: bool,
-}
-
-impl From<&crate::store::Connection> for ConnectionView {
-    fn from(c: &crate::store::Connection) -> Self {
-        Self {
-            id: c.id.clone(),
-            connector: c.connector.clone(),
-            name: c.name.clone(),
-            base_url: c.base_url.clone(),
-            public_url: c.public_url.clone(),
-            has_credential: !c.credential.is_empty(),
-        }
-    }
-}
-
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ConnectionCreate {
-    pub connector: String,
-    pub name: String,
-    pub base_url: String,
-    #[serde(default, deserialize_with = "crate::models::non_null")]
-    #[schema(nullable = false)]
-    pub public_url: Option<String>,
-    // Required; optional here only so an omitted one is refused as `credential_required`.
-    #[serde(default, deserialize_with = "crate::models::non_null")]
-    #[schema(nullable = false, required = true)]
-    pub credential: Option<String>,
-}
-
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ConnectionUpdate {
-    pub name: String,
-    pub base_url: String,
-    #[serde(default, deserialize_with = "crate::models::non_null")]
-    #[schema(nullable = false)]
-    pub public_url: Option<String>,
-    #[serde(default, deserialize_with = "crate::models::non_null")]
-    #[schema(nullable = false)]
-    pub credential: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UrlField {
-    Base,
-    Public,
-}
-
-impl UrlField {
-    pub(crate) fn wire_name(self) -> &'static str {
-        match self {
-            Self::Base => "base_url",
-            Self::Public => "public_url",
-        }
-    }
-
-    pub(crate) fn reason(self) -> Reason {
-        match self {
-            Self::Base => Reason::BaseUrlInvalid,
-            Self::Public => Reason::PublicUrlInvalid,
-        }
-    }
-}
-
-pub(crate) fn validate_and_normalize_url(raw: &str, field: UrlField) -> Result<String, AppError> {
-    let trimmed = raw.trim();
-    // The parser drops empty userinfo (`https://@host`), so only its syntax violation shows it.
-    let embedded_credentials = std::cell::Cell::new(false);
-    let report_violation = |violation| {
-        if violation == url::SyntaxViolation::EmbeddedCredentials {
-            embedded_credentials.set(true);
-        }
-    };
-    let parsed = url::Url::options()
-        .syntax_violation_callback(Some(&report_violation))
-        .parse(trimmed)
-        .map_err(|_| {
-            AppError::invalid_request(field.reason(), format!("invalid {}", field.wire_name()))
-        })?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(AppError::invalid_request(
-            field.reason(),
-            format!("{} must use http or https scheme", field.wire_name()),
-        ));
-    }
-    if parsed.host().is_none() {
-        return Err(AppError::invalid_request(
-            field.reason(),
-            format!("{} must include a host", field.wire_name()),
-        ));
-    }
-    if embedded_credentials.get() || !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(AppError::invalid_request(
-            field.reason(),
-            format!("{} must not contain userinfo", field.wire_name()),
-        ));
-    }
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(AppError::invalid_request(
-            field.reason(),
-            format!(
-                "{} must not contain query parameters or fragments",
-                field.wire_name()
-            ),
-        ));
-    }
-    Ok(trimmed.trim_end_matches('/').to_string())
-}
-
-#[utoipa::path(
-    get,
-    path = "/connections",
-    responses(
-        (status = 200, description = "List connections (credential redacted; only has_credential exposed)", body = [ConnectionView])
-    )
-)]
-pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
-    let cs = state.store().list_connections().await?;
-    Ok(Json(cs.iter().map(ConnectionView::from).collect::<Vec<_>>()).into_response())
-}
-
-#[utoipa::path(
-    post,
-    path = "/connections",
-    request_body = ConnectionCreate,
-    responses(
-        (status = 201, description = "Connection created (credential redacted in response)", body = ConnectionView),
-        (status = 400, description = "Invalid request", body = ErrorResponse)
-    )
-)]
-pub async fn create_connection(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<ConnectionCreate>,
-) -> Result<Response, AppError> {
-    state
-        .connectors()
-        .get(&body.connector)
-        .ok_or_else(|| AppError::invalid_request(Reason::ConnectorUnknown, "unknown connector"))?;
-    let cred = body.credential.unwrap_or_default();
-    if cred.is_empty() {
-        return Err(AppError::invalid_request(
-            Reason::CredentialRequired,
-            "credential required",
-        ));
-    }
-    let base_url = validate_and_normalize_url(&body.base_url, UrlField::Base)?;
-    let pub_url = optional_public_url(body.public_url.as_deref())?;
-    let _g = state.write_lock.lock().await;
-    let c = state
-        .store()
-        .create_connection(crate::store::NewConnection {
-            connector: &body.connector,
-            name: &body.name,
-            base_url: &base_url,
-            public_url: pub_url.as_deref(),
-            credential: &cred,
-        })
-        .await?;
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(ConnectionView::from(&c)),
-    )
-        .into_response())
-}
-
-/// A missing or blank `public_url` is none; anything else must be a valid URL.
-fn optional_public_url(raw: Option<&str>) -> Result<Option<String>, AppError> {
-    match raw.map(str::trim) {
-        None | Some("") => Ok(None),
-        Some(url) => validate_and_normalize_url(url, UrlField::Public).map(Some),
-    }
-}
-
-#[utoipa::path(
-    get,
-    path = "/connections/{id}",
-    params(("id" = String, Path, description = "Connection ID")),
-    responses(
-        (status = 200, description = "Connection (credential redacted)", body = ConnectionView),
-        (status = 404, description = "Connection not found", body = ErrorResponse)
-    )
-)]
-pub async fn get_connection_h(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let c = state
-        .store()
-        .get_connection(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, &id))?;
-    Ok(Json(ConnectionView::from(&c)).into_response())
-}
-
-#[utoipa::path(
-    put,
-    path = "/connections/{id}",
-    params(("id" = String, Path, description = "Connection ID")),
-    request_body = ConnectionUpdate,
-    responses(
-        (status = 200, description = "Connection updated (credential redacted)", body = ConnectionView),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Connection not found", body = ErrorResponse)
-    )
-)]
-pub async fn update_connection_h(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<ConnectionUpdate>,
-) -> Result<Response, AppError> {
-    let existing = state
-        .store()
-        .get_connection(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, &id))?;
-    state.connectors().get(&existing.connector).ok_or_else(|| {
-        AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
-    })?;
-    if body.credential.as_deref() == Some("") {
-        return Err(AppError::invalid_request(
-            Reason::CredentialRequired,
-            "credential must not be empty; omit it to keep the stored one",
-        ));
-    }
-    let base_url = validate_and_normalize_url(&body.base_url, UrlField::Base)?;
-    let public_url = optional_public_url(body.public_url.as_deref())?;
-    let _g = state.write_lock.lock().await;
-    let ok = state
-        .store()
-        .update_connection(
-            &id,
-            crate::store::UpdateConnection {
-                name: &body.name,
-                base_url: &base_url,
-                public_url: public_url.as_deref(),
-                credential: body.credential.as_deref(),
-            },
-        )
-        .await?;
-    if !ok {
-        return Err(AppError::not_found(NotFoundKind::Connection, &id));
-    }
-    let c = state
-        .store()
-        .get_connection(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, &id))?;
-    Ok(Json(ConnectionView::from(&c)).into_response())
-}
-
-#[utoipa::path(
-    delete,
-    path = "/connections/{id}",
-    params(("id" = String, Path, description = "Connection ID")),
-    responses(
-        (status = 204, description = "Connection deleted"),
-        (status = 404, description = "Connection not found", body = ErrorResponse)
-    )
-)]
-pub async fn delete_connection_h(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let _g = state.write_lock.lock().await;
-    if !state.store().delete_connection_and_default(&id).await? {
-        return Err(AppError::not_found(NotFoundKind::Connection, &id));
-    }
-    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
-}
-
-async fn load_conn_and_connector<'a>(
-    state: &'a AppState,
-    id: &str,
-) -> Result<(crate::store::Connection, &'a crate::connector::Connectors), AppError> {
-    let conn = state
-        .store()
-        .get_connection(id)
-        .await?
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, id))?;
-    let c = state.connectors().get(&conn.connector).ok_or_else(|| {
-        AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
-    })?;
-    Ok((conn, c))
-}
-
-#[utoipa::path(
-    get,
-    path = "/connections/{id}/schema",
-    params(("id" = String, Path, description = "Connection ID")),
-    responses(
-        (status = 200, description = "Connector schema (resources, fields, filters, relationships)", body = ConnectorSchema),
-        (status = 404, description = "Connection not found", body = ErrorResponse),
-        (status = 502, description = "Upstream failure", body = ErrorResponse)
-    )
-)]
-pub async fn connection_schema(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let (conn, c) = load_conn_and_connector(&state, &id).await?;
-    let schema = c
-        .schema(&conn, state.egress())
-        .await
-        .map_err(AppError::from)?;
-    Ok(Json(schema).into_response())
-}
-
-#[utoipa::path(
-    post,
-    path = "/connections/{id}/browse",
-    params(("id" = String, Path, description = "Connection ID")),
-    request_body = BrowseRequest,
-    responses(
-        (status = 200, description = "A page of browse rows", body = BrowsePage),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Connection not found", body = ErrorResponse),
-        (status = 502, description = "Upstream failure", body = ErrorResponse)
-    )
-)]
-pub async fn connection_browse(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(req): Json<crate::connector::BrowseRequest>,
-) -> Result<Response, AppError> {
-    let (conn, c) = load_conn_and_connector(&state, &id).await?;
-    let page = c
-        .browse(&conn, state.egress(), req)
-        .await
-        .map_err(AppError::from)?;
-    Ok(Json(page).into_response())
-}
-
-#[utoipa::path(
-    post,
-    path = "/connections/{id}/materialize",
-    params(("id" = String, Path, description = "Connection ID")),
-    request_body = MaterializeRequest,
-    responses(
-        (status = 200, description = "Materialized label rows", body = [LabelRow]),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Connection not found", body = ErrorResponse),
-        (status = 502, description = "Upstream failure", body = ErrorResponse)
-    )
-)]
-pub async fn connection_materialize(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(req): Json<crate::connector::MaterializeRequest>,
-) -> Result<Response, AppError> {
-    let (conn, c) = load_conn_and_connector(&state, &id).await?;
-    let rows = c
-        .materialize(&conn, state.egress(), req)
-        .await
-        .map_err(AppError::from)?;
-    Ok(Json(rows).into_response())
 }
 
 fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
@@ -2429,116 +2026,5 @@ impl FromRequestParts<Arc<AppState>> for HttpsHint {
             &parts.uri,
             state.trust_proxy(),
         )))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validate_and_normalize_url_accepts_valid_urls() {
-        assert_eq!(
-            validate_and_normalize_url("http://example.com", UrlField::Base).unwrap(),
-            "http://example.com"
-        );
-        assert_eq!(
-            validate_and_normalize_url("https://example.com/", UrlField::Base).unwrap(),
-            "https://example.com"
-        );
-        assert_eq!(
-            validate_and_normalize_url("  https://example.com/sub/path///  ", UrlField::Public)
-                .unwrap(),
-            "https://example.com/sub/path"
-        );
-        assert_eq!(
-            validate_and_normalize_url("http://hb.lan:7745", UrlField::Base).unwrap(),
-            "http://hb.lan:7745"
-        );
-    }
-
-    #[test]
-    fn validate_and_normalize_url_rejects_invalid_urls() {
-        // Bad scheme
-        let err = validate_and_normalize_url("ftp://example.com", UrlField::Public).unwrap_err();
-        assert_eq!(err.reason(), Some("public_url_invalid"));
-        assert!(err.message_text().contains("must use http or https scheme"));
-
-        // Missing host
-        let err = validate_and_normalize_url("http://", UrlField::Base).unwrap_err();
-        assert_eq!(err.reason(), Some("base_url_invalid"));
-
-        // Userinfo with password
-        let err = validate_and_normalize_url("https://user:pass@example.com", UrlField::Public)
-            .unwrap_err();
-        assert_eq!(err.reason(), Some("public_url_invalid"));
-        assert!(err.message_text().contains("must not contain userinfo"));
-
-        // Userinfo without password (username only)
-        let err =
-            validate_and_normalize_url("https://user@example.com", UrlField::Base).unwrap_err();
-        assert_eq!(err.reason(), Some("base_url_invalid"));
-        assert!(err.message_text().contains("must not contain userinfo"));
-
-        // Query parameters
-        let err =
-            validate_and_normalize_url("http://example.com?query=1", UrlField::Public).unwrap_err();
-        assert_eq!(err.reason(), Some("public_url_invalid"));
-        assert!(err
-            .message_text()
-            .contains("must not contain query parameters or fragments"));
-
-        // Fragments
-        let err =
-            validate_and_normalize_url("http://example.com#section", UrlField::Base).unwrap_err();
-        assert_eq!(err.reason(), Some("base_url_invalid"));
-        assert!(err
-            .message_text()
-            .contains("must not contain query parameters or fragments"));
-
-        // Parse failure
-        let err = validate_and_normalize_url("not a url", UrlField::Base).unwrap_err();
-        assert_eq!(err.reason(), Some("base_url_invalid"));
-        assert_eq!(err.message_text(), "invalid base_url");
-
-        let err = validate_and_normalize_url("not a url", UrlField::Public).unwrap_err();
-        assert_eq!(err.reason(), Some("public_url_invalid"));
-        assert_eq!(err.message_text(), "invalid public_url");
-    }
-
-    #[test]
-    fn connection_view_from_connection() {
-        let conn = crate::store::Connection {
-            id: "conn-1".into(),
-            connector: "homebox".into(),
-            name: "Homebox".into(),
-            base_url: "http://hb.lan:7745".into(),
-            public_url: Some("https://homebox.example.com".into()),
-            credential: "secret".into(),
-        };
-        let view = ConnectionView::from(&conn);
-        assert_eq!(
-            view,
-            ConnectionView {
-                id: "conn-1".into(),
-                connector: "homebox".into(),
-                name: "Homebox".into(),
-                base_url: "http://hb.lan:7745".into(),
-                public_url: Some("https://homebox.example.com".into()),
-                has_credential: true,
-            }
-        );
-
-        let conn_no_cred = crate::store::Connection {
-            id: "conn-2".into(),
-            connector: "homebox".into(),
-            name: "Homebox".into(),
-            base_url: "http://hb.lan:7745".into(),
-            public_url: None,
-            credential: "".into(),
-        };
-        let view2 = ConnectionView::from(&conn_no_cred);
-        assert!(!view2.has_credential);
-        assert_eq!(view2.public_url, None);
     }
 }

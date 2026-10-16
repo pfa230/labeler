@@ -173,7 +173,6 @@ function CsvEditor({
     setIssues(parsed.issues);
     const built = parsed.rows.map<LabelGridRow>((r) => ({
       id: newId(),
-      origin: "csv",
       data: { ...r.data },
     }));
     commitRows(built);

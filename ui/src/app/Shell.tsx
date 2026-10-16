@@ -6,8 +6,6 @@ import { useAuth, useLogout } from "../api/auth";
 const NAV_ITEMS = [
   { to: "/", label: "Labels" },
   { to: "/import", label: "Import" },
-  { to: "/connect", label: "Connect" },
-  { to: "/connections", label: "Connections" },
   { to: "/settings", label: "Settings" },
 ];
 

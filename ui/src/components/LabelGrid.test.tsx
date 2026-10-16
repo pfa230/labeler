@@ -7,8 +7,8 @@ import type { Param } from "../api/types";
 
 const selectionBaseProps = {
   rows: [
-    { id: "r1", origin: "csv" as const, data: { title: "a" } },
-    { id: "r2", origin: "csv" as const, data: { title: "b" } },
+    { id: "r1", data: { title: "a" } },
+    { id: "r2", data: { title: "b" } },
   ] satisfies LabelGridRow[],
   fields: ["title"],
   onRowsChange: vi.fn(),
@@ -18,10 +18,9 @@ const selectionBaseProps = {
 
 function sampleRows(): LabelGridRow[] {
   return [
-    { id: "a", origin: "csv", data: { sku: "1", notes: "first" } },
+    { id: "a", data: { sku: "1", notes: "first" } },
     {
       id: "b",
-      origin: "csv",
       data: { sku: "2", notes: "second" },
       annotation: { status: "failed", message: "boom" },
     },
@@ -47,8 +46,8 @@ describe("LabelGrid selection and row actions", () => {
 
   it("shows the annotation message for a failed row and ok for success", () => {
     const rowsWithStatus: LabelGridRow[] = [
-      { id: "a", origin: "csv", data: { sku: "1" }, annotation: { status: "ok" } },
-      { id: "b", origin: "csv", data: { sku: "2" }, annotation: { status: "failed", message: "boom" } },
+      { id: "a", data: { sku: "1" }, annotation: { status: "ok" } },
+      { id: "b", data: { sku: "2" }, annotation: { status: "failed", message: "boom" } },
     ];
     render(
       <LabelGrid
@@ -107,7 +106,6 @@ describe("4.1 Always-on rendering at rest across control types", () => {
   it("renders text, textarea, select, checkbox, integer, number, date, datetime directly at rest without gesture", () => {
     const row: LabelGridRow = {
       id: "r1",
-      origin: "csv",
       data: {
         textField: "hello",
         textareaField: "multiline note",
@@ -117,7 +115,6 @@ describe("4.1 Always-on rendering at rest across control types", () => {
         numField: "3.14",
         dateField: "2026-09-12",
         datetimeField: "2026-09-12T10:30",
-        listField: ["a", "b"],
         imageField: "data:image/png;base64,abc",
       },
     };
@@ -131,7 +128,6 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       numField: { name: "numField", control: "number" },
       dateField: { name: "dateField", control: "date" },
       datetimeField: { name: "datetimeField", control: "datetime" },
-      listField: { name: "listField", control: "list" },
       imageField: { name: "imageField", control: "image" },
     };
 
@@ -201,30 +197,22 @@ describe("4.1 Always-on rendering at rest across control types", () => {
     expect(datetimeInput.type).toBe("datetime-local");
     expect(datetimeInput.value).toBe("2026-09-12T10:30");
 
-    // list: plain text, no operable control
-    expect(screen.getByText("a, b")).toBeInTheDocument();
-    expect(screen.queryByLabelText("edit listField")).toBeNull();
-
     // image: plain text marker "image", no operable control
     expect(screen.getByText("image")).toBeInTheDocument();
     expect(screen.queryByLabelText("edit imageField")).toBeNull();
   });
 
-  it("renders list and disabled cells as plain text without controls", () => {
+  it("renders disabled cells as plain text without controls", () => {
     const row: LabelGridRow = {
       id: "r1",
-      origin: "csv",
-      data: { tags: ["RED", "BLUE"], title: "Widget" },
+      data: { title: "Widget" },
     };
-    const cellInput = (f: string): GridCellParam | undefined => {
-      if (f === "tags") return { name: "tags", control: "list" };
-      return { name: "title", control: "text" };
-    };
+    const cellInput = (): GridCellParam => ({ name: "title", control: "text" });
 
     const { rerender } = render(
       <LabelGrid
         rows={[row]}
-        fields={["tags", "title"]}
+        fields={["title"]}
         cellInput={cellInput}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -232,15 +220,13 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       />,
     );
 
-    expect(screen.getByText("RED, BLUE")).toBeInTheDocument();
-    expect(screen.queryByLabelText("edit tags")).toBeNull();
     expect(screen.getByLabelText("edit title")).toBeInTheDocument();
 
-    // With disabled=true, even title becomes plain text
+    // With disabled=true, title becomes plain text
     rerender(
       <LabelGrid
         rows={[row]}
-        fields={["tags", "title"]}
+        fields={["title"]}
         cellInput={cellInput}
         disabled
         onRowsChange={() => {}}
@@ -249,9 +235,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       />,
     );
 
-    expect(screen.getByText("RED, BLUE")).toBeInTheDocument();
     expect(screen.getByText("Widget")).toBeInTheDocument();
-    expect(screen.queryByLabelText("edit tags")).toBeNull();
     expect(screen.queryByLabelText("edit title")).toBeNull();
   });
 });
@@ -305,7 +289,6 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
   it("click inside textarea and select stops propagation so vendor wrapper does not steal focus", () => {
     const row: LabelGridRow = {
       id: "r1",
-      origin: "csv",
       data: { note: "text", choice: "a" },
     };
     const cellInput = (f: string): GridCellParam => ({
@@ -347,7 +330,6 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
   it("Arrow keys inside controls stop propagation to prevent grid cell navigation", () => {
     const row: LabelGridRow = {
       id: "r1",
-      origin: "csv",
       data: { note: "line1\nline2", count: "5", choice: "x" },
     };
     const cellInput = (f: string): GridCellParam => {
@@ -396,7 +378,7 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
 describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () => {
   it("editable text holding multiline value shows first line with +N and submits newline unaltered until explicit edit", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { title: "first\nsecond\nthird" } },
+      { id: "r1", data: { title: "first\nsecond\nthird" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -448,7 +430,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
   it("date holding offset-bearing RFC 3339 instant shows operable empty date control plus text adornment and preserves value until explicit pick", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { shipDate: "2026-09-01T12:00:00Z" } },
+      { id: "r1", data: { shipDate: "2026-09-01T12:00:00Z" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -500,7 +482,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
   it("integer holding non-numeric shows empty control plus text adornment with explicit change boundary", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { qty: "abc" } },
+      { id: "r1", data: { qty: "abc" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -553,7 +535,6 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
         rows={[
           {
             id: "r1",
-            origin: "csv",
             data: { on: " true\u0085", off: " 0 ", blank: "  ", bom: "\uFEFFtrue" },
           },
         ]}
@@ -576,7 +557,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
   it("checkbox holding malformed value shows an unchecked control plus text adornment with explicit change boundary", async () => {
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { flag: "maybe" } },
+      { id: "r1", data: { flag: "maybe" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -624,14 +605,12 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
     expect(updatedCheckbox.indeterminate).toBe(false);
   });
 
-  it("synchronizes aria-readonly on cell wrapper: false for operable, true for missing/list/image/disabled, updating on transitions without remount", () => {
+  it("synchronizes aria-readonly on cell wrapper: false for operable, true for missing/image/disabled, updating on transitions without remount", () => {
     const row: LabelGridRow = {
       id: "r1",
-      origin: "csv",
       data: {
         operable: "test",
         missingEntry: "none",
-        listCol: ["a", "b"],
         imageCol: "data:img",
       },
     };
@@ -639,7 +618,6 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
     const cellInput = (f: string): GridCellParam | undefined => {
       if (f === "operable") return { name: f, control: "text" };
       if (f === "missingEntry") return undefined;
-      if (f === "listCol") return { name: f, control: "list" };
       if (f === "imageCol") return { name: f, control: "image" };
       return undefined;
     };
@@ -647,7 +625,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
     const { container, rerender } = render(
       <LabelGrid
         rows={[row]}
-        fields={["operable", "missingEntry", "listCol", "imageCol"]}
+        fields={["operable", "missingEntry", "imageCol"]}
         cellInput={cellInput}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -657,19 +635,17 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
 
     const operableCell = container.querySelector('[data-col-id$="data:operable"]')!;
     const missingCell = container.querySelector('[data-col-id$="data:missingEntry"]')!;
-    const listCell = container.querySelector('[data-col-id$="data:listCol"]')!;
     const imageCell = container.querySelector('[data-col-id$="data:imageCol"]')!;
 
     expect(operableCell).toHaveAttribute("aria-readonly", "false");
     expect(missingCell).toHaveAttribute("aria-readonly", "true");
-    expect(listCell).toHaveAttribute("aria-readonly", "true");
     expect(imageCell).toHaveAttribute("aria-readonly", "true");
 
     // Transition to disabled=true updates aria-readonly to true for operable without remount
     rerender(
       <LabelGrid
         rows={[row]}
-        fields={["operable", "missingEntry", "listCol", "imageCol"]}
+        fields={["operable", "missingEntry", "imageCol"]}
         cellInput={cellInput}
         disabled
         onRowsChange={() => {}}
@@ -684,7 +660,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
     rerender(
       <LabelGrid
         rows={[row]}
-        fields={["operable", "missingEntry", "listCol", "imageCol"]}
+        fields={["operable", "missingEntry", "imageCol"]}
         cellInput={cellInput}
         disabled={false}
         onRowsChange={() => {}}
@@ -751,7 +727,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       values: ["small", "medium", "large"],
     };
     let currentRows: LabelGridRow[] = [
-      { id: "r1", origin: "csv", data: { size: "enormous" } },
+      { id: "r1", data: { size: "enormous" } },
     ];
     const onRowsChange = vi.fn((next: LabelGridRow[]) => {
       currentRows = next;
@@ -793,7 +769,6 @@ describe("4.5 Regression checks on existing grid behavior", () => {
     };
     const row: LabelGridRow = {
       id: "r1",
-      origin: "csv",
       data: { size: "" },
     };
 
@@ -819,7 +794,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
   const gridWith = (spec: Param, data: LabelGridRow["data"]) =>
     render(
       <LabelGrid
-        rows={[{ id: "r1", origin: "csv", data }]}
+        rows={[{ id: "r1", data }]}
         fields={[spec.name]}
         cellInput={(f) => (f === spec.name ? spec : undefined)}
         onRowsChange={() => {}}

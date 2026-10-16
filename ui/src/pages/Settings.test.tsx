@@ -16,7 +16,6 @@ function stubFetch(noAuth: boolean) {
     if (url.startsWith("/api/settings"))
       return json({
         datetime_formats: { value: {}, is_default: true },
-        default_connection_id: { value: null, is_default: true },
         default_printer_id: { value: null, is_default: true },
       });
     if (url.startsWith("/api/variables")) return json({ qr_base_url: "https://x" });

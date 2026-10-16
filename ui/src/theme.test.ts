@@ -13,7 +13,7 @@ const css = readFileSync(resolve(process.cwd(), "src/theme.css"), "utf8");
 
 // theme.css puts several declarations on one line, so this scans semicolon-separated declarations
 // inside a block rather than lines. `.dark {` is matched with the brace attached so the later
-// `.dark .connector-grid-viewport { ... }` block cannot be picked up instead.
+// `.dark .label-grid-viewport { ... }` block cannot be picked up instead.
 //
 // EVERY block for the selector is read, in source order, with later declarations overwriting
 // earlier ones, because that is what the browser does. Reading only the first match would let a

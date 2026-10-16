@@ -22,7 +22,6 @@ const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
 const CODE_UNSUPPORTED_LAYOUT: &str = "UnsupportedLayoutItem";
 const CODE_BATCH_INVALID: &str = "BatchInvalid";
 const CODE_INTERNAL: &str = "Internal";
-const CODE_UPSTREAM: &str = "Upstream";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -40,7 +39,6 @@ pub enum NotFoundKind {
     Route,
     Template,
     Printer,
-    Connection,
     Setting,
     User,
     Token,
@@ -52,7 +50,6 @@ impl NotFoundKind {
             NotFoundKind::Route => "route",
             NotFoundKind::Template => "template",
             NotFoundKind::Printer => "printer",
-            NotFoundKind::Connection => "connection",
             NotFoundKind::Setting => "setting",
             NotFoundKind::User => "user",
             NotFoundKind::Token => "token",
@@ -334,16 +331,6 @@ impl AppError {
         Self::new(StatusCode::CONFLICT, CODE_CONFLICT, message, None)
     }
 
-    fn upstream(reason: Reason, message: impl Into<String>) -> Self {
-        Self::reasoned(
-            StatusCode::BAD_GATEWAY,
-            CODE_UPSTREAM,
-            reason,
-            message,
-            None,
-        )
-    }
-
     fn unsupported_media_type(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -437,23 +424,6 @@ impl From<TemplateRegistryError> for AppError {
     fn from(err: TemplateRegistryError) -> Self {
         // Only `Io` is ever returned as an error; the other variants describe quarantined files.
         AppError::internal(err.to_string())
-    }
-}
-
-impl From<crate::connector::ConnectorError> for AppError {
-    fn from(err: crate::connector::ConnectorError) -> Self {
-        use crate::connector::ConnectorError::*;
-        match err {
-            AuthFailed => AppError::upstream(Reason::Auth, "upstream authentication failed"),
-            ConnectionFailed(m) => AppError::upstream(Reason::Unreachable, m),
-            RateLimited => AppError::upstream(Reason::RateLimited, "upstream rate limited"),
-            Upstream(m) => AppError::upstream(Reason::BadResponse, m),
-            InvalidFilter(m) => AppError::invalid_request(Reason::FilterInvalid, m),
-            RowKeyInvalid(m) => AppError::invalid_request(Reason::RowKeyInvalid, m),
-            BudgetExceeded => {
-                AppError::invalid_request(Reason::RowLimitExceeded, "too many rows requested")
-            }
-        }
     }
 }
 
@@ -554,62 +524,6 @@ mod tests {
                 "details": { "reason": "param_value_invalid", "param": "sku" },
             })
         );
-    }
-
-    #[test]
-    fn connector_errors_map_to_upstream_or_invalid_request() {
-        use crate::connector::ConnectorError;
-        let cases = [
-            (
-                ConnectorError::AuthFailed,
-                StatusCode::BAD_GATEWAY,
-                "Upstream",
-                "auth",
-            ),
-            (
-                ConnectorError::ConnectionFailed("x".into()),
-                StatusCode::BAD_GATEWAY,
-                "Upstream",
-                "unreachable",
-            ),
-            (
-                ConnectorError::RateLimited,
-                StatusCode::BAD_GATEWAY,
-                "Upstream",
-                "rate_limited",
-            ),
-            (
-                ConnectorError::Upstream("x".into()),
-                StatusCode::BAD_GATEWAY,
-                "Upstream",
-                "bad_response",
-            ),
-            (
-                ConnectorError::InvalidFilter("x".into()),
-                StatusCode::BAD_REQUEST,
-                "InvalidRequest",
-                "filter_invalid",
-            ),
-            (
-                ConnectorError::RowKeyInvalid("x".into()),
-                StatusCode::BAD_REQUEST,
-                "InvalidRequest",
-                "row_key_invalid",
-            ),
-            (
-                ConnectorError::BudgetExceeded,
-                StatusCode::BAD_REQUEST,
-                "InvalidRequest",
-                "row_limit_exceeded",
-            ),
-        ];
-        for (err, status, code, reason) in cases {
-            let app_err = AppError::from(err);
-            // `status` is private, but this module is a child of `errors`, so it is visible here.
-            assert_eq!(app_err.status, status, "status for {reason}");
-            assert_eq!(app_err.code(), code, "code for {reason}");
-            assert_eq!(app_err.reason(), Some(reason));
-        }
     }
 
     #[tokio::test]

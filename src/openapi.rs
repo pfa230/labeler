@@ -3,15 +3,9 @@ use utoipa::OpenApi;
 use crate::{
     api,
     api::{
-        AuthStatus, ConnectionCreate, ConnectionUpdate, ConnectionView, Credentials,
-        DatetimePreviewRequest, DatetimePreviewResponse, OkResponse, PasswordChange,
-        ProbeCapabilities, ProbeResponse, ResolvedSetting, SettingValue, TokenCreate, TokenCreated,
-        TokenSummary, UserSummary,
-    },
-    connector::{
-        BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
-        ExpansionPolicy, FieldSpec, FieldType, FilterSpec, FilterType, FilterValue, LabelRow,
-        MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, RowValue, Tier, View,
+        AuthStatus, Credentials, DatetimePreviewRequest, DatetimePreviewResponse, OkResponse,
+        PasswordChange, ProbeCapabilities, ProbeResponse, ResolvedSetting, SettingValue,
+        TokenCreate, TokenCreated, TokenSummary, UserSummary,
     },
     models::{
         BatchRowError, BatchSummary, ErrorBody, ErrorResponse, HealthResponse, LabelInput,
@@ -64,15 +58,7 @@ use crate::{
         api::delete_user_h,
         api::list_tokens,
         api::create_token_h,
-        api::delete_token_h,
-        api::list_connections,
-        api::create_connection,
-        api::get_connection_h,
-        api::update_connection_h,
-        api::delete_connection_h,
-        api::connection_schema,
-        api::connection_browse,
-        api::connection_materialize
+        api::delete_token_h
     ),
     servers((url = "/api")),
     components(
@@ -116,30 +102,7 @@ use crate::{
             UserSummary,
             TokenSummary,
             TokenCreated,
-            OkResponse,
-            ConnectionCreate,
-            ConnectionUpdate,
-            ConnectionView,
-            ConnectorSchema,
-            ResourceSpec,
-            FieldSpec,
-            FilterSpec,
-            RelationshipSpec,
-            View,
-            FieldType,
-            FilterType,
-            Tier,
-            RowRef,
-            CellValue,
-            DisplayRow,
-            BrowseRequest,
-            BrowseParent,
-            BrowsePage,
-            FilterValue,
-            MaterializeRequest,
-            ExpansionPolicy,
-            RowValue,
-            LabelRow
+            OkResponse
         )
     ),
     tags(

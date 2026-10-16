@@ -47,27 +47,20 @@ describe("Shell", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the five nav sections in order with Connections directly after Connect", () => {
+  it("renders the three nav sections in order", () => {
     renderShell();
     const nav = screen.getByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
     expect(links.map((l) => l.textContent?.trim())).toEqual([
       "Labels",
       "Import",
-      "Connect",
-      "Connections",
       "Settings",
     ]);
     expect(links.map((l) => l.getAttribute("href"))).toEqual([
       "/",
       "/import",
-      "/connect",
-      "/connections",
       "/settings",
     ]);
-
-    const connectIdx = links.findIndex((l) => l.textContent?.trim() === "Connect");
-    expect(links[connectIdx + 1]?.textContent?.trim()).toBe("Connections");
 
     expect(screen.queryByRole("link", { name: "Templates" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Print" })).not.toBeInTheDocument();

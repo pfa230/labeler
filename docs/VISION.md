@@ -2,14 +2,14 @@
 
 Labeler is a lightweight, open-source, self-hosted label system for homes and small businesses: the
 "InvenTree of labeling" without the enterprise weight. It manages label templates, renders them, prints
-to the printers people actually own (sheet/office, tape, thermal/Zebra), and pulls the things to label
-from tools like Homebox or a CSV.
+to the printers people actually own (sheet/office, tape, thermal/Zebra), and takes the things to label
+from a request, an agent through the MCP adapter, or a CSV.
 
 ## In scope
 
 A Dockerized server with a web UI and REST API; template management and a WYSIWYG editor; rendering to
-PNG, PDF, and ZPL; printing to network thermal, tape, and office printers; CSV import and
-inventory-system integrations; QR and barcode generation.
+PNG, PDF, and ZPL; printing to network thermal, tape, and office printers; CSV import; QR and barcode
+generation.
 
 ## Out of scope
 

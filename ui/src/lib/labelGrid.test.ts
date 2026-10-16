@@ -11,7 +11,7 @@ import {
 } from "./labelGrid";
 
 function row(id: string, data: Record<string, string>): LabelGridRow {
-  return { id, origin: "csv", data };
+  return { id, data };
 }
 
 describe("labelGrid logic", () => {

@@ -1,18 +1,8 @@
 import type { ParamValue } from "../api/types";
 
-// Formalized row model for the reusable label grid. CSV is its first consumer (origin "csv");
-// M7's Homebox mapping fills origin "connector" + source. See the M5 design spec.
-export interface RowSource {
-  connector: string;
-  connection: string;
-  resource: string;
-  key: string;
-}
-
+// Formalized row model for the reusable label grid. CSV is its first consumer.
 export interface LabelGridRow {
   id: string; // stable client row id (survives edits/duplication)
-  origin: "csv" | "manual" | "connector";
-  source?: RowSource; // set by M7; absent for csv/manual
   data: Record<string, ParamValue>; // editable fields
   copyGroup?: string; // links rows produced by a duplicate
   annotation?: { status: "ok" | "failed"; message?: string }; // from a print summary

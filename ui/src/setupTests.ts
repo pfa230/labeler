@@ -6,27 +6,17 @@ if (!URL.createObjectURL) {
   (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {};
 }
 
-// jsdom lacks ResizeObserver, and both SVAR grids (ConnectorBrowser and LabelGrid) derive their
-// rendered row window from the height it reports: they window rows unconditionally (`dynamic` off
-// does NOT disable it), so a stub that never calls back leaves clientHeight at 0 and renders ~3 rows
-// whatever the data. Deliver a contentRect instead, which is what a real browser does.
+// jsdom lacks ResizeObserver, and the SVAR grid derives its rendered row window from the height it
+// reports: it windows rows unconditionally (`dynamic` off does NOT disable it), so a stub that never
+// calls back leaves clientHeight at 0 and renders ~3 rows whatever the data. Deliver a contentRect
+// instead, which is what a real browser does.
 //
-// GRID_TEST_VIEWPORT_HEIGHT mirrors the height `.connector-grid-viewport` declares in theme.css, so
-// tests exercise the geometry the app actually ships rather than an arbitrary large number. A test
-// that needs to prove windowing engages overrides this stub locally with a small height.
-// Kept in step with `.connector-grid-viewport { height: 60vh; min-height: 360px }` by construction
-// rather than by a copied pixel count, so editing the stylesheet cannot silently leave tests
-// exercising a geometry the app no longer ships. gridViewport.test.ts pins the pairing.
-// Every observed element gets that one height, which is 461px here, so the shorter
-// `.label-grid-viewport` is reported at 461px against the 350px it ships: tests window about 12 rows
-// into the batch grid where the app windows about 9. No test asserts on that grid's row window, and
-// none should read this stub as its geometry; gridViewport.test.ts is what holds the 350px.
-export const GRID_VIEWPORT_VH = 0.6;
-export const GRID_VIEWPORT_MIN_PX = 360;
-export const GRID_TEST_VIEWPORT_HEIGHT = Math.max(
-  GRID_VIEWPORT_MIN_PX,
-  Math.round((globalThis.window?.innerHeight ?? 768) * GRID_VIEWPORT_VH),
-);
+// Every observed element gets one fixed viewport, tall enough for a realistic row window. It is not
+// the geometry the app ships — `.label-grid-viewport` declares 350px in theme.css, which
+// gridViewport.test.ts pins — so no test should read this stub as that geometry, and none asserts
+// on the row window it produces. A test that needs to prove windowing engages overrides this stub
+// locally with a small height.
+export const GRID_TEST_VIEWPORT_HEIGHT = 461;
 export const GRID_TEST_VIEWPORT_WIDTH = 900;
 
 if (!("ResizeObserver" in globalThis)) {

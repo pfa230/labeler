@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
  * Shown wherever a page needs a template and none are installed.
  *
  * Nothing is seeded on first run any more (#137), so a new install genuinely has zero templates —
- * without this the Labels grid is a bare sentence and Import/Connect render an empty `<select>` with
+ * without this the Labels grid is a bare sentence and Import renders an empty `<select>` with
  * nowhere to go, which reads as broken rather than as "you haven't installed anything yet".
  */
 export function EmptyTemplates({ context }: { context?: string }) {

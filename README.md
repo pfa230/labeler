@@ -1,6 +1,6 @@
 # Labeler
 
-A self-hosted service that renders labels from declarative YAML templates: a single label as PNG for continuous-roll printers, or a sheet of labels as PDF for pre-cut label sheets. It generates [Typst](https://typst.app/) source on the fly and compiles it in-process, and serves a web UI for printing, CSV import and inventory integrations.
+A self-hosted service that renders labels from declarative YAML templates: a single label as PNG for continuous-roll printers, or a sheet of labels as PDF for pre-cut label sheets. It generates [Typst](https://typst.app/) source on the fly and compiles it in-process, and serves a web UI for printing and CSV import.
 
 ## Run
 

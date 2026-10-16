@@ -20,12 +20,11 @@ import {
 } from "@svar-ui/react-grid";
 import "@svar-ui/react-grid/style.css";
 import type { LabelGridRow } from "../lib/labelGrid";
-import { displayCellText } from "../lib/connectorRows";
 import { blankOptionLabel } from "../lib/labelInputs";
 import type { Param } from "../api/types";
 
-// Which rows an edit touched, by index. Import and Connect clear a prior run's annotation on
-// exactly those rows, so the shape outlives the grid library that first supplied it.
+// Which rows an edit touched, by index. Import clears a prior run's annotation on exactly those
+// rows, so the shape outlives the grid library that first supplied it.
 export interface LabelGridRowsChange {
   indexes: number[];
 }
@@ -119,7 +118,7 @@ function DataCell({ row, column }: ICellProps) {
 
   const spec = cellInput ? cellInput(field) : { name: field, control: "text" as const };
   const label = spec?.description || field;
-  const isOperable = Boolean(spec && spec.control !== "list" && spec.control !== "image" && !disabled);
+  const isOperable = Boolean(spec && spec.control !== "image" && !disabled);
 
   // Synchronize aria-readonly on the cell wrapper
   useLayoutEffect(() => {
@@ -132,20 +131,11 @@ function DataCell({ row, column }: ICellProps) {
   const rawVal = labelRow.data[field];
   const strValue = rawVal !== undefined && rawVal !== null ? String(rawVal) : "";
 
-  // Read-only cases: no spec, list, image, or disabled
+  // Read-only cases: no spec, or disabled
   if (!spec) {
     return (
       <span ref={setCellRef} style={inertStyle}>
         —
-      </span>
-    );
-  }
-
-  if (spec.control === "list") {
-    const text = Array.isArray(rawVal) ? displayCellText(rawVal) : undefined;
-    return (
-      <span ref={setCellRef} style={text ? undefined : inertStyle}>
-        {text ?? "—"}
       </span>
     );
   }

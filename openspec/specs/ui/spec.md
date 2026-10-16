@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Cross-cutting web UI behavior: palette accessibility, how a template's format is shown, the parameter controls of the print form and the Connect and Import grids and what they submit, the preview pane, the template page, and the CSV Import screen.
+Cross-cutting web UI behavior: palette accessibility, how a template's format is shown, the primary navigation, the parameter controls of the print form and the Import grid and what they submit, the preview pane, the template page, and the CSV Import screen.
 
 ## Requirements
 

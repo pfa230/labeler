@@ -7,14 +7,11 @@ use std::collections::BTreeMap;
 /// Setting key for the named `{datetime.*}` strftime formats (issue #76).
 pub const DATETIME_FORMATS: &str = "datetime_formats";
 
-/// Setting key for the default connection id on the Connect page (issue #203).
-pub const DEFAULT_CONNECTION_ID: &str = "default_connection_id";
-
 /// Setting key for the printer the print form preselects.
 pub const DEFAULT_PRINTER_ID: &str = "default_printer_id";
 
 /// Every setting this build knows about, in `GET /settings` order.
-pub const KNOWN: [&str; 3] = [DATETIME_FORMATS, DEFAULT_CONNECTION_ID, DEFAULT_PRINTER_ID];
+pub const KNOWN: [&str; 2] = [DATETIME_FORMATS, DEFAULT_PRINTER_ID];
 
 /// Seeded default named formats. Overridable; nothing hardcoded in the renderer.
 pub fn default_datetime_formats() -> BTreeMap<String, String> {
@@ -86,7 +83,7 @@ pub fn validate(key: &str, value: &serde_json::Value) -> Result<String, String> 
             Ok(serde_json::to_string(&normalized)
                 .map_err(|e| format!("serializing setting value: {e}"))?)
         }
-        DEFAULT_CONNECTION_ID | DEFAULT_PRINTER_ID => {
+        DEFAULT_PRINTER_ID => {
             let s = value
                 .as_str()
                 .ok_or_else(|| format!("'{key}' must be a string"))?;
@@ -125,7 +122,7 @@ pub async fn resolve_datetime_formats(
     resolve_datetime_formats_from(stored)
 }
 
-/// Pure resolution of a default-id setting (`DEFAULT_CONNECTION_ID`, `DEFAULT_PRINTER_ID`): `None`
+/// Pure resolution of a default-id setting (`DEFAULT_PRINTER_ID`): `None`
 /// when there is no override, else the stored id. Empty or whitespace-only stored text is corrupt.
 pub fn resolve_default_id_from(
     key: &str,
@@ -185,50 +182,5 @@ mod tests {
         let m = resolve_datetime_formats_from(stored).unwrap();
         assert_eq!(m.len(), 1);
         assert_eq!(m.get("only").map(String::as_str), Some("%Y"));
-    }
-
-    #[test]
-    fn validate_default_connection_id_accepts_non_empty_string_and_trims() {
-        assert_eq!(
-            validate(DEFAULT_CONNECTION_ID, &json!("  conn-1  ")).unwrap(),
-            "conn-1"
-        );
-        assert_eq!(
-            validate(DEFAULT_CONNECTION_ID, &json!("conn-1")).unwrap(),
-            "conn-1"
-        );
-    }
-
-    #[test]
-    fn validate_default_connection_id_rejects_bad_values() {
-        assert!(validate(DEFAULT_CONNECTION_ID, &json!("")).is_err());
-        assert!(validate(DEFAULT_CONNECTION_ID, &json!("   ")).is_err());
-        assert!(validate(DEFAULT_CONNECTION_ID, &json!(null)).is_err());
-        assert!(validate(DEFAULT_CONNECTION_ID, &json!(123)).is_err());
-        assert!(validate(DEFAULT_CONNECTION_ID, &json!({})).is_err());
-        assert!(validate(DEFAULT_CONNECTION_ID, &json!([])).is_err());
-    }
-
-    #[test]
-    fn resolve_default_connection_id_defaults_when_absent() {
-        assert_eq!(
-            resolve_default_id_from(DEFAULT_CONNECTION_ID, None).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn resolve_default_connection_id_uses_override_including_dangling() {
-        assert_eq!(
-            resolve_default_id_from(DEFAULT_CONNECTION_ID, Some("dangling-id".to_string()))
-                .unwrap(),
-            Some("dangling-id".to_string())
-        );
-    }
-
-    #[test]
-    fn resolve_default_connection_id_rejects_corrupt() {
-        assert!(resolve_default_id_from(DEFAULT_CONNECTION_ID, Some("".to_string())).is_err());
-        assert!(resolve_default_id_from(DEFAULT_CONNECTION_ID, Some("   ".to_string())).is_err());
     }
 }
