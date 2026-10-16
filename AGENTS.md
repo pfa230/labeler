@@ -4,9 +4,13 @@ A stateless label-rendering REST service (Rust/axum) with a React UI under `ui/`
 
 ## Simplicity
 
-- **Minimal by design (KISS).** Every mechanism, option, field and check must serve a concrete need of the accepted issue. Do not add speculative configuration, plugin points, extra layers, silent fallbacks, or generality for problems nobody has hit. When two designs both work, use the one with fewer moving parts.
+- **Minimal by design (KISS).** A change contains only what a concrete need of the accepted issue requires. This holds for each part of the plan on its own:
+  - Each sentence and scenario a spec delta adds or rewrites states behavior that the existing specs in `openspec/specs/` do not already imply. A delta line that restates an existing requirement, or a scenario for a case the delta's own condition already excludes, breaks this rule.
+  - Each mechanism, option, field, check, test and task serves a requirement of the existing specs, a delta line that meets the point above, or, where no spec applies, the issue's explicit request, such as docs or tooling. None duplicates what the repository already has.
+  - Each item is the smallest version that serves its requirement or request. A larger version needs a failure of the smaller one, shown by a run, a test or the code as it stands. A test, fixture or check that guards only against a risk no run has shown breaks this rule.
+  - It adds no speculative configuration, plugin points, extra layers, silent fallbacks, or generality for problems nobody has hit.
 - **Build only what the contract and the issue require.** The contract is `openspec/specs/`, as the change amends it. Leave out handling for cases neither names, for failures nobody has observed, and for keeping behavior the change replaces. Labeler relies on what other systems promise, such as a printer honouring a standard IPP attribute or a client obeying the API. It neither detects a violation nor works around one. "Safer", "more robust" and "in case" are not reasons to add anything.
-- **Cut before presenting.** After the last artifact or edit and before any summary, run a cut pass. List each mechanism, option, check, field and task on its own line, and name the spec requirement it serves, as the change amends it, or the issue's explicit request where no spec applies, such as docs or tooling. Remove whatever names neither, and whatever duplicates what the repository already has. For each item that stays, name its simpler version and the concrete failure that version causes; when there is none, use the simpler version. The presentation includes the cut list: what was removed, and why each kept item stayed.
+- **Cut before presenting.** After the last artifact or edit and before any summary, run a cut pass against "Minimal by design". List each spec sentence and scenario the change adds or rewrites, then each mechanism, option, field, check, test and task, each on its own line with what it serves and the failure its smaller version causes. Remove what fails the rule. The presentation includes the cut list: what the draft contained and the pass removed, and why each kept item stayed.
 
 ## Work
 
@@ -20,7 +24,7 @@ The behavior contract lives in `openspec/specs/<domain>/spec.md`, one capability
 
 **Behavior changes go through OpenSpec and openspec-loop; nothing else does.** Behavior means labeler's API, template schema, layout, rendering, errors and UI, which is what the specs describe. The OpenSpec CLI is pinned in the root npm manifest: `npm ci`, then `npx --no-install openspec`. openspec-loop is installed globally (`npm install -g openspec-loop`) and needs `openspec` 1.14.0 or later on `PATH`; `openspec/loop.yaml` configures it. In the change's worktree:
 
-1. `/opsx:propose` writes the proposal (with literal `Fixes #N`), delta specs, design and tasks. A person reviews the plan, then commits it on the issue branch.
+1. `/opsx:propose` writes the proposal (with literal `Fixes #N`), delta specs, design and tasks. A person reviews the plan, then commits it on the issue branch. Proposing stops there: start the loop only when the user asks, and never apply a behavior change by hand.
 2. `loop run <change>`, supervised through the `openspec-loop` skill, reviews the plan, implements it, runs the gates, reviews the patch, archives the change and opens a pull request. The change lands as the loop's commits, its folder kept under `openspec/changes/archive/`.
 
 A docs fix, harness change (root npm manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `openspec/config.yaml`, `openspec/loop.yaml`), CI change, dependency bump or behavior-preserving refactor skips OpenSpec and the loop: issue, worktree, gates, one commit. So does code that catches up to a contract already in `openspec/specs/`: there is no delta to write, and the issue names the requirements it implements. Nothing checks whether a diff should have carried a delta; that judgment is yours.
