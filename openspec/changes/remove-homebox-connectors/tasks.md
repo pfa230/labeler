@@ -7,7 +7,7 @@
 ## 2. Remove inventory UI and preserve Import
 
 - [ ] 2.1 Delete Connect/Connections pages, routes, navigation entries, API hooks, browser/mapping/sort/filter/column helpers and their dedicated tests (`ui`: Primary navigation; removed Connect requirements); verify the shell navigation test expects exactly Labels, Import and Settings and the router no longer registers the inventory screens.
-- [ ] 2.2 Move the existing display helper into `labelGrid.ts`, remove unused row provenance/discriminator fields, and remove connector-only CSS/test setup while retaining shared grid assets (`ui`: Grid columns, Batch grid preview follows the template format, Parameter controls, What a screen submits, CSV Import screen); verify the retained Import and LabelGrid tests cover cell edits, single/sheet previews, copies, row failures, download and print without importing connector code.
+- [ ] 2.2 Delete `displayCellText` with `connectorRows.ts`, its import in `LabelGrid`, the unreachable `list` cell branch and the `list` check in `isOperable`, remove unused row provenance/discriminator fields, and remove connector-only CSS/test setup while retaining shared grid assets (`ui`: Grid columns, Batch grid preview follows the template format, Parameter controls, What a screen submits, CSV Import screen); retain the existing Import test "skips list parameters when building grid columns and does not break import" as the guard against showing or submitting a CSV list column, and verify the retained Import and LabelGrid tests cover cell edits, single/sheet previews, copies, row failures, download and print without importing connector code.
 
 ## 3. Retire the contract and update current documentation
 

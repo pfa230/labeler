@@ -1,6 +1,6 @@
 ## Context
 
-See `proposal.md` for motivation and scope. Homebox is the sole member of `ConnectorRegistry`. Inventory connections are persisted separately from printers, but application state, settings validation, OpenAPI and the UI import their types. `LabelGrid` imports `displayCellText` from `connectorRows.ts`, even though CSV import still needs that helper. The shared row model also carries connector provenance that no remaining production consumer reads.
+See `proposal.md` for motivation and scope. Homebox is the sole member of `ConnectorRegistry`. Inventory connections are persisted separately from printers, but application state, settings validation, OpenAPI and the UI import their types. `LabelGrid` imports `displayCellText` from `connectorRows.ts` only for its `list` cell branch. Import filters every `list` parameter out of its grid fields, so that branch is unreachable once Connect is removed. The shared row model also carries connector provenance that no remaining production consumer reads.
 
 This is a cross-cutting removal with a stored-data change, so a design is needed.
 
@@ -28,9 +28,9 @@ Leaving the table behind would retain obsolete credentials and fail the persiste
 
 Delete Connect, Connections forms/list, connector browsing, mapping, sorting/filtering/column helpers, query hooks and their dedicated tests. Remove their routes and navigation entries; existing wildcard routing handles unrecognized UI paths. Labels, Import and Settings remain the primary navigation.
 
-Move the small `displayCellText` helper into the existing `labelGrid.ts` module and type it with the existing parameter value type. Remove `RowSource`, the unused `origin` discriminator and `source` field from grid rows and their construction sites. Remove connector-only styles and test setup while retaining the SVAR grid dependency, shared grid styling and setup used by `LabelGrid`.
+Delete `displayCellText` with `connectorRows.ts`, its import in `LabelGrid`, the unreachable `list` cell branch and the `list` check in `isOperable`. Remove `RowSource`, the unused `origin` discriminator and `source` field from grid rows and their construction sites. Remove connector-only styles and test setup while retaining the SVAR grid dependency, shared grid styling and setup used by `LabelGrid`.
 
-Deleting `connectorRows.ts` without moving its shared helper would break Import. Retaining the mapping module solely for that helper would keep unnecessary connector types. Another shared module or grid abstraction is unnecessary.
+Import already omits list columns, as required by `ui`: Grid columns and Parameter controls. Keep its existing "skips list parameters when building grid columns and does not break import" test as the guard: it fails if a CSV list column is shown or submitted. Moving the helper would preserve dead code without serving any remaining Import behavior. Another shared module or grid abstraction is unnecessary.
 
 ### 4. Retire the capability and update the remaining contract
 
@@ -63,8 +63,8 @@ Run the Rust, UI and strict OpenSpec gates required by `AGENTS.md`. No physical 
 | Error/reason cleanup and retained malformed-body example | `errors`: Service error codes, Reason slugs, Request body rejection | Leaving the vocabulary publishes errors for a subsystem with no producer; removing the malformed-body example loses a still-supported contract example. |
 | One appended migration and setting removal | `settings`: Settings endpoints, Persisted inventory connection cleanup | Deleting runtime code alone leaves obsolete credentials and the stored setting. |
 | UI deletion and navigation | `ui`: Primary navigation; removed Connect requirements | Removing only links leaves the pages reachable by URL. |
-| Moving the display helper and removing provenance | `ui`: Grid columns and CSV Import screen; issue #452 | Deleting the helper breaks Import; retaining its connector module leaves a dead dependency. |
+| Deleting unreachable list-cell code and removing provenance | `ui`: Grid columns, Parameter controls and CSV Import screen; issue #452 | Moving `displayCellText` preserves an unreachable branch: Import omits list columns. Delete the helper, its import, the branch and the `isOperable` list check; retain the existing Import list-column test, which fails if a list column is shown or submitted. Leaving provenance retains connector metadata with no consumer. |
 | Explicit main-spec deletion, retirement record and current-doc updates | Issue #452; user-approved retirement decision | Automatic retirement fails on the requirement-body tables; retaining a removal-only delta recreates an empty capability. Proposal/design preserve the retirement record, and current-doc edits stop advertising the removed workflow. |
 | Focused changed-behavior assertions and required gates | The named requirements above; `AGENTS.md` gates | Compilation alone cannot establish routing, migration preservation or retained Import behavior. |
 
-Cut: the connections removal delta, which prevents archival after direct capability deletion; replacement connectors, feature flags, compatibility routes, a generic shared grid layer, CSV list syntax, database export/backup tooling, and fixture renames. Folded a separate dependency-cleanup task into backend/UI deletion to avoid a duplicate pass. Existing REST/MCP, printing and rendering checks are reused rather than duplicated.
+Cut: moving `displayCellText`, its unreachable `LabelGrid` list branch and the `isOperable` list check, because Import omits list columns; the connections removal delta, which prevents archival after direct capability deletion; replacement connectors, feature flags, compatibility routes, a generic shared grid layer, CSV list syntax, database export/backup tooling, and fixture renames. Folded a separate dependency-cleanup task into backend/UI deletion to avoid a duplicate pass. Existing REST/MCP, printing and rendering checks are reused rather than duplicated.
