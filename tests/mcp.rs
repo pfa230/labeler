@@ -993,13 +993,16 @@ async fn chain_and_continue_is_forwarded_exactly_as_supplied() {
         2,
         "one chain and one ordinary print request"
     );
-    for request in &requests {
-        let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
-        assert!(
-            body["chain_and_continue"].is_boolean(),
-            "the supplied boolean is forwarded unchanged: {body}"
-        );
-    }
+    let first: Value = serde_json::from_slice(&requests[0].body).expect("JSON body");
+    assert_eq!(
+        first["chain_and_continue"], true,
+        "first request carries true: {first}"
+    );
+    let second: Value = serde_json::from_slice(&requests[1].body).expect("JSON body");
+    assert_eq!(
+        second["chain_and_continue"], false,
+        "second request carries false: {second}"
+    );
     let (success, _, _) = mcp.shutdown().await;
     assert!(success);
 }
