@@ -44,7 +44,7 @@ For a local service in no-auth mode, omit `-e LABELER_TOKEN`; prints are then at
 | `reload_templates` | — | `POST /api/templates/reload`. Re-reads the templates folder and replaces the live registry: valid files are served, broken ones quarantined. |
 | `render_label` | `template`, `data` | `POST /api/render/label?format=png`. Returns the filled label as an inline PNG image. |
 | `list_printers` | — | `GET /api/printers`. The service's configured printers. |
-| `print_labels` | `template`, `printer`, `labels`, `start_slot?` | `POST /api/print`. Sends physical print jobs for a batch of labels. |
+| `print_labels` | `template`, `printer`, `labels`, `start_slot?`, `chain_and_continue?` | `POST /api/print`. Sends physical print jobs for a batch of labels. |
 
 `template` is a template id: non-empty, matching `^[a-zA-Z0-9_-]+$` (letters, digits, `-` and `_`). The six path-based template-management tools (`get_template`, `get_template_source`, `get_template_thumbnail`, `create_template`, `replace_template`, `delete_template`) refuse an id outside that rule before any request is sent; `render_label` and `print_labels` forward their `template` argument without adapter validation. Any argument key outside a tool's schema is refused before any request too. Every valid id addresses that template, including the id `reload`.
 
@@ -52,13 +52,15 @@ For a local service in no-auth mode, omit `-e LABELER_TOKEN`; prints are then at
 
 Read tools are advertised as read-only. The write tools and `print_labels` are advertised as non-read-only, destructive and non-idempotent, so a client can warn before they run.
 
+`chain_and_continue` selects the finishing of the dispatched jobs: `true` chains them and keeps the final end attached for the next print; `false` or omission prints ordinarily, with each job finished as the printer normally would. The service refuses `chain_and_continue: true` with `chain_and_continue_unsupported` before dispatch when the printer does not advertise support, rather than quietly switching to ordinary printing. A non-boolean or null value is refused by the adapter before any request is sent.
+
 ### Writes, refusals and unknown outcomes
 
 `create_template` and `replace_template` send the `yaml` argument unchanged as the whole file, with `Content-Type: text/yaml`; the service parses and validates it, so comments and formatting survive a read-edit-write round trip. There is no partial edit: a replacement always overwrites the complete source.
 
 Each write (create, replace, delete, reload) sends exactly one request and never follows a redirect. If the connection drops before the response arrives, the tool reports the outcome as **unknown**: the change may already be applied, and the adapter never replays it. Inspect the source or the listing before deciding on the next call.
 
-REST refusals (invalid batch, unknown template or printer, revoked token, oversized batch, duplicate id, invalid YAML) surface as tool errors that keep the service's status and error object unchanged. A `200` print summary with failed rows comes back as a tool error carrying the full summary, so a partial failure is visible. A successful delete answers with an empty content array, matching the service's `204`.
+REST refusals (invalid batch, unknown template or printer, revoked token, oversized batch, duplicate id, invalid YAML, unsupported chain-and-continue) surface as tool errors that keep the service's status and error object unchanged. A `200` print summary with failed rows comes back as a tool error carrying the full summary, so a partial failure is visible. A successful delete answers with an empty content array, matching the service's `204`.
 
 ## Authoring a template
 

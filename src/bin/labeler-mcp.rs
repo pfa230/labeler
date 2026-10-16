@@ -106,10 +106,19 @@ struct PrintLabelsArgs {
     )]
     #[schemars(required)]
     start_slot: Option<u32>,
+    /// Present only when supplied; explicit `null` is refused.
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(required)]
+    chain_and_continue: Option<bool>,
 }
 
 /// Deserialize a present key as `Some`; a key written as `null` fails rather than
-/// being treated as absent, matching the REST `start_slot` rule.
+/// being treated as absent, matching the REST `start_slot` and `chain_and_continue`
+/// rule.
 fn non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -522,7 +531,7 @@ impl LabelerMcp {
 
     #[tool(
         name = "print_labels",
-        description = "Send physical print jobs for a batch of labels to a configured printer. This has a physical effect. The adapter does not retry: if the response is lost, the dispatch outcome is unknown.",
+        description = "Send physical print jobs for a batch of labels to a configured printer. This has a physical effect. chain_and_continue: true selects chain and continue, where each label separates and the final end stays attached for the next print; false or omission selects ordinary printing, and the service refuses chain-and-continue when the printer does not support it. The adapter does not retry: if the response is lost, the dispatch outcome is unknown.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -543,6 +552,9 @@ impl LabelerMcp {
         // Absent when omitted; never written as null (explicit null was refused above).
         if let Some(slot) = args.start_slot {
             body.insert("start_slot".into(), json!(slot));
+        }
+        if let Some(chain) = args.chain_and_continue {
+            body.insert("chain_and_continue".into(), json!(chain));
         }
         let url = self.url("api/print");
         let (status, bytes) = match self

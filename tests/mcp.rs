@@ -293,6 +293,25 @@ async fn discovery_publishes_eleven_tools_with_schemas_and_annotations() {
         start_slot.get("default").is_none(),
         "start_slot has no null default: {start_slot}"
     );
+    assert!(
+        schema["properties"].get("chain_and_continue").is_some(),
+        "chain_and_continue is published: {schema}"
+    );
+    assert!(
+        !schema["required"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|v| v == "chain_and_continue")),
+        "chain_and_continue is optional: {schema}"
+    );
+    let chain = &schema["properties"]["chain_and_continue"];
+    assert_eq!(
+        chain["type"], "boolean",
+        "chain_and_continue is a nonnullable boolean: {chain}"
+    );
+    assert!(
+        chain.get("default").is_none(),
+        "chain_and_continue has no null default: {chain}"
+    );
     let description = print["description"].as_str().expect("description");
     assert!(
         description.contains("physical"),
@@ -301,6 +320,10 @@ async fn discovery_publishes_eleven_tools_with_schemas_and_annotations() {
     assert!(
         description.contains("unknown"),
         "print_labels states lost-response uncertainty: {description}"
+    );
+    assert!(
+        description.contains("chain_and_continue") && description.contains("ordinary"),
+        "print_labels explains both finishing selections: {description}"
     );
 
     for name in [
@@ -554,6 +577,24 @@ async fn unlisted_arguments_missing_fields_and_null_start_slot_are_execution_err
         )
         .await;
     assert!(is_error(&null_slot), "null start_slot: {null_slot}");
+
+    for invalid in [json!(Value::Null), json!("true"), json!(1)] {
+        let invalid_chain = mcp
+            .tool_result(
+                "print_labels",
+                json!({
+                    "template": "t",
+                    "printer": "p",
+                    "labels": [{"data": {}}],
+                    "chain_and_continue": invalid
+                }),
+            )
+            .await;
+        assert!(
+            is_error(&invalid_chain),
+            "non-boolean chain_and_continue {invalid}: {invalid_chain}"
+        );
+    }
 
     assert!(
         mock.received_requests().await.unwrap().is_empty(),
@@ -884,6 +925,81 @@ async fn omitted_start_slot_is_absent_from_the_forwarded_body() {
             .is_some_and(|o| o.contains_key("start_slot")),
         "omitted start_slot stays absent: {body}"
     );
+    assert!(
+        !body
+            .as_object()
+            .is_some_and(|o| o.contains_key("chain_and_continue")),
+        "omitted chain_and_continue stays absent: {body}"
+    );
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+}
+
+#[tokio::test]
+async fn chain_and_continue_is_forwarded_exactly_as_supplied() {
+    let summary = json!({"total": 1, "sent": 1, "failed": [], "jobs": 1});
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/print"))
+        .and(wiremock::matchers::body_partial_json(json!({
+            "chain_and_continue": true
+        })))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&summary))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/print"))
+        .and(wiremock::matchers::body_partial_json(json!({
+            "chain_and_continue": false
+        })))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&summary))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", mock.uri().as_str())]).await;
+    mcp.initialize().await;
+
+    let chain = mcp
+        .tool_result(
+            "print_labels",
+            json!({
+                "template": "t",
+                "printer": "p",
+                "labels": [{"data": {}}],
+                "chain_and_continue": true
+            }),
+        )
+        .await;
+    assert!(!is_error(&chain), "{chain}");
+
+    let ordinary = mcp
+        .tool_result(
+            "print_labels",
+            json!({
+                "template": "t",
+                "printer": "p",
+                "labels": [{"data": {}}],
+                "chain_and_continue": false
+            }),
+        )
+        .await;
+    assert!(!is_error(&ordinary), "{ordinary}");
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        2,
+        "one chain and one ordinary print request"
+    );
+    for request in &requests {
+        let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
+        assert!(
+            body["chain_and_continue"].is_boolean(),
+            "the supplied boolean is forwarded unchanged: {body}"
+        );
+    }
     let (success, _, _) = mcp.shutdown().await;
     assert!(success);
 }
