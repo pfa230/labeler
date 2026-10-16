@@ -35,7 +35,7 @@ The preview pane SHALL show that a render is in progress, the rendered label or 
 
 ### Requirement: Batch grid preview follows the template format
 
-The Connect and Import pages SHALL show a preview pane beside the batch grid whenever a template is chosen and the grid holds rows. The `data` previewed for a row SHALL be the data the submit path would send for it.
+The Import page SHALL show a preview pane beside the batch grid whenever a template is chosen and the grid holds rows. The `data` previewed for a row SHALL be the data the submit path would send for it.
 
 For a `sheet` template the pane SHALL render the whole batch Download would submit: every row in grid order, each carrying the `copies` value, with the same `start_slot`, sent as `POST /api/render`. The grid SHALL render no row selector.
 
@@ -63,7 +63,7 @@ The sheet preview SHALL update as the batch (template, labels, `start_slot`) cha
 
 ### Requirement: Screens show every declared parameter
 
-A screen collecting label data SHALL offer one control per parameter in the template detail's parameter list (owned by `parameters`), in that order except where "Grid columns" orders the Import grid, whatever values are entered: no control appears or disappears as values change. A screen SHALL NOT judge whether a label is complete; Print and Download send it, and a label the service refuses SHALL be shown with its error, against its row in a grid.
+A screen collecting label data SHALL offer one control per parameter in the template detail's parameter list (owned by `parameters`), in that order except where "Grid columns" orders or omits columns of the Import grid, whatever values are entered: no control appears or disappears as values change. A screen SHALL NOT judge whether a label is complete; Print and Download send it, and a label the service refuses SHALL be shown with its error, against its row in a grid.
 
 #### Scenario: A branch-only parameter stays on screen
 
@@ -88,7 +88,7 @@ Each parameter's control SHALL be labelled with its `description`, else its `nam
 | `select` | a blank first option (showing the default when there is one), then the declared `values` | same, plus a held value outside `values` |
 | `date`, `datetime` | date or date-and-time picker | same |
 | `image` | image file chooser, with a clear action while it holds a value | read-only mark that a value is held |
-| `list` | editor of text elements the operator can add, remove and reorder | read-only (see "List values in the grids") |
+| `list` | editor of text elements the operator can add, remove and reorder | not shown |
 
 A print form field for a parameter with a default SHALL start blank and show the default as its hint, except a checkbox, which has no blank state and starts at its default. Grid cells SHALL be editable in place.
 
@@ -99,7 +99,7 @@ A print form field for a parameter with a default SHALL start blank and show the
 
 ### Requirement: What a screen submits
 
-A screen SHALL submit, per label, the value of every control holding one. A blank control SHALL be omitted, so the service applies the default or reads the parameter as empty (`parameters`). A checkbox SHALL always send its value. A `list` value SHALL be sent as an array, `[]` included, its elements in order without trimming, dropping empties or de-duplicating. A screen SHALL send each label once, the print form its one label and Connect and Import each row, carrying the screen's Copies value as `copies` (`rendering`). Every screen SHALL print through `POST /api/print` and download through `POST /api/render`. After a print, the screen SHALL report how many labels were sent to the printer and show each failed label with its error.
+A screen SHALL submit, per label, the value of every control holding one. A blank control SHALL be omitted, so the service applies the default or reads the parameter as empty (`parameters`). A checkbox SHALL always send its value. A `list` value SHALL be sent as an array, `[]` included, its elements in order without trimming, dropping empties or de-duplicating. A screen SHALL send each label once, the print form its one label and Import each row, carrying the screen's Copies value as `copies` (`rendering`). Every screen SHALL print through `POST /api/print` and download through `POST /api/render`. After a print, the screen SHALL report how many labels were sent to the printer and show each failed label with its error.
 
 #### Scenario: A blank defaulted field is omitted
 
@@ -123,17 +123,17 @@ A screen SHALL submit, per label, the value of every control holding one. A blan
 
 #### Scenario: A failed copies job marks its row
 
-- **WHEN** a Connect or Import grid holds rows 1 and 2, Copies is 3, and the print summary reports indices 3, 4 and 5 failed
+- **WHEN** an Import grid holds rows 1 and 2, Copies is 3, and the print summary reports indices 3, 4 and 5 failed
 - **THEN** row 2 shows the failure and row 1 does not
 
 ### Requirement: Grid columns
 
-A batch grid's columns SHALL be fixed by the template, not by its rows, and SHALL be drawn before any row exists. The Connect grid SHALL show one column per declared parameter, in declaration order. The Import grid SHALL show the loaded CSV's headers in file order, then every declared parameter the CSV lacks, in declaration order, omitting every `list` parameter.
+A batch grid's columns SHALL be fixed by the template, not by its rows, and SHALL be drawn before any row exists. The Import grid SHALL show the loaded CSV's headers in file order, then every declared parameter the CSV lacks, in declaration order, omitting every `list` parameter.
 
 #### Scenario: Import keeps the file's order
 
 - **WHEN** a template declares `title`, `subtitle`, `code` and a CSV with headers `subtitle`, `title` is loaded
-- **THEN** the Import grid's columns run `subtitle`, `title`, `code`, and the Connect grid's run `title`, `subtitle`, `code`
+- **THEN** the Import grid's columns run `subtitle`, `title`, `code`
 
 ### Requirement: Grid cells keep their values
 
@@ -143,24 +143,6 @@ A grid cell SHALL NOT change its value until the operator edits it, including a 
 
 - **WHEN** a `date` cell holds `2026-09-01T12:00:00Z`
 - **THEN** the row submits `2026-09-01T12:00:00Z` unless a date is picked
-
-### Requirement: List values in the grids
-
-No grid SHALL edit a `list` value. A Connect row materialized with a multi-valued column mapped onto a `list` parameter (owned by `connections`) SHALL hold that array read-only and submit it unchanged and unflattened. A row holding no value for a `list` parameter submits nothing for it.
-
-#### Scenario: A mapped list is submitted as delivered
-
-- **WHEN** a row holds a mapped `tags` array
-- **THEN** the `tags` cell shows the elements read-only and the submitted `data` carries the array in the connector's order
-
-### Requirement: Connect mapping offers every parameter
-
-The Connect field mapping SHALL offer one mapping control per declared parameter, before any row exists. Mapping validity is owned by `connections`.
-
-#### Scenario: Both branches' names are offered
-
-- **WHEN** a mapping is built for a template whose branches read `subtitle` and `tracking_url`
-- **THEN** both names are offered before any row is added
 
 ### Requirement: CSV Import screen
 
@@ -238,3 +220,12 @@ The print form's Copies control SHALL offer one stepper: a decrease button and a
 - **WHEN** the print form shows its Copies control
 - **THEN** the decrease and increase buttons sit beside the count box
 - **AND** the count box is a text box, not a spin button
+
+### Requirement: Primary navigation
+
+Primary navigation SHALL list Labels (`/`), Import (`/import`) and Settings (`/settings`), in that order.
+
+#### Scenario: Navigation sections
+
+- **WHEN** the operator opens the application shell
+- **THEN** primary navigation contains exactly Labels, Import and Settings, in that order

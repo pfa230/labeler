@@ -15,37 +15,6 @@ Every error response SHALL have `Content-Type: application/json` and the body `{
 - **WHEN** a client requests a template id that does not exist
 - **THEN** the response is `404` with body `{ "error": { "code": "NotFound", "message": "…", "details": { "kind": "template", "id": "<id>" } } }`
 
-### Requirement: Error codes
-
-Each `code` SHALL be returned with exactly the status below, and with the listed `details` keys when it has any. `InvalidRequest`, `TemplateInvalid`, `UnsupportedLayoutItem` and `Upstream` SHALL always carry `details.reason`; no other code carries one.
-
-| Code | Status | When | `details` |
-|---|---|---|---|
-| `InvalidRequest` | 400 | The request is malformed or carries or names something invalid. | `reason` |
-| `Unauthorized` | 401 | Authentication is required and absent or invalid. | |
-| `Forbidden` | 403 | The origin check failed, or an authentication route was called while authentication is disabled. | |
-| `NotFound` | 404 | Unknown `/api/*` route, or a named record that does not exist. | `kind`, `id` |
-| `Conflict` | 409 | The request conflicts with stored state (a template or printer id already taken, setup already done, existing username, deleting the last user or one's own account). | |
-| `PayloadTooLarge` | 413 | The request body exceeds the endpoint's size limit, or a batch exceeds the label cap. | |
-| `UnsupportedMediaType` | 415 | `Content-Type` is absent or not a JSON media type on a JSON endpoint. | |
-| `TemplateInvalid` | 422 | The template, not the request, is at fault. | `reason` |
-| `UnsupportedLayoutItem` | 422 | This label's data cannot be laid out or rendered. | `reason` |
-| `BatchInvalid` | 422 | One or more labels of a batch failed. | `failures` |
-| `Internal` | 500 | The service failed for a reason not attributable to the request; the cause goes to the log. | |
-| `Upstream` | 502 | A connection's upstream failed. | `reason` |
-
-`NotFound`'s `details.kind` SHALL be one of `route`, `template`, `printer`, `connection`, `setting`, `user` and `token`, and `details.id` the identifier as requested (the path for `route`).
-
-#### Scenario: Unknown API route
-
-- **WHEN** a client requests `GET /api/nonexistent`
-- **THEN** the response is `404` with `error.code` `NotFound`, `error.details.kind` `route` and `error.details.id` `/api/nonexistent`
-
-#### Scenario: Upstream rate limit
-
-- **WHEN** a connection's upstream answers a browse with `429`
-- **THEN** the response is `502` with `error.code` `Upstream` and `error.details.reason` `rate_limited`
-
 ### Requirement: Reason slugs
 
 `details.reason` SHALL be exactly one of the slugs below, raised only with the code shown.
@@ -90,20 +59,8 @@ Each `code` SHALL be returned with exactly the status below, and with the listed
 | `variable_key_invalid` | InvalidRequest | A variable key is empty or contains disallowed characters. |
 | `setting_value_invalid` | InvalidRequest | A setting's value fails its type or range rule. |
 | `datetime_pattern_invalid` | InvalidRequest | A datetime format pattern is not valid. |
-| `connector_unknown` | InvalidRequest | The request names a connector that does not exist. |
-| `connection_connector_missing` | InvalidRequest | A stored connection references a connector that is no longer registered. |
-| `credential_required` | InvalidRequest | The connector requires a credential and none, or `""`, was supplied. |
-| `base_url_invalid` | InvalidRequest | `base_url` is not a valid `http` or `https` URL. |
-| `public_url_invalid` | InvalidRequest | `public_url` is not a valid `http` or `https` URL. |
-| `filter_invalid` | InvalidRequest | A connector browse filter is invalid. |
-| `row_key_invalid` | InvalidRequest | A row key to materialize is empty, contains `/` or starts with `.`. |
-| `row_limit_exceeded` | InvalidRequest | A materialize request asks for more than 200 rows. |
 | `username_empty` | InvalidRequest | The username is empty. |
 | `password_empty` | InvalidRequest | The password is empty. |
-| `auth` | Upstream | The upstream refused the stored credential or access. |
-| `unreachable` | Upstream | The upstream could not be reached. |
-| `rate_limited` | Upstream | The upstream rate-limited the request. |
-| `bad_response` | Upstream | The upstream answered with an unexpected status or shape, or a response over the size cap. |
 
 #### Scenario: Reason accompanies its code
 
@@ -157,7 +114,7 @@ A JSON media type is `application/json` or any `application/<subtype>+json`. Val
 
 #### Scenario: Wrong-shaped body
 
-- **WHEN** a client sends `{"connector":42,"name":"home","base_url":"http://hb.lan:7745"}` to `POST /api/connections`, where `connector` is a string
+- **WHEN** a client sends `{"value":42}` to `PUT /api/variables/example`, where `value` is a string
 - **THEN** the response is `400 InvalidRequest` with `details.reason` `json_malformed` and a non-empty `details.error`
 
 #### Scenario: Suffixed JSON media type
@@ -208,3 +165,28 @@ A panic that unwinds out of a handler, extractor or middleware before the respon
 
 - **WHEN** a request ends in a panic
 - **THEN** a later unrelated request is answered normally
+
+### Requirement: Service error codes
+
+Each `code` SHALL be returned with exactly the status below, and with the listed `details` keys when it has any. `InvalidRequest`, `TemplateInvalid`, and `UnsupportedLayoutItem` SHALL always carry `details.reason`; no other code carries one.
+
+| Code | Status | When | `details` |
+|---|---|---|---|
+| `InvalidRequest` | 400 | The request is malformed or carries or names something invalid. | `reason` |
+| `Unauthorized` | 401 | Authentication is required and absent or invalid. | |
+| `Forbidden` | 403 | The origin check failed, or an authentication route was called while authentication is disabled. | |
+| `NotFound` | 404 | Unknown `/api/*` route, or a named record that does not exist. | `kind`, `id` |
+| `Conflict` | 409 | The request conflicts with stored state (a template or printer id already taken, setup already done, existing username, deleting the last user or one's own account). | |
+| `PayloadTooLarge` | 413 | The request body exceeds the endpoint's size limit, or a batch exceeds the label cap. | |
+| `UnsupportedMediaType` | 415 | `Content-Type` is absent or not a JSON media type on a JSON endpoint. | |
+| `TemplateInvalid` | 422 | The template, not the request, is at fault. | `reason` |
+| `UnsupportedLayoutItem` | 422 | This label's data cannot be laid out or rendered. | `reason` |
+| `BatchInvalid` | 422 | One or more labels of a batch failed. | `failures` |
+| `Internal` | 500 | The service failed for a reason not attributable to the request; the cause goes to the log. | |
+
+`NotFound`'s `details.kind` SHALL be one of `route`, `template`, `printer`, `setting`, `user` and `token`, and `details.id` the identifier as requested (the path for `route`).
+
+#### Scenario: Unknown API route
+
+- **WHEN** a client requests `GET /api/nonexistent`
+- **THEN** the response is `404` with `error.code` `NotFound`, `error.details.kind` `route` and `error.details.id` `/api/nonexistent`

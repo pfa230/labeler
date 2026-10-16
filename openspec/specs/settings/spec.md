@@ -22,7 +22,6 @@ State outside templates: the variables store, typed application settings and the
 | Key | Value | Default | Rule |
 |---|---|---|---|
 | `datetime_formats` | object name → strftime pattern | see below | a write replaces the whole map |
-| `default_connection_id` | string | unset (`null`) | see `connections` |
 | `default_printer_id` | string | unset (`null`) | see `printing` |
 
 #### Scenario: Override and reset
@@ -79,3 +78,13 @@ Each Labels grid card SHALL carry a star toggle (`aria-pressed` when favorited).
 
 - **WHEN** the user types in the search box
 - **THEN** neither row is shown
+
+### Requirement: Persisted inventory connection cleanup
+
+An upgrade SHALL remove stored inventory connection records, their credentials and the default inventory connection override, while preserving all other application state.
+
+#### Scenario: Upgrade with configured inventory and printer
+
+- **WHEN** an existing installation has stored inventory connections, a default inventory connection override, printers, a default printer, variables, datetime formats, users, API tokens, sessions, favorites and print history
+- **THEN** the inventory connections, their credentials and the default inventory connection override are absent after the upgrade
+- **AND** the printers, default printer and all other stored state retain their values
