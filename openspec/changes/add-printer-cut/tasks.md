@@ -1,6 +1,6 @@
 ## 1. Driver and API
 
-- [ ] 1.1 Parse `cut` from `operations-supported` in `PrinterCapabilities::from_attributes` and add it to the probe response; verify with unit tests that `0x5f01` as a set member or scalar yields `cut: true` and its absence `cut: false`.
+- [ ] 1.1 Parse `cut` from `operations-supported` in `PrinterCapabilities::from_attributes` and add it to the probe response; verify with unit tests that enum `0x5f01` as a set member or scalar yields `cut: true` and its absence `cut: false`.
 - [ ] 1.2 Add `cut_request(uri)` and `PrinterDriver::cut`, implemented by `CupsDriver` and by `FakeDriver` through a `cut` knob; verify with a unit test that the request carries operation code `0x5f01`, the printer's `printer-uri` and no document data.
 - [ ] 1.3 Add `POST /api/printers/{id}/cut` returning `{status: "ok"}` or `{status: "failed", detail}`, registered in `src/openapi.rs`; verify with API tests for a successful cut, a refused cut whose detail names the IPP status, and `404` for an unknown id.
 

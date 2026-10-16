@@ -14,7 +14,7 @@ Labeler already probes each stored printer (`POST /api/printers/{id}/probe`) and
 
 **Driver.** Add `cut()` to `PrinterDriver`. `CupsDriver` builds the request with `IppRequestResponse::new` for a standard operation and then sets `header_mut().operation_or_status = 0x5f01`; the `ipp` 6 crate has no vendor `Operation` variant, and the header write keeps its attribute encoding instead of hand-building the IPP bytes. A pure `cut_request(uri)` function returns that request so a unit test can check the operation code, the `printer-uri` attribute and the empty payload, as `print_job_request` is tested today. The client uses the same timeout as `send` (none): the server cuts synchronously and may wait for the device. `FakeDriver` gains a `cut` knob (`ok`, or an IPP status name to fail with) so API tests exercise both outcomes.
 
-**Capability.** `PrinterCapabilities::from_attributes` sets `cut` when `operations-supported` contains integer or enum `0x5f01`, the same tolerant set-or-scalar reading the chain check uses.
+**Capability.** `PrinterCapabilities::from_attributes` sets `cut` when `operations-supported` contains enum `0x5f01`, the same tolerant set-or-scalar reading the chain check uses.
 
 **No capability pre-check on cut.** Chain and continue checks capabilities because a printer that ignores an unknown finishing would print with the wrong cuts and nobody would learn of it. A printer without `Ptouch-Cut` refuses the operation itself (`server-error-operation-not-supported`), so a pre-check would add a second IPP round trip and a new reason slug to report what the printer already reports.
 

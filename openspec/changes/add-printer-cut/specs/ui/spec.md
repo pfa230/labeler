@@ -9,11 +9,6 @@ The print form SHALL show a Cut button beside Print only when a successful probe
 - **WHEN** a successful probe of the selected printer reports `cut: true`
 - **THEN** a Cut button appears beside Print, and pressing it sends `POST /api/printers/{id}/cut` for that printer
 
-#### Scenario: Cut not confirmed
-
-- **WHEN** no printer is selected, the probe is loading or fails, or it reports `cut: false`
-- **THEN** no Cut button is shown
-
 #### Scenario: Failed cut is visible
 
 - **WHEN** a cut answers `status: "failed"`

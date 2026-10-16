@@ -10,7 +10,7 @@ Capabilities SHALL come from IPP `Get-Printer-Attributes` with a 3-second timeou
 - **media width**: `media-col-ready` → `media-size` → `x-dimension` in hundredths of a millimetre, when positive.
 - **model**: `printer-make-and-model`.
 - **trim**: `finishings-supported` includes enum `11`.
-- **cut**: `operations-supported` includes integer `0x5f01` (`24321`), the project-local `Ptouch-Cut` operation.
+- **cut**: `operations-supported` includes enum `0x5f01` (`24321`), the project-local `Ptouch-Cut` operation.
 - **chain and continue**: `finishings-col-supported` includes keyword `finishing-template`, and `finishing-template-supported` includes keyword or name `ptouch-chain`. Values may be scalar or sets. Missing or wrongly typed advertisements establish no support.
 
 `POST /api/printers/probe` with the printer's connection fields (`uri`, `username`, `password`, `ca_cert`, `insecure`, `render`; no `id` or `name`, no stored password used) SHALL validate them like create (`400` reason `printer_invalid`) and answer `200` with `{status: "ok", capabilities: {model, media_width_mm, resolution_dpi, color, accepts_png, chain_and_continue, cut}}`, `color` being `bilevel`, `color`, or `unknown` when no colour mode or raster type was advertised, or `{status: "unreachable", detail}`. The `chain_and_continue` and `cut` capabilities SHALL be booleans reflecting the advertised support above.
@@ -37,7 +37,7 @@ Capabilities SHALL come from IPP `Get-Printer-Attributes` with a 3-second timeou
 
 #### Scenario: Advertised cut operation
 
-- **WHEN** a printer's `operations-supported` includes `0x5f01`
+- **WHEN** a printer's `operations-supported` includes enum `0x5f01`
 - **THEN** its probe reports `cut: true`, and reports `cut: false` when the value is absent
 
 ## ADDED Requirements
