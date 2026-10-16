@@ -20,10 +20,13 @@ None.
 
 ### Modified Capabilities
 
-- `connections`: Retired; every inventory connection and connector requirement removed.
 - `settings`: Remove the default inventory connection setting and define cleanup of persisted connector state.
 - `ui`: Remove the connector screens and mapping requirements; scope shared batch behavior to Import.
 - `errors`: Remove connector-only codes, reason slugs and record kinds, and move the malformed-body example to a retained endpoint.
+
+### Retired Capabilities
+
+- `connections`: Remove all 23 inventory connection and connector requirements by deleting the main capability during implementation. This proposal and the design record the retirement; no connections delta is retained because archive would recreate an empty, invalid capability from it. The user approved this retirement method on 2026-10-16.
 
 ## Impact
 
