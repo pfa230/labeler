@@ -30,6 +30,20 @@ For a `single` template, and for a grid with no template chosen, each row SHALL 
 - **WHEN** the operator selects row 2 of a `single` grid and its render is refused
 - **THEN** row 2 stays the row requested and the pane shows the failure
 
+### Requirement: Screens show every declared parameter
+
+A screen collecting label data SHALL offer one control per parameter in the template detail's parameter list (owned by `parameters`), in that order except where "Grid columns" orders or omits columns of the Import grid, whatever values are entered: no control appears or disappears as values change. A screen SHALL NOT judge whether a label is complete; Print and Download send it, and a label the service refuses SHALL be shown with its error, against its row in a grid.
+
+#### Scenario: A branch-only parameter stays on screen
+
+- **WHEN** a template reads `subtitle` only behind `orientation: horizontal` and the operator picks `vertical`
+- **THEN** the `subtitle` control stays on screen, and a print with it blank succeeds
+
+#### Scenario: A refused row is marked
+
+- **WHEN** a grid run's row 3 holds `abc`, loaded from a CSV, for an `integer` parameter
+- **THEN** the run fails and row 3 shows the `param_value_invalid` failure naming that parameter
+
 ### Requirement: Parameter controls
 
 Each parameter's control SHALL be labelled with its `description`, else its `name`, and SHALL follow its `control`:
