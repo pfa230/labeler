@@ -35,7 +35,7 @@ The adapter SHALL connect to the service origin in `LABELER_URL`, defaulting to 
 
 ### Requirement: Tool surface
 
-The adapter SHALL publish exactly the following tools with descriptions and JSON input schemas. All arguments shown without `?` are required; arguments ending in `?` are optional and SHALL be omitted from forwarded requests when absent. Tool arguments and label entries SHALL refuse unlisted keys, while `data` SHALL allow arbitrary parameter names and JSON values. `start_slot` SHALL accept nonnegative integers and refuse explicit null. Template identifiers in the seven template-management tools SHALL follow the id rule in `templates`; invalid identifiers SHALL return tool execution errors before calling REST. Every valid identifier, including `reload`, SHALL address that template rather than a different operation.
+The adapter SHALL publish exactly the following tools with descriptions and JSON input schemas. All arguments shown without `?` are required; arguments ending in `?` are optional and SHALL be omitted from forwarded requests when absent. Tool arguments and label entries SHALL refuse unlisted keys, while `data` SHALL allow arbitrary parameter names and JSON values. `start_slot` SHALL accept nonnegative integers and refuse explicit null. `chain_and_continue` SHALL accept only boolean values and refuse explicit null. Template identifiers in the seven template-management tools SHALL follow the id rule in `templates`; invalid identifiers SHALL return tool execution errors before calling REST. Every valid identifier, including `reload`, SHALL address that template rather than a different operation.
 
 | Tool | Arguments | Operation |
 |---|---|---|
@@ -49,14 +49,15 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 | `reload_templates` | `{}` | `POST /api/templates/reload` |
 | `render_label` | `{template: string, data: object}` | `POST /api/render/label?format=png` |
 | `list_printers` | `{}` | `GET /api/printers` |
-| `print_labels` | `{template: string, printer: string, labels: [{data: object}], start_slot?: integer}` | `POST /api/print` |
+| `print_labels` | `{template: string, printer: string, labels: [{data: object}], start_slot?: integer, chain_and_continue?: boolean}` | `POST /api/print` |
 
-`list_templates`, `get_template`, `get_template_source`, `get_template_thumbnail`, `render_label` and `list_printers` SHALL carry `readOnlyHint: true`. `create_template`, `replace_template`, `delete_template`, `reload_templates` and `print_labels` SHALL carry `readOnlyHint: false`, `destructiveHint: true` and `idempotentHint: false`. The `list_templates` description SHALL state that each summary includes published parameters. The write descriptions SHALL distinguish create from complete-source replacement and deletion; `reload_templates` SHALL describe replacing the live registry from disk. The `print_labels` description SHALL state that it sends physical print jobs.
+`list_templates`, `get_template`, `get_template_source`, `get_template_thumbnail`, `render_label` and `list_printers` SHALL carry `readOnlyHint: true`. `create_template`, `replace_template`, `delete_template`, `reload_templates` and `print_labels` SHALL carry `readOnlyHint: false`, `destructiveHint: true` and `idempotentHint: false`. The `list_templates` description SHALL state that each summary includes published parameters. The write descriptions SHALL distinguish create from complete-source replacement and deletion; `reload_templates` SHALL describe replacing the live registry from disk. The `print_labels` description SHALL state that it sends physical print jobs and explain that `chain_and_continue: true` selects chain and continue, while false or omission selects ordinary printing (`printing`).
 
 #### Scenario: Client discovers print arguments
 
 - **WHEN** a client requests the tool list
 - **THEN** it sees eleven tools and a `print_labels` schema requiring `template`, `printer` and `labels`, with physical-print annotations
+- **AND** `chain_and_continue` is an optional, nonnullable boolean with no null default, and the description explains both selections
 
 #### Scenario: An unexpected print option
 
@@ -82,6 +83,11 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 
 - **WHEN** `get_template_source` receives `template: "../other"`
 - **THEN** it returns an execution error without making an HTTP request
+
+#### Scenario: Invalid finishing argument
+
+- **WHEN** a client calls `print_labels` with `chain_and_continue` set to null, a string or a number
+- **THEN** the adapter returns a tool execution error with `isError: true` without calling REST
 
 ### Requirement: Catalog results
 
@@ -113,7 +119,7 @@ Successful `render_label` SHALL return the REST PNG bytes as one MCP image conte
 
 ### Requirement: Print results
 
-`print_labels` SHALL forward its arguments without substituting parameter values, choosing a printer or expanding copies. A `200` response SHALL retain the complete print summary as JSON text content; `isError` SHALL be true exactly when `failed` is nonempty. Batch validation, pagination and dispatch follow `rendering`; printer negotiation and job records follow `printing`. The adapter MUST NOT automatically retry a print request, and its description SHALL state that lost responses can leave dispatch outcome unknown.
+`print_labels` SHALL forward its arguments without substituting parameter values, choosing a printer or expanding copies. A `200` response SHALL retain the complete print summary as JSON text content; `isError` SHALL be true exactly when `failed` is nonempty. Batch validation, pagination and dispatch follow `rendering`; printer negotiation, job finishing, continuation capability validation and job records follow `printing`. The adapter MUST NOT automatically retry a print request, and its description SHALL state that lost responses can leave dispatch outcome unknown.
 
 #### Scenario: A sheet batch starts partway through a sheet
 
@@ -129,6 +135,21 @@ Successful `render_label` SHALL return the REST PNG bytes as one MCP image conte
 
 - **WHEN** the connection fails after the adapter has submitted a print request
 - **THEN** the tool reports the failure and unknown dispatch outcome without resubmitting it
+
+#### Scenario: Chain selection reaches the service
+
+- **WHEN** `print_labels` receives `chain_and_continue: true`
+- **THEN** its print request forwards `chain_and_continue: true` unchanged
+
+#### Scenario: Explicit ordinary printing reaches the service
+
+- **WHEN** `print_labels` receives `chain_and_continue: false`
+- **THEN** its print request forwards `chain_and_continue: false` unchanged
+
+#### Scenario: Omitted finishing selection
+
+- **WHEN** `print_labels` receives no `chain_and_continue` argument
+- **THEN** its print request omits that field
 
 ### Requirement: Tool errors
 
