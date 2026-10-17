@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { pruneDataForSubmit } from "../../lib/labelInputs";
+import { getOwnKey, numericBoundError, pruneDataForSubmit } from "../../lib/labelInputs";
 import { ApiError, cutPrinter, printBatch, renderBatch, saveBlob, sentMessage } from "../../api/client";
 import { usePrinterProbe, usePrinters, useSettings } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
@@ -71,6 +71,11 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const isSheet = detail.format.type === "sheet";
   const startSlot = isSheet ? value.startSlot : undefined;
   const submittedData = pruneDataForSubmit(value.data, detail.params);
+  // The bounds gate is independent of live preview: it reads the held data the controls show, and a
+  // field outside its declared min/max blocks both action requests until it is corrected or cleared.
+  const hasInvalidNumeric = detail.params.some(
+    (param) => numericBoundError(param, getOwnKey(value.data, param.name)) !== null,
+  );
   const label = { data: submittedData };
 
   const preview = useLivePreview(
@@ -178,7 +183,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
           <button
             type="button"
             onClick={onDownload}
-            disabled={busy || stale}
+            disabled={busy || stale || hasInvalidNumeric}
             className={`${buttonBase} border`}
             style={{ borderColor: "var(--border)", color: "var(--ink)" }}
           >
@@ -236,7 +241,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
           <button
             type="button"
             onClick={onPrint}
-            disabled={busy || !effectivePrinter || stale}
+            disabled={busy || !effectivePrinter || stale || hasInvalidNumeric}
             className={`${buttonBase} h-11 min-w-32 flex-1 lg:flex-none`}
             style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
           >

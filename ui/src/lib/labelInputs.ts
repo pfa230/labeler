@@ -38,3 +38,18 @@ export function pruneDataForSubmit(data: Record<string, unknown>, params: Param[
 export function blankOptionLabel(param: Pick<Param, "default">): string {
   return param.default === undefined ? "" : `(default: ${String(param.default)})`;
 }
+
+// The declared min/max bound a held number violates, if any. Only a numeric control holding a number
+// can violate one: a blank control, a name shadowing Object.prototype, a non-numeric string or an
+// absent value is none of this rule's business. A present bound of zero counts, and the comparison is
+// strict, so equality with either endpoint is accepted.
+export function numericBoundError(
+  param: Pick<Param, "control" | "min" | "max">,
+  value: ParamValue | undefined,
+): string | null {
+  if (param.control !== "number" && param.control !== "integer") return null;
+  if (typeof value !== "number") return null;
+  if (param.min !== undefined && value < param.min) return `Must be at least ${param.min}.`;
+  if (param.max !== undefined && value > param.max) return `Must be at most ${param.max}.`;
+  return null;
+}

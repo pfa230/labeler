@@ -959,3 +959,219 @@ describe("PrintForm cut", () => {
     expect(countCalls("/api/printers/p1/cut")).toBe(1);
   });
 });
+
+// #238: a print-form numeric field outside its declared min/max gets a textual bound error, marks
+// itself invalid, and disables both actions until it is corrected or cleared. These tests read the
+// request boundary: while invalid no /api/print or /api/render call leaves the form, and a corrected
+// value reaches the payload unchanged. The viewport is mobile so the live preview stays closed and
+// the only render call a positive case records is the action itself.
+describe("PrintForm numeric bounds", () => {
+  const numericDetail = (params: Param[]): TemplateDetail => ({ ...tape, id: "bounds", params });
+  const download = () => screen.getByRole("button", { name: /^download$/i });
+  const printBtn = () => screen.getByRole("button", { name: /^print$/i });
+  const bodyOf = (call: unknown[]) => JSON.parse((call[1] as RequestInit).body as string);
+  const actionCalls = () =>
+    fetchMock.mock.calls.filter(([u]) => matches(u, "/api/print") || matches(u, "/api/render")).length;
+
+  const typed = async (name: string, value: string) => {
+    const input = (await screen.findByLabelText(name)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value } });
+    return input;
+  };
+  const selectPrinter = async () => {
+    await screen.findByRole("option", { name: "Label Printer" });
+    fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p1" } });
+    await waitFor(() => expect(printBtn()).toBeEnabled());
+  };
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock = stubFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal(
+      "matchMedia",
+      (q: string) =>
+        ({
+          matches: false,
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:bounds");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const bounds: { label: string; param: Param; invalid: string; error: RegExp }[] = [
+    { label: "integer lower-only", param: { name: "n", type: "integer", control: "integer", min: 1 }, invalid: "0", error: /^Must be at least 1\.$/ },
+    { label: "integer upper-only", param: { name: "n", type: "integer", control: "integer", max: 10 }, invalid: "11", error: /^Must be at most 10\.$/ },
+    { label: "integer two-sided", param: { name: "n", type: "integer", control: "integer", min: 1, max: 10 }, invalid: "0", error: /^Must be at least 1\.$/ },
+    { label: "number lower-only", param: { name: "n", type: "number", control: "number", min: 1 }, invalid: "0", error: /^Must be at least 1\.$/ },
+    { label: "number upper-only", param: { name: "n", type: "number", control: "number", max: 10 }, invalid: "11", error: /^Must be at most 10\.$/ },
+    { label: "number two-sided", param: { name: "n", type: "number", control: "number", min: 1, max: 10 }, invalid: "11", error: /^Must be at most 10\.$/ },
+  ];
+
+  it.each(bounds)("$label: blocks both actions with an associated error and no request", async ({ param, invalid, error }) => {
+    renderForm(numericDetail([param]));
+    await selectPrinter();
+    const input = await typed(param.name, invalid);
+
+    expect(await screen.findByText(error)).toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription(error);
+    expect(download()).toBeDisabled();
+    expect(printBtn()).toBeDisabled();
+
+    const before = actionCalls();
+    fireEvent.click(download());
+    fireEvent.click(printBtn());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(actionCalls()).toBe(before);
+  });
+
+  it("accepts either endpoint of a two-sided bound and sends it unchanged", async () => {
+    renderForm(numericDetail([{ name: "score", type: "number", control: "number", min: 1, max: 10 }]));
+    await selectPrinter();
+
+    const input = await typed("score", "0");
+    expect(await screen.findByText(/^Must be at least 1\.$/)).toBeInTheDocument();
+    expect(download()).toBeDisabled();
+    expect(printBtn()).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "11" } });
+    expect(await screen.findByText(/^Must be at most 10\.$/)).toBeInTheDocument();
+    expect(screen.queryByText(/^Must be at least 1\.$/)).toBeNull();
+    expect(download()).toBeDisabled();
+    expect(printBtn()).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "1" } });
+    expect(screen.queryByText(/^Must be at most 10\.$/)).toBeNull();
+    expect(input).not.toHaveAttribute("aria-invalid");
+    await waitFor(() => expect(download()).toBeEnabled());
+    expect(printBtn()).toBeEnabled();
+    fireEvent.click(download());
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    expect(bodyOf(lastCall("/api/render")!).labels).toEqual([{ data: { score: 1 }, copies: 1 }]);
+
+    fireEvent.change(input, { target: { value: "10" } });
+    await waitFor(() => expect(printBtn()).toBeEnabled());
+    fireEvent.click(printBtn());
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    expect(bodyOf(lastCall("/api/print")!).labels).toEqual([{ data: { score: 10 }, copies: 1 }]);
+  });
+
+  it("treats a declared bound of zero as a bound on either side", async () => {
+    renderForm(numericDetail([{ name: "lo", type: "integer", control: "integer", min: 0 }]));
+    await selectPrinter();
+    const lo = await typed("lo", "-1");
+    expect(await screen.findByText(/^Must be at least 0\.$/)).toBeInTheDocument();
+    expect(download()).toBeDisabled();
+    fireEvent.change(lo, { target: { value: "0" } });
+    expect(screen.queryByText(/^Must be at least 0\.$/)).toBeNull();
+    await waitFor(() => expect(download()).toBeEnabled());
+    cleanup();
+
+    renderForm(numericDetail([{ name: "hi", type: "number", control: "number", max: 0 }]));
+    await selectPrinter();
+    const hi = await typed("hi", "1");
+    expect(await screen.findByText(/^Must be at most 0\.$/)).toBeInTheDocument();
+    expect(download()).toBeDisabled();
+    fireEvent.change(hi, { target: { value: "0" } });
+    expect(screen.queryByText(/^Must be at most 0\.$/)).toBeNull();
+    await waitFor(() => expect(download()).toBeEnabled());
+  });
+
+  it("keeps both actions disabled until every out-of-range field is corrected", async () => {
+    renderForm(
+      numericDetail([
+        { name: "a", type: "integer", control: "integer", min: 1 },
+        { name: "b", type: "number", control: "number", max: 10 },
+      ]),
+    );
+    await selectPrinter();
+    const a = await typed("a", "0");
+    const b = await typed("b", "11");
+    expect(await screen.findByText(/^Must be at least 1\.$/)).toBeInTheDocument();
+    expect(await screen.findByText(/^Must be at most 10\.$/)).toBeInTheDocument();
+    expect(download()).toBeDisabled();
+    expect(printBtn()).toBeDisabled();
+
+    fireEvent.change(a, { target: { value: "1" } });
+    expect(screen.queryByText(/^Must be at least 1\.$/)).toBeNull();
+    expect(screen.getByText(/^Must be at most 10\.$/)).toBeInTheDocument();
+    expect(download()).toBeDisabled();
+    expect(printBtn()).toBeDisabled();
+    const before = actionCalls();
+    fireEvent.click(download());
+    fireEvent.click(printBtn());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(actionCalls()).toBe(before);
+
+    fireEvent.change(b, { target: { value: "5" } });
+    await waitFor(() => expect(printBtn()).toBeEnabled());
+    expect(download()).toBeEnabled();
+    fireEvent.click(printBtn());
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    expect(bodyOf(lastCall("/api/print")!).labels).toEqual([{ data: { a: 1, b: 5 }, copies: 1 }]);
+  });
+
+  it("clears an out-of-range field, defaulted or not, removing the error and omitting it", async () => {
+    renderForm(
+      numericDetail([
+        { name: "d", type: "integer", control: "integer", min: 1, default: 5 },
+        { name: "n", type: "integer", control: "integer", min: 1 },
+      ]),
+    );
+    await selectPrinter();
+    const d = await typed("d", "0");
+    const n = await typed("n", "0");
+    expect(await screen.findAllByText(/^Must be at least 1\.$/)).toHaveLength(2);
+    expect(download()).toBeDisabled();
+
+    fireEvent.change(d, { target: { value: "" } });
+    expect(screen.getAllByText(/^Must be at least 1\.$/)).toHaveLength(1);
+    expect(download()).toBeDisabled();
+
+    fireEvent.change(n, { target: { value: "" } });
+    expect(screen.queryByText(/^Must be at least 1\.$/)).toBeNull();
+    await waitFor(() => expect(printBtn()).toBeEnabled());
+    fireEvent.click(printBtn());
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    expect(bodyOf(lastCall("/api/print")!).labels).toEqual([{ data: {}, copies: 1 }]);
+  });
+
+  it("does not let a failed preview block a corrected value", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      (q: string) =>
+        ({
+          matches: true,
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    const base = stubFetch();
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/render/label")) {
+        return json({ error: { code: "Internal", message: "preview boom" } }, 500);
+      }
+      return base(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderForm(numericDetail([{ name: "amount", type: "number", control: "number", min: 1 }]));
+    await selectPrinter();
+    const input = await typed("amount", "0");
+    expect(download()).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "5" } });
+    expect((await screen.findAllByText(/preview boom/)).length).toBeGreaterThan(0);
+    await waitFor(() => expect(download()).toBeEnabled());
+    expect(printBtn()).toBeEnabled();
+  });
+});

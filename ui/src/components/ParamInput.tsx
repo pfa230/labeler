@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import type { Param, ParamValue } from "../api/types";
-import { blankOptionLabel } from "../lib/labelInputs";
+import { blankOptionLabel, numericBoundError } from "../lib/labelInputs";
 
 export interface ParamInputProps {
   name: string;
@@ -33,6 +33,7 @@ export function ParamInput({
   onChange,
 }: ParamInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const boundErrorId = useId();
   // A file chooser is the browser's own state, not the form's: clearing the value it stands for
   // leaves the filename on screen unless the element is cleared too.
   useEffect(() => {
@@ -127,26 +128,36 @@ export function ParamInput({
 
   if (control === "number" || control === "integer") {
     const isInteger = control === "integer";
+    const boundError = numericBoundError(spec, value);
     return (
-      <input
-        type="number"
-        aria-label={label}
-        min={spec.min}
-        max={spec.max}
-        step={isInteger ? 1 : "any"}
-        value={typeof value === "number" || typeof value === "string" ? value : ""}
-        onChange={(e) => {
-          const raw = e.target.value;
-          if (raw === "") {
-            onChange("");
-          } else {
-            const parsed = isInteger ? parseInt(raw, 10) : parseFloat(raw);
-            onChange(Number.isNaN(parsed) ? "" : parsed);
-          }
-        }}
-        className={inputClass}
-        style={inputStyle}
-      />
+      <div className="flex flex-col gap-1">
+        <input
+          type="number"
+          aria-label={label}
+          aria-invalid={boundError ? true : undefined}
+          aria-describedby={boundError ? boundErrorId : undefined}
+          min={spec.min}
+          max={spec.max}
+          step={isInteger ? 1 : "any"}
+          value={typeof value === "number" || typeof value === "string" ? value : ""}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === "") {
+              onChange("");
+            } else {
+              const parsed = isInteger ? parseInt(raw, 10) : parseFloat(raw);
+              onChange(Number.isNaN(parsed) ? "" : parsed);
+            }
+          }}
+          className={inputClass}
+          style={inputStyle}
+        />
+        {boundError && (
+          <span id={boundErrorId} className="text-xs" style={{ color: "var(--bad)" }}>
+            {boundError}
+          </span>
+        )}
+      </div>
     );
   }
 
