@@ -25,13 +25,15 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 
 // Optional `batch` override lets a test return a custom /api/render or /api/print response (failures, 422, etc.).
 // Optional `renderLabel` override lets a test control the /api/render/label response.
+// Optional `templateDetail` override lets a test serve a different /api/templates/t1 detail.
 function stubFetch(
   batch?: (body: Record<string, unknown>) => Response,
   renderLabel?: () => Response,
+  templateDetail: unknown = detail,
 ) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.startsWith("/api/templates/t1")) return json(detail);
+    if (url.startsWith("/api/templates/t1")) return json(templateDetail);
     if (url.startsWith("/api/templates")) return json(list);
     if (url.startsWith("/api/printers")) return json(printers);
     if (url.startsWith("/api/render/label")) {
@@ -1088,24 +1090,11 @@ describe("issue-422: special parameter names in Import", () => {
     ],
   };
 
-  function stubSpecialFetch() {
-    return vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.startsWith("/api/templates/t1")) return json(specialDetail);
-      if (url.startsWith("/api/templates")) return json(list);
-      if (url.startsWith("/api/printers")) return json(printers);
-      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
-      if (url === "/api/render") return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
-      if (url === "/api/print") return json(summary);
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-  }
-
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
-    fetchMock = stubSpecialFetch();
+    fetchMock = stubFetch(undefined, undefined, specialDetail);
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => {
