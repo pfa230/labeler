@@ -54,7 +54,9 @@ export function FieldForm({
             )}
           </div>
           {param.control !== "checkbox" && param.default !== undefined && (
-            <span className="text-xs" style={{ color: "var(--muted)" }}>{`default: ${String(param.default)}`}</span>
+            <span className="text-xs" style={{ color: "var(--muted)" }}>{`default: ${
+              Array.isArray(param.default) ? JSON.stringify(param.default) : String(param.default)
+            }`}</span>
           )}
           <ParamInput
             name={param.name}

@@ -191,4 +191,15 @@ describe("FieldForm", () => {
     expect(screen.getByRole("group", { name: "Asset Tags" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "add tags" })).toBeInTheDocument();
   });
+
+  it.each<[string[], string]>([
+    [["A", "B"], 'default: ["A","B"]'],
+    [["A,B"], 'default: ["A,B"]'],
+    [[""], 'default: [""]'],
+    [[], "default: []"],
+    [["B", "A"], 'default: ["B","A"]'],
+  ])("renders a list default %j as compact JSON", async (def, hint) => {
+    renderForm(single, singleValue, [{ name: "tags", type: "list", control: "list", default: def }]);
+    expect(await screen.findByText(hint)).toBeInTheDocument();
+  });
 });

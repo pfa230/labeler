@@ -437,7 +437,7 @@ describe("PrintForm blank means default", () => {
   it("starts a defaulted list empty with its hint, omits it untouched, and sends [] once emptied", async () => {
     stubParams();
     renderForm(withParams([{ name: "tags", type: "list", control: "list", default: ["CONSUMABLE"] }]));
-    expect(await screen.findByText("default: CONSUMABLE")).toBeInTheDocument();
+    expect(await screen.findByText('default: ["CONSUMABLE"]')).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "tags 1" })).not.toBeInTheDocument();
     expect(await printFields()).toEqual({});
     fireEvent.click(screen.getByRole("button", { name: "add tags" }));
