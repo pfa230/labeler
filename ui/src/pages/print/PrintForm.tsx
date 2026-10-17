@@ -18,7 +18,7 @@ const MIN_COPIES = 1;
 const MAX_COPIES = 100;
 const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Math.floor(Number.isFinite(n) ? n : 1)));
 
-export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
+export function PrintForm({ detail, stale, version }: { detail: TemplateDetail; stale?: boolean; version: number }) {
   const [value, setValue] = useState<FormValue>({ data: {}, printer: undefined, startSlot: 0 });
 
   // Values belong to the template they were entered for.
@@ -79,7 +79,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const label = { data: submittedData };
 
   const preview = useLivePreview(
-    { templateId: detail.id, format: detail.format.type, data: submittedData, startSlot },
+    { templateId: detail.id, format: detail.format.type, data: submittedData, startSlot, version },
     isLg || previewOpen,
   );
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,6 +20,13 @@ const detail = {
 };
 
 const source = "id: brother_24mm_qr\nname: Brother 24mm Continuous Label\n";
+
+// Two printers with no default, so the preselect falls through to "none" and Print stays gated on
+// an explicit printer selection.
+const printers = [
+  { id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false },
+  { id: "p2", name: "Backup Printer", uri: "ipp://p2/q", insecure: false },
+];
 
 const other = { ...detail, id: "other_label", name: "Other Label" };
 const otherSource = "id: other_label\nname: Other Label\n";
@@ -81,6 +88,18 @@ function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200, slow
           status: 200,
           headers: { "content-type": "application/json" },
         });
+      }
+      if (url.startsWith("/api/printers")) {
+        return new Response(JSON.stringify(printers), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "/api/settings") {
+        return new Response(JSON.stringify({ default_printer_id: { value: null, is_default: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/render/label")) {
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
       }
       throw new Error(`unexpected fetch: ${url}`);
     }),
@@ -158,6 +177,18 @@ function stubSheetFetch() {
           headers: { "content-type": "application/json" },
         });
       }
+      if (url.startsWith("/api/printers")) {
+        return new Response(JSON.stringify(printers), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url === "/api/settings") {
+        return new Response(JSON.stringify({ default_printer_id: { value: null, is_default: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/render/label")) {
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      }
       throw new Error(`unexpected fetch: ${url}`);
     }),
   );
@@ -220,11 +251,9 @@ describe("Template detail", () => {
     stubFetch();
   });
 
-  it("renders name, parameters, format badge, and a use-to-print link", async () => {
+  it("renders the name and the format badge", async () => {
     renderPage();
     expect(await screen.findByText("Brother 24mm Continuous Label")).toBeInTheDocument();
-    expect(screen.getByText("message")).toBeInTheDocument();
-    expect(screen.getByText("code")).toBeInTheDocument();
     expect(screen.getByText("single")).toBeInTheDocument();
     // The same badge the grid renders, not just the same word: without the icon and the tokens this
     // page could keep an iconless pill and the sheet parity assertions would still pass.
@@ -234,57 +263,6 @@ describe("Template detail", () => {
     expect(badge.style.borderColor).toBe("var(--accent)");
     expect(iconGeometry(badge)).toEqual(SINGLE_ICON);
     expect(document.querySelectorAll("[data-format]")).toHaveLength(1);
-    const link = screen.getByRole("link", { name: /use to print/i });
-    expect(link).toHaveAttribute("href", "/print/brother_24mm_qr");
-  });
-
-  it("renders parameter specifications with type, default, bounds, and description", async () => {
-    const templateWithParams = {
-      ...detail,
-      params: [
-        {
-          name: "target_width",
-          type: "number",
-          control: "number",
-          default: 80,
-          min: 25,
-          max: 200,
-          description: "Target label width in mm",
-        },
-        {
-          name: "orientation",
-          type: "enum",
-          control: "select",
-          values: ["horizontal", "vertical"],
-          default: "horizontal",
-        },
-      ],
-    };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : input.toString();
-        if (url.endsWith("/api/templates/brother_24mm_qr")) {
-          return new Response(JSON.stringify(templateWithParams), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
-          return new Response(source, { status: 200, headers: { "content-type": "text/yaml" } });
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    renderPage();
-    expect(await screen.findByText("Parameters")).toBeInTheDocument();
-    expect(screen.getByText("target_width")).toBeInTheDocument();
-    expect(screen.getByText("Target label width in mm")).toBeInTheDocument();
-    expect(screen.getByText(/bounds: 25 to 200/)).toBeInTheDocument();
-    expect(screen.getByText("orientation")).toBeInTheDocument();
-    expect(screen.getAllByText("horizontal")).toHaveLength(2);
-    expect(screen.getByText("vertical")).toBeInTheDocument();
   });
 
   it("reveals the raw YAML source when toggled", async () => {
@@ -336,20 +314,31 @@ describe("Template detail", () => {
     expect(String(put?.[1]?.body)).toContain("name: Edited");
   });
 
-  it("refetches the thumbnail after a save", async () => {
+  it("A save reaches the preview", async () => {
     renderPage();
-    const before = (await screen.findByRole("img", { name: /preview/ })).getAttribute("src");
+    const field = (await screen.findByLabelText("code")) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "A" } });
+
+    const renderCalls = () =>
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) =>
+        String(u).startsWith("/api/render/label"),
+      );
+    await waitFor(() => expect(renderCalls().length).toBeGreaterThan(0));
+    const before = renderCalls().length;
+
     fireEvent.click(await screen.findByText(/raw yaml/i));
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
       target: { value: "id: brother_24mm_qr\nname: Edited\n" },
     });
     // dataUpdatedAt has millisecond resolution; make sure the refetch lands in a later millisecond.
     await new Promise((r) => setTimeout(r, 5));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(screen.getByRole("img", { name: /preview/ }).getAttribute("src")).not.toBe(before),
-    );
+
+    // The save refetches the template: a new dataUpdatedAt must reach the preview as a new key,
+    // or it keeps showing the render of the previous version.
+    await waitFor(() => expect(renderCalls().length).toBeGreaterThan(before));
+    expect(screen.getByLabelText("code")).toHaveValue("A");
   });
 
   it("keeps the draft and shows the server message when the save fails", async () => {
@@ -468,7 +457,7 @@ describe("Template detail", () => {
   });
 });
 
-// #413: the template page shows the server's thumbnail and each parameter's published default.
+// #413: the template page shows each parameter's published default, resolved of tokens by the server.
 describe("issue-413: template page", () => {
   const published = {
     id: "brother_24mm_qr",
@@ -498,47 +487,181 @@ describe("issue-413: template page", () => {
     return fn;
   }
 
-  const renderCalls = (fn: ReturnType<typeof stubPublished>) =>
-    fn.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/render"));
-
-  it("A21: renders the thumbnail <img> and sends no render request", async () => {
-    const fn = stubPublished(published);
-    renderPage();
-    const img = await screen.findByRole("img", { name: /Brother 24mm Continuous Label/ });
-    expect(img.getAttribute("src")).toMatch(/^\/api\/templates\/brother_24mm_qr\/thumbnail\?v=\d+$/);
-    // Let any effect that would request a render run before asserting none did.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(renderCalls(fn)).toEqual([]);
-  });
-
-  it("A21: a sheet's page shows the same thumbnail and sends no batch request", async () => {
-    const fn = stubPublished({
-      ...published,
-      format: { type: "sheet", paper_width: 8.5, paper_height: 11, label_width: 4, label_height: 2, positions: [[0, 0]] },
-    });
-    renderPage();
-    const img = await screen.findByRole("img", { name: /Brother 24mm Continuous Label/ });
-    expect(img.getAttribute("src")).toMatch(/^\/api\/templates\/brother_24mm_qr\/thumbnail\?v=\d+$/);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(renderCalls(fn)).toEqual([]);
-  });
-
-  it("A21: a thumbnail that fails to load shows the placeholder", async () => {
-    stubPublished(published);
-    renderPage();
-    const img = await screen.findByRole("img", { name: /Brother 24mm Continuous Label/ });
-    fireEvent.error(img);
-    await waitFor(() => expect(screen.queryByRole("img", { name: /Brother 24mm Continuous Label/ })).toBeNull());
-    expect(screen.getByText("preview")).toBeInTheDocument();
-  });
-
   it("shows each published default by value, with no Referenced fields section", async () => {
     stubPublished(published);
     renderPage();
-    const urlCard = (await screen.findByText("url")).closest("div.rounded-md")!;
-    expect(urlCard.textContent).toContain("https://ex.co/");
-    expect(screen.getByText("bold").closest("div.rounded-md")!.textContent).toContain("false");
+    // The form field's hint, resolved by the server: a tokened default arrives as its value.
+    expect(await screen.findByText("default: https://ex.co/")).toBeInTheDocument();
     expect(screen.queryByText(/referenced fields/i)).toBeNull();
     expect(screen.queryByText(/resolved:/i)).toBeNull();
+  });
+});
+
+// The print form lives on this page (it used to be the separate /print/:id screen).
+describe("Template page print form", () => {
+  const t1 = {
+    id: "t1",
+    name: "Tag",
+    description: "",
+    unit: "mm",
+    dpi: 300,
+    format: { type: "single" as const, width: 80, height: 24 },
+    params: [{ name: "message", type: "string" as const, control: "text" as const }],
+  };
+  const summary = { total: 1, sent: 1, failed: [], jobs: 1 };
+
+  function stubPrintFetch(body: unknown = t1) {
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/templates/nope")) {
+        return new Response(
+          JSON.stringify({ error: { code: "NotFound", message: "template not found" } }),
+          { status: 404, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.startsWith("/api/templates/t1/source")) {
+        return new Response("id: t1\n", { status: 200, headers: { "content-type": "text/yaml" } });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.startsWith("/api/printers")) {
+        // Two printers with no default, so the one-shot preselect falls through to "none" and Print
+        // stays gated on an explicit printer selection — which is what this suite exercises.
+        return new Response(
+          JSON.stringify([
+            { id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false },
+            { id: "p2", name: "Backup Printer", uri: "ipp://p2/q", insecure: false },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/settings") {
+        return new Response(JSON.stringify({ default_printer_id: { value: null, is_default: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/render/label")) {
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      }
+      if (url === "/api/render") {
+        return new Response(new Blob(["PK"]), {
+          status: 200,
+          headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="t1.zip"' },
+        });
+      }
+      if (url === "/api/print") {
+        return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fn);
+    return fn;
+  }
+
+  let fetchMock: ReturnType<typeof stubPrintFetch>;
+  const countCalls = (path: string) =>
+    fetchMock.mock.calls.filter(([u]) => String(u).startsWith(path)).length;
+
+  function renderTemplatePage(path: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <Routes>
+              <Route path="/templates/:id" element={<TemplateDetail />} />
+              <Route path="/" element={<div>labels grid</div>} />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    fetchMock = stubPrintFetch();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("renders a control per published parameter: textarea, number, checkbox and select", async () => {
+    const templateWithParams = {
+      id: "t1",
+      name: "Test Template",
+      description: "",
+      unit: "mm",
+      dpi: 300,
+      params: [
+        { name: "message", type: "string", control: "text", description: "Single line" },
+        { name: "notes", type: "string", control: "textarea", multiline: true, default: "", description: "Notes" },
+        { name: "target_width", type: "number", control: "number", default: 80, min: 25, max: 200, description: "Target width" },
+        { name: "show_border", type: "boolean", control: "checkbox", default: false, description: "Show border" },
+        { name: "orientation", type: "enum", control: "select", values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
+      ],
+      format: { type: "single" as const, height: 18, width: { min: 25, max: 80 } },
+    };
+
+    stubPrintFetch(templateWithParams);
+    renderTemplatePage("/templates/t1");
+    expect(await screen.findByRole("textbox", { name: /notes/i })).toBeInstanceOf(HTMLTextAreaElement);
+    expect(screen.getByRole("spinbutton", { name: /target width/i })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /show border/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /orientation/i })).toBeInTheDocument();
+  });
+
+  it("gates Print on a printer, not on a filled field, then prints", async () => {
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    renderTemplatePage("/templates/t1");
+
+    // The message field appears once the detail loads.
+    const message = (await screen.findByLabelText("message")) as HTMLInputElement;
+
+    // The screen does not judge completeness: Download is enabled with the field blank, and only
+    // the missing printer gates Print.
+    const download = screen.getByRole("button", { name: /download/i });
+    const print = screen.getByRole("button", { name: /print/i });
+    expect(download).toBeEnabled();
+    expect(print).toBeDisabled();
+
+    fireEvent.change(message, { target: { value: "hello" } });
+
+    // Let the live preview settle so we can assert on the download delta.
+    await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
+    const beforeUrls = createUrl.mock.calls.length;
+
+    // A single template downloads through /api/render: one label per copy, in the chosen format.
+    const renderCall = () => [...fetchMock.mock.calls].reverse().find(([u]) => String(u) === "/api/render");
+    fireEvent.click(download);
+    await waitFor(() => expect(renderCall()).toBeDefined());
+    await waitFor(() => expect(createUrl.mock.calls.length).toBe(beforeUrls + 1));
+    const renderBody = JSON.parse((renderCall()![1] as RequestInit).body as string);
+    expect(renderBody).toEqual({ template: "t1", labels: [{ data: { message: "hello" }, copies: 1 }], format: "png" });
+
+    // Select the printer → Print enables.
+    fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p1" } });
+    await waitFor(() => expect(print).not.toBeDisabled());
+
+    const printCall = () => [...fetchMock.mock.calls].reverse().find(([u]) => String(u) === "/api/print");
+    fireEvent.click(print);
+    await waitFor(() => expect(printCall()).toBeDefined());
+    const printBody = JSON.parse((printCall()![1] as RequestInit).body as string);
+    expect(printBody).toEqual({ template: "t1", printer: "p1", labels: [{ data: { message: "hello" }, copies: 1 }] });
+    expect(await screen.findByText("Sent 1 labels to Label Printer")).toBeInTheDocument();
+  });
+
+  it("renders the form for a template from the URL param", async () => {
+    renderTemplatePage("/templates/t1");
+    expect(await screen.findByLabelText("message")).toBeInTheDocument();
+  });
+
+  it("shows an error and the all-labels link for an unknown id", async () => {
+    renderTemplatePage("/templates/nope");
+    expect(await screen.findByText(/template not found/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /all labels/i })).toHaveAttribute("href", "/");
   });
 });

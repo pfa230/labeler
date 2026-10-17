@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { previewKey, useLivePreview, type PreviewInput } from "./livePreview";
 
-const base: PreviewInput = { templateId: "t", format: "single", data: { x: "1" }, startSlot: 0 };
+const base: PreviewInput = { templateId: "t", format: "single", data: { x: "1" }, startSlot: 0, version: 0 };
 
 describe("previewKey", () => {
   it("is stable regardless of key insertion order, differs on data change", () => {
@@ -42,7 +42,7 @@ describe("useLivePreview", () => {
   });
 
   it("posts /api/render for a sheet and sends data-only label", async () => {
-    const sheet: PreviewInput = { templateId: "s", format: "sheet", data: { x: "1" } };
+    const sheet: PreviewInput = { templateId: "s", format: "sheet", data: { x: "1" }, version: 0 };
     const { result } = renderHook(() => useLivePreview(sheet, true, 0));
     await waitFor(() => expect(result.current.url).toBeDefined());
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];

@@ -6,13 +6,16 @@ export interface PreviewInput {
   format: "single" | "sheet";   // the template's format type
   data: Record<string, ParamValue>;
   startSlot?: number;
+  // The template's dataUpdatedAt: a save refetches the detail, and without it in the key the
+  // cache would keep serving the render of the previous version.
+  version: number;
 }
 
 const sortObj = (o?: Record<string, ParamValue | string>) =>
   o ? Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b))) : null;
 
 export function previewKey(i: PreviewInput): string {
-  return JSON.stringify([i.templateId, i.format, sortObj(i.data), i.startSlot ?? 0]);
+  return JSON.stringify([i.templateId, i.format, sortObj(i.data), i.startSlot ?? 0, i.version]);
 }
 
 interface PreviewState { url?: string; error?: string; loading: boolean }

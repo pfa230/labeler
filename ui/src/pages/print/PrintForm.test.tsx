@@ -101,7 +101,7 @@ function renderForm(detail: TemplateDetail) {
   render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <PrintForm detail={detail} />
+        <PrintForm detail={detail} version={0} />
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -461,7 +461,7 @@ describe("PrintForm blank means default", () => {
     const tree = (detail: TemplateDetail) => (
       <QueryClientProvider client={qc}>
         <ToastProvider>
-          <PrintForm detail={detail} />
+          <PrintForm detail={detail} version={0} />
         </ToastProvider>
       </QueryClientProvider>
     );
@@ -481,7 +481,7 @@ describe("PrintForm blank means default", () => {
     const tree = (detail: TemplateDetail) => (
       <QueryClientProvider client={qc}>
         <ToastProvider>
-          <PrintForm detail={detail} />
+          <PrintForm detail={detail} version={0} />
         </ToastProvider>
       </QueryClientProvider>
     );

@@ -163,14 +163,11 @@ describe("Templates list", () => {
     expect(card.querySelectorAll("[data-format]")).toHaveLength(1);
   });
 
-  it("card main link goes to the print form; details link to the template page", async () => {
+  it("card main link goes to the template page, with no separate details link", async () => {
     renderPage();
-    // The card link gets aria-label "Print {name}" so queries are unambiguous vs the details link
-    // (a bare /brother 24mm/i regex would match BOTH links' accessible names).
     const card = await screen.findByRole("link", { name: "Print Brother 24mm" });
-    expect(card).toHaveAttribute("href", "/print/brother_24mm_qr");
-    const details = screen.getByRole("link", { name: "Brother 24mm template details" });
-    expect(details).toHaveAttribute("href", "/templates/brother_24mm_qr");
+    expect(card).toHaveAttribute("href", "/templates/brother_24mm_qr");
+    expect(screen.queryByRole("link", { name: "Brother 24mm template details" })).not.toBeInTheDocument();
   });
 
   it("filters cards by name from the search box", async () => {

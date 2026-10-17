@@ -48,7 +48,7 @@ function TemplateCard({
         <FormatBadge format={template.format} />
       </div>
       <Link
-        to={`/print/${encodeURIComponent(template.id)}`}
+        to={`/templates/${encodeURIComponent(template.id)}`}
         aria-label={`Print ${template.name}`}
         className="flex flex-col gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2"
       >
@@ -67,18 +67,6 @@ function TemplateCard({
           </code>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Link
-            to={`/templates/${encodeURIComponent(template.id)}`}
-            aria-label={`${template.name} template details`}
-            className="flex h-11 w-11 items-center justify-center rounded-md border text-sm focus-visible:outline-none focus-visible:ring-2"
-            style={{
-              background: "var(--surface)",
-              borderColor: "var(--border)",
-              color: "var(--muted)",
-            }}
-          >
-            ⓘ
-          </Link>
           <button
             type="button"
             onClick={onToggleFavorite}

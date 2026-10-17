@@ -6,7 +6,6 @@ import { Templates } from "../pages/Templates";
 import { TemplateDetail } from "../pages/TemplateDetail";
 import { NewTemplate } from "../pages/NewTemplate";
 import { Catalog } from "../pages/Catalog";
-import { Print } from "../pages/Print";
 import { Import } from "../pages/Import";
 import { Settings } from "../pages/Settings";
 import { Login } from "../pages/Login";
@@ -27,8 +26,6 @@ export function App() {
             <Route path="templates/catalog" element={<Catalog />} />
             <Route path="templates/new" element={<NewTemplate />} />
             <Route path="templates/:id" element={<TemplateDetail />} />
-            <Route path="print" element={<Print />} />
-            <Route path="print/:templateId" element={<Print />} />
             <Route path="import" element={<Import />} />
             <Route path="settings" element={<Settings />} />
           </Route>
