@@ -148,7 +148,7 @@ A template's id SHALL be its filename stem: `templates/pallet.yaml` is the templ
 
 ### Requirement: Reload
 
-`POST /api/templates/reload` SHALL rebuild the registry from disk and swap it in, answering `200 { "count": <served>, "broken_count": <refused> }`, including when entries were refused. When the folder cannot be read it SHALL answer `500 Internal` and keep the previously loaded registry. Every refused entry SHALL also be logged as a warning.
+`POST /api/template-registry/reload` SHALL rebuild the registry from disk and swap it in, answering `200 { "count": <served>, "broken_count": <refused> }`, including when entries were refused. When the folder cannot be read it SHALL answer `500 Internal` and keep the previously loaded registry. Every refused entry SHALL also be logged as a warning.
 
 #### Scenario: Reload reports refused files instead of failing
 

@@ -46,7 +46,7 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 | `create_template` | `{template: string, yaml: string}` | `POST /api/templates/{id}` with raw YAML |
 | `replace_template` | `{template: string, yaml: string}` | `PUT /api/templates/{id}` with raw YAML |
 | `delete_template` | `{template: string}` | `DELETE /api/templates/{id}` |
-| `reload_templates` | `{}` | `POST /api/templates/reload` |
+| `reload_templates` | `{}` | `POST /api/template-registry/reload` |
 | `render_label` | `{template: string, data: object}` | `POST /api/render/label?format=png` |
 | `list_printers` | `{}` | `GET /api/printers` |
 | `print_labels` | `{template: string, printer: string, labels: [{data: object}], start_slot?: integer, chain_and_continue?: boolean}` | `POST /api/print` |
