@@ -6101,10 +6101,11 @@ layout:
             out
         }
 
-        /// A one-line block's shaped advance and ink interval in page points, relative to the text
-        /// item's origin, as Typst laid it out.
+        /// A one-line block's shaped advance and ink interval in page points, relative to the line's
+        /// left edge, as Typst laid it out. Each run is its own text item, placed at its own origin,
+        /// and an RTL line places its runs from the right, so the left edge is the smallest origin.
         fn typst_line_metrics(glyphs: &[LaidGlyph]) -> (f64, f64, f64) {
-            let origin = glyphs[0].origin_x;
+            let origin = glyphs.iter().map(|g| g.origin_x).fold(f64::MAX, f64::min);
             let advance = glyphs.iter().map(|g| g.pen_end).fold(f64::MIN, f64::max) - origin;
             let left = glyphs
                 .iter()
@@ -6280,6 +6281,7 @@ layout:
                 "...",
                 "Égypt",
                 "HELIX",
+                "\u{202e}αj\u{202c}",
             ] {
                 let (advance, left, right) =
                     typst_line_metrics(&laid_out(&label(value, "top", "20", "content", "")));
@@ -6307,6 +6309,21 @@ layout:
             assert!(
                 j.left < -0.01,
                 "j's ink starts {} pt left of its advance origin",
+                j.left
+            );
+            // Independent of `glyph_ink`, which the expected bounds above also consult: the font's
+            // own integer bounding box puts j's ink left of its advance origin. An incorrect
+            // outline extremum would have to be wrong in both places to pass this.
+            let glyph = face.glyph_index('j').expect("j maps");
+            let bbox = face.glyph_bounding_box(glyph).expect("j has an outline");
+            let expected_left = f64::from(bbox.x_min) / f64::from(face.units_per_em()) * 20.0;
+            assert!(
+                expected_left < 0.0,
+                "j's font bbox starts at {expected_left}"
+            );
+            assert!(
+                (f64::from(j.left) - expected_left).abs() <= 0.02,
+                "j left {} vs independent font bbox {expected_left}",
                 j.left
             );
         }
@@ -6901,17 +6918,16 @@ layout:
             format!("{}0{}", &source[..at], &source[end..])
         }
 
-        /// Narrow the item's clipped box by `pt`, restoring the under-measurement the old character
-        /// sum caused.
-        fn shrink_box(source: &str, pt: f64) -> String {
+        /// Set the item's clipped box width to `pt`, restoring the width the old character-sum
+        /// measurement would have chosen for the emitted line.
+        fn set_box_width(source: &str, pt: f64) -> String {
             let key = "#box(width: ";
             let at = source.find(key).expect("a box") + key.len();
             let end = source[at..].find(", height: ").expect("a height") + at;
-            let width = length_pt(&source[at..end]);
             format!(
                 "{}{:.9}mm{}",
                 &source[..at],
-                (width - pt) * 25.4 / 72.0,
+                pt * 25.4 / 72.0,
                 &source[end..]
             )
         }
@@ -6940,9 +6956,14 @@ layout:
                 "final ink reaches column {last} of {width}"
             );
 
-            // Restoring the old character-sum width leaves the box too narrow for the shaped ink.
-            containment(&shrink_box(&c.source, 5.0), &c.files, "#text(\"")
-                .expect_err("a box under the shaped width cuts the W run");
+            // Restoring the old character-sum width for the emitted line leaves the clipped box too
+            // narrow for the shaped ink the renderer actually draws.
+            let line = emitted_lines(&c.source)[0].clone();
+            let summed = f64::from(crate::render::helpers::text_width_for_test(
+                400, 24.0, &line,
+            ));
+            containment(&set_box_width(&c.source, summed), &c.files, "#text(\"")
+                .expect_err("a box at the character-sum width cuts the shaped W run");
         }
 
         /// #257's second context: content-width text containing `j` in a capped content-width
@@ -6980,22 +7001,28 @@ layout:
 
         /// #257's third context: centered content-width text capped so an overflowing value is
         /// shortened. With optical overhang off the final dot sits inside the box; the old overhang
-        /// pushes it past.
+        /// pushes it past. A wide run and a narrow run both lose the final dot.
         #[test]
         fn a_centered_shortened_line_preserves_its_last_dot() {
-            let value = serde_json::to_string(&"W".repeat(30)).expect("json");
-            let yaml = format!(
-                "name: Centred Overflow\nunit: mm\ndpi: 300\nformat: {{ type: single, width: 100, height: 20 }}\nlayout:\n  - type: text\n    value: {value}\n    at: [10, 0]\n    size: [content, content]\n    max_w: 30\n    font_size: 24\n    alignment: {{ horizontal: center, vertical: top }}\n"
-            );
-            let t = parse_and_validate(&yaml).expect("valid template");
-            let c = compiled(&t).expect("compile");
-            assert!(emitted_lines(&c.source)[0].ends_with("..."), "{}", c.source);
-            containment(&c.source, &c.files, "#text(\"")
-                .expect("the centred box contains its marker");
+            for value in ["W".repeat(30), "i".repeat(30)] {
+                let v = serde_json::to_string(&value).expect("json");
+                let yaml = format!(
+                    "name: Centred Overflow\nunit: mm\ndpi: 300\nformat: {{ type: single, width: 100, height: 20 }}\nlayout:\n  - type: text\n    value: {v}\n    at: [10, 0]\n    size: [content, content]\n    max_w: 30\n    font_size: 24\n    alignment: {{ horizontal: center, vertical: top }}\n"
+                );
+                let t = parse_and_validate(&yaml).expect("valid template");
+                let c = compiled(&t).expect("compile");
+                assert!(
+                    emitted_lines(&c.source)[0].ends_with("..."),
+                    "{value}: {}",
+                    c.source
+                );
+                containment(&c.source, &c.files, "#text(\"")
+                    .unwrap_or_else(|e| panic!("{value}: {e}"));
 
-            let sabotaged = c.source.replace("overhang: false", "overhang: true");
-            containment(&sabotaged, &c.files, "#text(\"")
-                .expect_err("with optical overhang the final dot protrudes");
+                let sabotaged = c.source.replace("overhang: false", "overhang: true");
+                containment(&sabotaged, &c.files, "#text(\"")
+                    .expect_err("with optical overhang the final dot protrudes");
+            }
         }
 
         /// A content-sized label ending in a narrow glyph (`i`) and in a wide one (`W`) each keeps

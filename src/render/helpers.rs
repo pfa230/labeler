@@ -446,7 +446,8 @@ fn fits_width(needed_pt: f32, width_pt: f32) -> bool {
 }
 
 /// Whether one line judged on its own fits `width_pt`, from the same shaped geometry emission uses.
-/// Wrapping and ellipsis consult this; the block fit judges the lines together.
+/// Wrapping and ellipsis consult this; the block fit judges the lines together. A single line's
+/// shared reservation is just its own, so the block formula reduces to this.
 fn line_fits_width(
     face: &rustybuzz::Face<'_>,
     line: &str,
@@ -456,7 +457,13 @@ fn line_fits_width(
 ) -> bool {
     measure_lines(face, &[line], size_pt)
         .first()
-        .is_none_or(|m| line_metrics_fit(m, width_pt, horizontal))
+        .is_none_or(|m| {
+            let metrics = std::slice::from_ref(m);
+            fits_width(
+                metric_width(metrics) + block_ink_x(metrics, horizontal).reserve(horizontal),
+                width_pt,
+            )
+        })
 }
 
 /// A block of lines judged against its box at one size: the shaped lines it was judged on, and the
@@ -943,16 +950,50 @@ fn block_ink_x(metrics: &[LineMetrics], horizontal: HorizontalAlign) -> BlockInk
     }
 }
 
-/// Whether one line judged on its own fits `width_pt` under the horizontal reservation for its
-/// alignment. A single line's advance box sits at its own origin, so only its outer ink is reserved.
-fn line_metrics_fit(m: &LineMetrics, width_pt: f32, horizontal: HorizontalAlign) -> bool {
-    let l = (-m.left).max(0.0);
-    let r = (m.right - m.advance).max(0.0);
-    let reserve = match horizontal {
-        HorizontalAlign::Left | HorizontalAlign::Right => l + r,
-        HorizontalAlign::Center => 2.0 * l.max(r),
-    };
-    m.advance + reserve <= width_pt + FIT_EPS_PT
+/// The emitted forms of `lines` and their geometry, with lines shortened in place until the block
+/// fits `width_pt`. The block's shared horizontal reservation, not each line's own, decides: a line
+/// that fits alone can still overrun because another line's overhang is reserved around the whole
+/// block. `metrics` is `lines` as last measured, so an already-fitting block costs no reshaping.
+fn shorten_block_to_width(
+    face: &rustybuzz::Face<'_>,
+    mut forms: Vec<String>,
+    mut metrics: Vec<LineMetrics>,
+    size_pt: f32,
+    width_pt: f32,
+    horizontal: HorizontalAlign,
+) -> (Vec<String>, Vec<LineMetrics>) {
+    loop {
+        let budget = width_pt - block_ink_x(&metrics, horizontal).reserve(horizontal);
+        let mut changed = false;
+        for (form, m) in forms.iter_mut().zip(&metrics) {
+            if m.advance > budget + FIT_EPS_PT {
+                let shortened = ellipsize_advance(face, form, size_pt, budget);
+                if shortened != *form {
+                    *form = shortened;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return (forms, metrics);
+        }
+        metrics = measure_lines(face, &forms, size_pt);
+    }
+}
+
+/// Shorten `line` until its emitted form's shaped advance no wider than `advance_pt` remains, then
+/// append the marker. The block it joins is judged after, so the marker's own ink is not added here.
+/// An existing marker is stripped first, so shortening a form twice does not stack markers.
+fn ellipsize_advance(face: &rustybuzz::Face<'_>, line: &str, size: f32, advance_pt: f32) -> String {
+    let mut out = line.strip_suffix(ELLIPSIS).unwrap_or(line).to_string();
+    while !out.is_empty()
+        && measure_lines(face, &[format!("{out}{ELLIPSIS}")], size)
+            .first()
+            .is_none_or(|m| m.advance > advance_pt + FIT_EPS_PT)
+    {
+        out.pop();
+    }
+    format!("{out}{ELLIPSIS}")
 }
 
 /// One line's shaped geometry, in points: its vertical ink (`None` when it draws none), its shaped
@@ -1020,10 +1061,14 @@ pub(super) fn measure_lines(
         let mut x_max = f32::NEG_INFINITY;
         let mut y_min = f32::INFINITY;
         let mut y_max = f32::NEG_INFINITY;
-        for run in runs[first_run..]
-            .iter()
-            .take_while(|run| run.start < line.end)
-        {
+        let last = first_run
+            + runs[first_run..]
+                .iter()
+                .take_while(|run| run.start < line.end)
+                .count();
+        let order = visual_order(&runs[first_run..last]);
+        for &ri in &order {
+            let run = &runs[first_run + ri];
             let sliced = line.start.max(run.start)..line.end.min(run.end);
             if sliced.is_empty() {
                 continue;
@@ -1036,7 +1081,7 @@ pub(super) fn measure_lines(
             } else {
                 // `ShapedText::reshape`: a run cut where it is not safe to break is shaped again,
                 // on the line's piece alone and with the run's direction.
-                reshaped = shape_run(face, &text, sliced, run.ltr);
+                reshaped = shape_run(face, &text, sliced, run.level);
                 &reshaped.glyphs[..]
             };
             for glyph in glyphs {
@@ -1062,6 +1107,37 @@ pub(super) fn measure_lines(
         });
     }
     out
+}
+
+/// One line's runs in Typst's visual order (UAX #9 L2). Runs are shaped in logical order, and a
+/// right-to-left embedding lays them out from the right, so the runs a line visits left to right
+/// are not the order they were shaped in. `measure_lines` places glyphs left to right, so it must
+/// visit them as Typst draws them, or an RTL run's ink lands on the wrong side of the pen.
+fn visual_order(runs: &[ShapedRun]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..runs.len()).collect();
+    let max = runs.iter().map(|r| r.level).max().unwrap_or(0);
+    let min_odd = runs
+        .iter()
+        .map(|r| r.level)
+        .filter(|level| level % 2 == 1)
+        .min()
+        .unwrap_or(max + 1);
+    for level in (min_odd..=max).rev() {
+        let mut i = 0;
+        while i < order.len() {
+            if runs[order[i]].level >= level {
+                let end = order[i..]
+                    .iter()
+                    .position(|&r| runs[r].level < level)
+                    .map_or(order.len(), |p| i + p);
+                order[i..end].reverse();
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    order
 }
 
 /// Each line's vertical ink as Typst draws the block, in order: `measure_lines` reduced to the
@@ -1113,17 +1189,16 @@ fn line_budget(
     let raw_metrics = judged
         .map(|j| j.metrics)
         .unwrap_or_else(|| measure_lines(face, &raw_lines[..k_metric], size_pt));
-    let forms: Vec<String> = raw_lines[..k_metric]
-        .iter()
-        .zip(&raw_metrics[..k_metric])
-        .map(|(raw, m)| {
-            if line_metrics_fit(m, width_pt, horizontal) {
-                raw.clone()
-            } else {
-                ellipsize(face, raw, size_pt, width_pt, horizontal)
-            }
-        })
-        .collect();
+    // Shorten with the block's shared reservation, so a line that only overruns because of another
+    // line's overhang is shortened in place rather than dropped.
+    let (forms, _) = shorten_block_to_width(
+        face,
+        raw_lines[..k_metric].to_vec(),
+        raw_metrics,
+        size_pt,
+        width_pt,
+        horizontal,
+    );
 
     for k in (1..=k_metric).rev() {
         if k == n && whole_judged {
@@ -1133,7 +1208,12 @@ fn line_budget(
         if k < n {
             emitted[k - 1] = ellipsize(face, &raw_lines[k - 1], size_pt, width_pt, horizontal);
         }
-        let metrics = measure_lines(face, &emitted, size_pt);
+        let mut metrics = measure_lines(face, &emitted, size_pt);
+        let ink_x = block_ink_x(&metrics, horizontal);
+        if !fits_width(metric_width(&metrics) + ink_x.reserve(horizontal), width_pt) {
+            (emitted, metrics) =
+                shorten_block_to_width(face, emitted, metrics, size_pt, width_pt, horizontal);
+        }
         let ink = block_ink(&metrics, cap, pitch);
         let ink_x = block_ink_x(&metrics, horizontal);
         let metric_w = metric_width(&metrics);
@@ -1316,6 +1396,8 @@ struct ShapedRun {
     start: usize,
     end: usize,
     ltr: bool,
+    /// The run's BiDi embedding level, for placing the runs of a line in visual order.
+    level: u8,
     glyphs: Vec<ShapedGlyph>,
 }
 
@@ -1401,7 +1483,7 @@ fn shape_paragraph(face: &rustybuzz::Face<'_>, text: &str) -> Vec<ShapedRun> {
             .map_or(Script::Unknown, |c| c.script());
         if level != prev_level || !is_compatible(curr_script, prev_script) {
             if cursor < i {
-                runs.push(shape_run(face, text, cursor..i, prev_level.is_ltr()));
+                runs.push(shape_run(face, text, cursor..i, prev_level.number()));
             }
             cursor = i;
             prev_level = level;
@@ -1414,7 +1496,7 @@ fn shape_paragraph(face: &rustybuzz::Face<'_>, text: &str) -> Vec<ShapedRun> {
         face,
         text,
         cursor..text.len(),
-        prev_level.is_ltr(),
+        prev_level.number(),
     ));
     runs
 }
@@ -1422,7 +1504,8 @@ fn shape_paragraph(face: &rustybuzz::Face<'_>, text: &str) -> Vec<ShapedRun> {
 /// Typst's `shape_segment` on `text[range]`, with the bundled font as the only family. The buffer
 /// takes Typst's default language, `en` (labeler sets none), and no features: `features()` adds one
 /// only when a text setting departs from HarfBuzz's defaults, and the emitted source sets none.
-fn shape_run(face: &rustybuzz::Face<'_>, text: &str, range: Range<usize>, ltr: bool) -> ShapedRun {
+fn shape_run(face: &rustybuzz::Face<'_>, text: &str, range: Range<usize>, level: u8) -> ShapedRun {
+    let ltr = level.is_multiple_of(2);
     let base = range.start;
     let segment = &text[range.clone()];
     let mut glyphs: Vec<ShapedGlyph> = Vec::new();
@@ -1510,6 +1593,7 @@ fn shape_run(face: &rustybuzz::Face<'_>, text: &str, range: Range<usize>, ltr: b
         start: range.start,
         end: range.end,
         ltr,
+        level,
         glyphs,
     }
 }
@@ -2906,6 +2990,45 @@ mod helpers_tests {
             .width_units
         };
         assert_eq!(plain(HorizontalAlign::Left), plain(HorizontalAlign::Center));
+    }
+
+    /// Shortening is judged on the whole block, not each line alone: `j`'s left overhang is reserved
+    /// around the block, so a `WWWW` that fits on its own still overruns beside it. The budget keeps
+    /// both lines by shortening the W run rather than dropping it (text delta, "Measured block and
+    /// ink reservation": the fitting comparison is computed on the lines being judged).
+    #[test]
+    fn a_block_shared_overhang_shortens_a_line_instead_of_dropping_it() {
+        let face = super::instance(400, 20.0).expect("face");
+        let w = super::measure_lines(&face, &["WWWW"], 20.0)[0];
+        let block = super::measure_lines(&face, &["j", "WWWW"], 20.0);
+        let reserve =
+            super::block_ink_x(&block, HorizontalAlign::Left).reserve(HorizontalAlign::Left);
+        assert!(
+            w.left >= 0.0 && reserve > 0.05,
+            "the case needs a shared left reservation from j: {reserve}"
+        );
+        // The box admits the W run alone but not the W run plus j's reservation.
+        let box_w = super::pt_to_units(w.advance + reserve / 2.0, "mm");
+        let m = test_layout(
+            "j\nWWWW",
+            &FontSize::Fixed(20.0),
+            false,
+            Alignment {
+                horizontal: HorizontalAlign::Left,
+                vertical: VerticalAlign::Top,
+            },
+            Overflow::Ellipsis,
+            (box_w, 100.0),
+        )
+        .expect("the block keeps both lines by shortening the W run");
+        assert_eq!(m.lines.len(), 2, "{:?}", m.lines);
+        assert_eq!(m.lines[0], "j", "{:?}", m.lines);
+        assert!(
+            m.lines[1].ends_with("...") && m.lines[1] != "WWWW...",
+            "the W run must be shortened: {:?}",
+            m.lines
+        );
+        assert!(m.width_units <= box_w + 1e-4, "{} > {box_w}", m.width_units);
     }
 }
 
