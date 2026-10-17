@@ -38,6 +38,8 @@ Use the `text` delta's block formulas: the widest shaped advance defines the hor
 
 Use this same comparison for candidate sizing, wrapping and ellipsis width checks, retained-line selection, failure decisions and final intrinsic width. Measure the lines actually emitted, including the marker; measurements from the unshortened input cannot establish its final bounds. Keep the current vertical reservations and tolerance.
 
+Shortening removes one character at a time and judges each candidate by measuring the complete block it would emit, with that block's own reservation. No width budget or reservation measured on an earlier candidate, the unshortened block or a block with more lines decides a later candidate: removing an overhanging suffix or dropping a line changes the reservation. Implementation reviews rejected three instances of reusing an earlier measurement: per-line judgment in the line budget, shortened forms carried over from a longer prefix, and a budget fixed before several characters are removed from `WWWWï`.
+
 This intentionally lets asymmetric ink make center-aligned content wider than left/right-aligned content. Amend `text`: Layout box as well as Measured block and ink reservation so the contract does not simultaneously require alignment-independent intrinsic width. When there is no horizontal overhang, alignment still leaves intrinsic width unchanged. Existing `layout` rules consume the resulting intrinsic size without modification.
 
 ### 3. Emit matching insets and ordinary punctuation positioning
