@@ -21,7 +21,7 @@ None.
 
 ### Modified Capabilities
 
-- `templates`: Change the Reload endpoint and explicitly cover all valid template ids at their literal template paths.
+- `templates`: Change the Reload endpoint.
 - `mcp`: Point `reload_templates` at the registry endpoint; its tool name, arguments and results retain their contracts.
 
 ## Impact
