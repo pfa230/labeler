@@ -256,6 +256,18 @@ pub(super) fn format_length(value: f32, unit: &str) -> Result<String, AppError> 
     Ok(format!("{}{}", format_float(value), unit))
 }
 
+/// A length rounded up to the emitted precision, so a box is never narrower or shorter than the
+/// value it expresses. A content-sized text box is exactly the shaped advance it must hold, and
+/// rounding to nearest let it land a hair under that advance, which Typst then re-wrapped (#257).
+pub(super) fn format_length_up(value: f32, unit: &str) -> Result<String, AppError> {
+    let unit = match unit {
+        "mm" | "in" => unit,
+        _ => return Err(AppError::internal("unknown unit")),
+    };
+    let value = (f64::from(value) * 10_000.0).ceil() / 10_000.0;
+    Ok(format!("{value}{unit}"))
+}
+
 fn format_float(value: f32) -> String {
     let mut s = format!("{value:.4}");
     if s.contains('.') {

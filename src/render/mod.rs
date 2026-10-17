@@ -12,9 +12,9 @@ use crate::reason::Reason;
 use crate::templates::{TemplateContent, TemplateDefinition};
 use chrono::{DateTime, Local};
 use helpers::{
-    assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, interpolate,
-    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32, resolve_image_asset,
-    to_page_coords, typst_alignment, typst_font_options,
+    assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, format_length_up,
+    interpolate, parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32,
+    resolve_image_asset, to_page_coords, typst_alignment, typst_font_options,
 };
 
 pub(crate) use helpers::value_to_string;
@@ -1889,7 +1889,9 @@ impl<'a> RenderContext<'a> {
         let top = args.pbox.y + args.pbox.h;
         let dx = format_length(args.pbox.x, self.unit)?;
         let dy = format_length(args.pbox.frame.1 - top, self.unit)?;
-        let box_width = format_length(args.pbox.w, self.unit)?;
+        // The box is rounded up so it can never come out a hair narrower than the shaped line it
+        // must hold, which let Typst re-wrap the line and clip it (#257).
+        let box_width = format_length_up(args.pbox.w, self.unit)?;
         let box_height = format_length(args.pbox.h, self.unit)?;
         let content = self.wrap_rotation(inner, args.placement.rotate);
 
@@ -7044,6 +7046,32 @@ layout:
                     "{value}: final ink reaches column {last} of {width}"
                 );
             }
+        }
+
+        /// A catalog tape whose value fits a content-sized box on one line must stay on one line.
+        /// The box is exactly the shaped advance, so rounding it down by a hair let Typst re-wrap
+        /// the value across the box width and clip the extra lines (#257).
+        #[test]
+        fn a_content_sized_catalog_tape_keeps_its_value_on_one_line() {
+            let (registry, _dir) = crate::templates::load_all_for_tests();
+            let template = registry.get("brother_24mm").expect("catalog template");
+            let mut data = HashMap::new();
+            data.insert(
+                "message".to_string(),
+                serde_json::json!("BOX.073 - Floor Grinder"),
+            );
+            let png =
+                crate::render::render_single_label(template, &data, &no_settings(), &no_datetime())
+                    .expect("render label");
+            let img = image::load_from_memory(&png).expect("decode").to_luma8();
+            let rows: Vec<u32> = (0..img.height())
+                .filter(|&y| (0..img.width()).any(|x| img.get_pixel(x, y).0[0] < 128))
+                .collect();
+            let bands = 1 + rows.windows(2).filter(|w| w[1] - w[0] > 1).count();
+            assert_eq!(
+                bands, 1,
+                "the value wrapped across the box and clipped: {bands} ink bands"
+            );
         }
     }
 
