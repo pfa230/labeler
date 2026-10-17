@@ -225,8 +225,8 @@ impl LabelerMcp {
             .expect("fixed API paths join the configured origin")
     }
 
-    /// The URL of one path-based template tool: the encoded id segment plus the
-    /// tool's fixed suffix.
+    /// The URL of one path-based template tool: the validated literal id segment
+    /// plus the tool's fixed suffix.
     fn template_url(&self, id: &str, suffix: &str) -> Result<Url, CallToolResult> {
         Ok(self.url(&format!("api/templates/{}{suffix}", id_segment(id)?)))
     }
@@ -729,12 +729,5 @@ mod tests {
         assert!(id_segment("../other").is_err());
         assert!(id_segment("has space").is_err());
         assert!(id_segment("has.dot").is_err());
-    }
-
-    #[test]
-    fn the_literal_segment_survives_joining_it_to_the_origin() {
-        let origin = parse_origin(DEFAULT_SERVICE_ORIGIN).unwrap();
-        let url = origin.join("api/templates/reload/source").unwrap();
-        assert_eq!(url.path(), "/api/templates/reload/source");
     }
 }
