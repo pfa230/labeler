@@ -1,4 +1,4 @@
-import "@testing-library/jest-dom";
+import "@testing-library/jest-dom/vitest";
 
 if (!URL.createObjectURL) {
   // jsdom shim for blob preview/download tests

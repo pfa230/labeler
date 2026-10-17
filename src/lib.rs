@@ -1651,7 +1651,7 @@ layout: []
             let bytes = resp.into_body().collect().await.unwrap().to_bytes();
             let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
             let names: Vec<String> = (0..zip.len())
-                .map(|i| zip.by_index(i).unwrap().name().to_string())
+                .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
                 .collect();
             assert_eq!(names.len(), count);
             assert_eq!(
@@ -1756,7 +1756,7 @@ layout: []
                 let mut entry = zip.by_index(i).unwrap();
                 let mut content = Vec::new();
                 entry.read_to_end(&mut content).unwrap();
-                (entry.name().to_string(), content)
+                (entry.name().unwrap().to_string(), content)
             })
             .collect();
         let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
@@ -5407,7 +5407,7 @@ layout:
         ) -> Option<ipp::value::IppValue> {
             self.attributes
                 .groups_of(group)
-                .find_map(|g| g.attributes().get(name).map(|a| a.value().clone()))
+                .find_map(|g| g.get(name).map(|a| a.value().clone()))
         }
 
         fn job_attr(&self, name: &str) -> Option<ipp::value::IppValue> {
@@ -5459,7 +5459,7 @@ layout:
                 let header = *request.header();
                 let mut status = StatusCode::SuccessfulOk;
                 let mut printer = Vec::new();
-                if header.operation_or_status == Operation::PrintJob as u16 {
+                if header.operation_or_status == Operation::PrintJob as i16 {
                     let attributes = request.attributes().clone();
                     let mut document = Vec::new();
                     request
@@ -6822,6 +6822,9 @@ layout:
                 let Some(operation) = operation else { continue };
                 let Some(body) = operation.request_body.as_ref() else {
                     continue;
+                };
+                let utoipa::openapi::RefOr::T(body) = body else {
+                    panic!("{method} {path}: request body is a $ref, not inline");
                 };
                 if body.content.keys().any(|ct| is_json(ct)) {
                     endpoints.push((method, format!("/api{}", substitute_path_params(path))));

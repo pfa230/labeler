@@ -1,35 +1,25 @@
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
 use base64::Engine;
 // rand 0.10 renamed `RngCore` to `Rng` (re-exported from rand_core) and `OsRng` to `rngs::SysRng`.
-// SysRng is fallible (`TryRng`), and neither of these functions can return an RNG error, so both use
-// `rand::rng()` — ThreadRng, a ChaCha12 CSPRNG seeded from the OS and periodically reseeded. That is
-// what the token path already used, and it is the rand book's recommended source for secrets.
+// SysRng is fallible (`TryRng`), and `random_secret` cannot return an RNG error, so it uses
+// `rand::rng()` — ThreadRng, a ChaCha12 CSPRNG seeded from the OS and periodically reseeded. It is
+// the rand book's recommended source for secrets.
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// Hash a password with argon2id (default params). Returns the PHC string to store.
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
-    // Generate the salt here rather than via `SaltString::generate(&mut OsRng)`: argon2 0.5 re-exports
-    // its own (older) rand_core, and which of its features are enabled depends on what else in the
-    // graph pulls that crate in. Drawing 16 bytes ourselves keeps salt generation independent of
-    // argon2's dependency tree.
-    let mut salt_bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut salt_bytes);
-    let salt = SaltString::encode_b64(&salt_bytes)?;
     Ok(Argon2::default()
-        .hash_password(password.as_bytes(), &salt)?
+        .hash_password(password.as_bytes())?
         .to_string())
 }
 
 /// Verify a password against a stored PHC hash. A malformed stored hash returns false (never panics).
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
-    match PasswordHash::new(stored_hash) {
-        Ok(parsed) => Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok(),
-        Err(_) => false,
-    }
+    Argon2::default()
+        .verify_password(password.as_bytes(), stored_hash)
+        .is_ok()
 }
 
 /// A PHC hash of a fixed dummy password, used to flatten timing on unknown-user login (no enumeration).

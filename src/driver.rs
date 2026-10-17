@@ -138,7 +138,7 @@ pub fn print_job_request(
 
 /// ptouch-print-server's project-local `Ptouch-Cut` operation: releases the last label chain and
 /// continue leaves attached, without a document or a job.
-const PTOUCH_CUT_OPERATION: u16 = 0x5f01;
+const PTOUCH_CUT_OPERATION: i16 = 0x5f01;
 
 /// The `Ptouch-Cut` request for one printer: the standard operation attributes and the printer's
 /// URI, no document and no job.
@@ -488,7 +488,7 @@ impl PrinterCapabilities {
         let group = attrs.groups_of(DelimiterTag::PrinterAttributes).next();
         let strings = |name: &str| -> Vec<String> {
             group
-                .and_then(|g| g.attributes().get(name))
+                .and_then(|g| g.get(name))
                 .map(|attr| {
                     attr.value()
                         .into_iter()
@@ -509,7 +509,7 @@ impl PrinterCapabilities {
         };
         // printer-resolution-default is a single `resolution` value per RFC 8011, not a 1setOf.
         let resolution = group
-            .and_then(|g| g.attributes().get("printer-resolution-default"))
+            .and_then(|g| g.get("printer-resolution-default"))
             .and_then(|attr| match attr.value() {
                 ipp::value::IppValue::Resolution {
                     cross_feed,
@@ -520,7 +520,7 @@ impl PrinterCapabilities {
             });
         // media-col-ready -> media-size -> x-dimension (hundredths-mm Integer).
         let x_hundredths = group
-            .and_then(|g| g.attributes().get("media-col-ready"))
+            .and_then(|g| g.get("media-col-ready"))
             .and_then(|attr| first_collection(attr.value()))
             .and_then(|c| c.get("media-size"))
             .and_then(first_collection)
@@ -543,10 +543,7 @@ impl PrinterCapabilities {
         caps.loaded_media_width_mm = loaded_media_width_mm(x_hundredths);
         // Each advertisement is one value or a 1setOf; any other type establishes nothing.
         let values = |name: &str| -> &[ipp::value::IppValue] {
-            match group
-                .and_then(|g| g.attributes().get(name))
-                .map(|a| a.value())
-            {
+            match group.and_then(|g| g.get(name)).map(|a| a.value()) {
                 Some(ipp::value::IppValue::Array(items)) => items,
                 Some(v) => std::slice::from_ref(v),
                 None => &[],
@@ -844,7 +841,7 @@ mod tests {
         )
         .unwrap();
         let mut group = IppAttributeGroup::new(DelimiterTag::PrinterAttributes);
-        group.attributes_mut().insert(attr.name().clone(), attr);
+        group.attributes_mut().push(attr);
         let mut attrs = IppAttributes::new();
         attrs.groups_mut().push(group);
         assert_eq!(
@@ -862,7 +859,7 @@ mod tests {
         let mut group = IppAttributeGroup::new(DelimiterTag::PrinterAttributes);
         for (name, value) in attrs {
             let attr = IppAttribute::with_name(name, value).unwrap();
-            group.attributes_mut().insert(attr.name().clone(), attr);
+            group.attributes_mut().push(attr);
         }
         let mut all = IppAttributes::new();
         all.groups_mut().push(group);
@@ -1238,7 +1235,7 @@ mod tests {
         let value = req
             .attributes()
             .groups_of(DelimiterTag::JobAttributes)
-            .find_map(|g| g.attributes().get("media-col").map(|a| a.value().clone()));
+            .find_map(|g| g.get("media-col").map(|a| a.value().clone()));
         value
     }
 
@@ -1305,7 +1302,7 @@ mod tests {
     ) -> Option<ipp::value::IppValue> {
         req.attributes()
             .groups_of(group)
-            .find_map(|g| g.attributes().get(name).map(|a| a.value().clone()))
+            .find_map(|g| g.get(name).map(|a| a.value().clone()))
     }
 
     #[test]

@@ -20,25 +20,25 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tower-http = { version = "0.7", features = ["trace", "fs", "catch-panic"] }
-utoipa = { version = "5", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa = { version = "6", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "10", features = ["axum"] }
 typst = "0.15"
 typst-layout = "0.15"
-typst-as-lib = { version = "0.16", features = ["typst-kit-embed-fonts", "typst-kit-fonts"] }
+typst-as-lib = { version = "0.17", features = ["typst-kit-embed-fonts", "typst-kit-fonts"] }
 typst-render = "0.15"
 typst-pdf = "0.15"
 qrcode = "0.14"
 ttf-parser = { version = "0.25", features = ["variable-fonts"] }
-base64 = "0.22"
+base64 = "0.23"
 arc-swap = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2"
-ipp = "6"
+ipp = "7"
 async-trait = "0.1"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-argon2 = "0.5"
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+argon2 = "0.6"
 rand = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 axum-extra = { version = "0.12", features = ["cookie"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
