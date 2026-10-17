@@ -950,6 +950,30 @@ fn block_ink_x(metrics: &[LineMetrics], horizontal: HorizontalAlign) -> BlockInk
     }
 }
 
+/// The first line whose ink sets part of the block's shared overhang for `horizontal` and that can
+/// still shed a character: shortening it can shrink the reservation that keeps the block past its
+/// box. `None` when every line that overhangs is already down to its marker.
+fn shortenable_overhang_line(
+    forms: &[String],
+    metrics: &[LineMetrics],
+    horizontal: HorizontalAlign,
+) -> Option<usize> {
+    let metric_width = metric_width(metrics);
+    (0..forms.len()).find(|&i| {
+        let m = &metrics[i];
+        if m.ink.is_none() {
+            return false;
+        }
+        let x = match horizontal {
+            HorizontalAlign::Left => 0.0,
+            HorizontalAlign::Center => (metric_width - m.advance) / 2.0,
+            HorizontalAlign::Right => metric_width - m.advance,
+        };
+        (-(x + m.left) > 0.0 || x + m.right - metric_width > 0.0)
+            && drop_one_char(&forms[i]) != forms[i]
+    })
+}
+
 /// The emitted forms of `lines` and their geometry, with lines shortened in place until the block
 /// fits `width_pt`. The block's shared horizontal reservation, not each line's own, decides: a line
 /// that fits alone can still overrun because another line's overhang is reserved around the whole
@@ -970,18 +994,26 @@ fn shorten_block_to_width(
         // line's advance exceeds it. Remove a single character from the first such line, then judge
         // the block the removal leaves afresh.
         let budget = width_pt - block_ink_x(&metrics, horizontal).reserve(horizontal);
-        let Some(i) = forms
+        let Some(over) = forms
             .iter()
             .zip(&metrics)
             .position(|(_, m)| m.advance > budget + FIT_EPS_PT)
         else {
             return (forms, metrics);
         };
-        let shortened = drop_one_char(&forms[i]);
-        if shortened == forms[i] {
-            return (forms, metrics);
-        }
-        forms[i] = shortened;
+        // That line has no character left to shed, so the shared overhang another line's ink
+        // carries is what keeps the block past its box: shed a line that sets the reservation
+        // rather than refuse the whole line count. The overrun line's advance is a floor the block
+        // cannot drop below, so only shrinking the reservation can bring it inside the box.
+        let i = if drop_one_char(&forms[over]) != forms[over] {
+            over
+        } else {
+            match shortenable_overhang_line(&forms, &metrics, horizontal) {
+                Some(i) => i,
+                None => return (forms, metrics),
+            }
+        };
+        forms[i] = drop_one_char(&forms[i]);
         metrics = measure_lines(face, &forms, size_pt);
     }
 }
@@ -3089,6 +3121,41 @@ mod helpers_tests {
         )
         .expect("the shortened block fits");
         assert_eq!(m.lines, vec!["WWW...".to_string()]);
+        assert!(m.width_units <= box_w + 1e-4, "{} > {box_w}", m.width_units);
+    }
+
+    /// The other side of the shared-reservation rule: the line that overruns the budget can itself
+    /// have nothing left to shed, and the line that sets the reservation can. `...` fills the box on
+    /// its own, but beside `j` the block overruns by `j`'s left overhang. The marker has no character
+    /// to drop, so shortening `j` instead keeps both lines (largest `k` whose emitted form fits).
+    #[test]
+    fn a_shared_overhang_is_shed_from_the_line_that_sets_it() {
+        let face = super::instance(400, 24.0).expect("face");
+        let marker = super::measure_lines(&face, &["..."], 24.0)[0];
+        let with_j = super::measure_lines(&face, &["...", "j"], 24.0);
+        let reserve =
+            super::block_ink_x(&with_j, HorizontalAlign::Left).reserve(HorizontalAlign::Left);
+        assert!(reserve > 0.05, "j must carry a left overhang: {reserve}");
+        // The box admits the marker alone but not the marker plus j's shared reservation.
+        let box_w = super::pt_to_units(marker.advance + reserve / 2.0, "mm");
+        let m = test_layout(
+            "...\nj",
+            &FontSize::Fixed(24.0),
+            false,
+            Alignment {
+                horizontal: HorizontalAlign::Left,
+                vertical: VerticalAlign::Top,
+            },
+            Overflow::Ellipsis,
+            (box_w, 100.0),
+        )
+        .expect("the block keeps both lines by shedding j's overhang");
+        assert_eq!(
+            m.lines,
+            vec!["...".to_string(), "...".to_string()],
+            "{:?}",
+            m.lines
+        );
         assert!(m.width_units <= box_w + 1e-4, "{} > {box_w}", m.width_units);
     }
 }
