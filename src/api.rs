@@ -164,7 +164,7 @@ fn api_router() -> Router<Arc<AppState>> {
     let router = Router::new()
         .route("/health", get(health))
         .route("/templates", get(list_templates))
-        .route("/templates/reload", post(reload_templates))
+        .route("/template-registry/reload", post(reload_templates))
         .route(
             "/templates/{id}",
             get(get_template)
@@ -333,7 +333,7 @@ pub async fn list_templates(
 
 #[utoipa::path(
     post,
-    path = "/templates/reload",
+    path = "/template-registry/reload",
     responses(
         (status = 200, description = "Templates reloaded from disk", body = ReloadResponse),
         (status = 500, description = "Failed to read the templates directory", body = ErrorResponse)

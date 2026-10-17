@@ -98,7 +98,7 @@ To use a host directory instead of the named volume, mount it at `/config` (`./c
 
 1. Back up `/config`.
 2. Pull and recreate: `docker compose pull && docker compose up -d` for the published image, or `docker compose up -d --build` after updating the checkout.
-3. Check the log. The database schema migrates on startup. A template the new version cannot load is quarantined and logged as `template failed to load`; the service still starts. Fix the file and `POST /api/templates/reload`, or edit it in the UI.
+3. Check the log. The database schema migrates on startup. A template the new version cannot load is quarantined and logged as `template failed to load`; the service still starts. Fix the file and `POST /api/template-registry/reload`, or edit it in the UI.
 
 There is no downgrade path. An older binary refuses a database migrated by a newer one and exits with `failed to open store`. Restore the backup taken before the upgrade.
 

@@ -41,7 +41,7 @@ For a local service in no-auth mode, omit `-e LABELER_TOKEN`; prints are then at
 | `create_template` | `template`, `yaml` | `POST /api/templates/{id}` with the raw YAML. An id that already exists is refused (409), never overwritten. |
 | `replace_template` | `template`, `yaml` | `PUT /api/templates/{id}` with the raw YAML. The whole file is replaced; an id that does not exist is refused (404), never created. |
 | `delete_template` | `template` | `DELETE /api/templates/{id}`. Removes the stored file and drops it from the live registry. |
-| `reload_templates` | — | `POST /api/templates/reload`. Re-reads the templates folder and replaces the live registry: valid files are served, broken ones quarantined. |
+| `reload_templates` | — | `POST /api/template-registry/reload`. Re-reads the templates folder and replaces the live registry: valid files are served, broken ones quarantined. |
 | `render_label` | `template`, `data` | `POST /api/render/label?format=png`. Returns the filled label as an inline PNG image. |
 | `list_printers` | — | `GET /api/printers`. The service's configured printers. |
 | `print_labels` | `template`, `printer`, `labels`, `start_slot?`, `chain_and_continue?` | `POST /api/print`. Sends physical print jobs for a batch of labels. |

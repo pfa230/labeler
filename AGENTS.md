@@ -74,7 +74,7 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
 
 ## Templates are visual artifacts
 
-A template that parses and renders is not proof it looks right. Render to PNG (`POST /api/render/label?format=png`, with `LABELER_NO_AUTH=true` locally), open the image, check it against intent (QR squareness, text inside the printable area, alignment, no clipping), fix and re-render (`POST /api/templates/reload`). No task may claim this check, because nothing can verify it later. Files under `tests/fixtures/templates/` are test inputs, judged by the tests that read them.
+A template that parses and renders is not proof it looks right. Render to PNG (`POST /api/render/label?format=png`, with `LABELER_NO_AUTH=true` locally), open the image, check it against intent (QR squareness, text inside the printable area, alignment, no clipping), fix and re-render (`POST /api/template-registry/reload`). No task may claim this check, because nothing can verify it later. Files under `tests/fixtures/templates/` are test inputs, judged by the tests that read them.
 
 ## Notes
 

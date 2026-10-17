@@ -207,16 +207,15 @@ fn png_image(bytes: &[u8], request: &str) -> CallToolResult {
 }
 
 /// The single path segment of a template id. The id must satisfy the service's
-/// rule; its first byte is escaped as `%HH` so the segment can never read as the
-/// static `/api/templates/reload` route, while the rest stays literal and the
-/// service still receives the original identifier.
+/// rule; every permitted character is already valid literally in a URL path
+/// segment, so the returned segment is the id unchanged.
 fn id_segment(id: &str) -> Result<String, CallToolResult> {
     if !validate_template_id_stem(id) {
         return Err(error_text(format!(
             "invalid template id '{id}': must be non-empty and match ^[a-zA-Z0-9_-]+$"
         )));
     }
-    Ok(format!("%{:02X}{}", id.as_bytes()[0], &id[1..]))
+    Ok(id.to_string())
 }
 
 impl LabelerMcp {
@@ -497,7 +496,7 @@ impl LabelerMcp {
         let body = self
             .mutate_json(
                 reqwest::Method::POST,
-                self.url("api/templates/reload"),
+                self.url("api/template-registry/reload"),
                 None,
             )
             .await?;
@@ -720,11 +719,11 @@ mod tests {
     }
 
     #[test]
-    fn valid_ids_escape_one_leading_byte_and_invalid_ids_are_refused() {
-        assert_eq!(id_segment("reload").ok().as_deref(), Some("%72eload"));
+    fn valid_ids_are_literal_and_invalid_ids_are_refused() {
+        assert_eq!(id_segment("reload").ok().as_deref(), Some("reload"));
         assert_eq!(
             id_segment("brother_24mm-qr").ok().as_deref(),
-            Some("%62rother_24mm-qr")
+            Some("brother_24mm-qr")
         );
         assert!(id_segment("").is_err());
         assert!(id_segment("../other").is_err());
@@ -733,9 +732,9 @@ mod tests {
     }
 
     #[test]
-    fn the_escaped_segment_survives_joining_it_to_the_origin() {
+    fn the_literal_segment_survives_joining_it_to_the_origin() {
         let origin = parse_origin(DEFAULT_SERVICE_ORIGIN).unwrap();
-        let url = origin.join("api/templates/%72eload/source").unwrap();
-        assert_eq!(url.path(), "/api/templates/%72eload/source");
+        let url = origin.join("api/templates/reload/source").unwrap();
+        assert_eq!(url.path(), "/api/templates/reload/source");
     }
 }

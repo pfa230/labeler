@@ -3069,7 +3069,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/templates/reload")
+                    .uri("/api/template-registry/reload")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3079,6 +3079,80 @@ layout:
         let body = json_response(response).await;
         assert_eq!(body["count"], 2);
         assert_eq!(template_count(&app).await, 2);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #428: the literal id `reload` follows the ordinary template CRUD contract. Before the route
+    /// move, `/api/templates/reload` was the registry-reload route, so a create answered with reload
+    /// counts and wrote no file. Spelling the id literally fails if that static route returns.
+    #[tokio::test]
+    async fn template_id_reload_follows_the_template_lifecycle() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/reload",
+                "POST",
+                template_yaml("reload"),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let detail = json_response(resp).await;
+        assert_eq!(detail["id"], "reload");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("reload.yaml")).unwrap(),
+            template_yaml("reload"),
+            "the create wrote reload.yaml rather than only returning reload counts"
+        );
+
+        // A repeated create is refused and leaves the stored file untouched.
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/reload",
+                "POST",
+                template_yaml_for("reload", "overwritten"),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("reload.yaml")).unwrap(),
+            template_yaml("reload"),
+            "the existing file is unchanged"
+        );
+
+        let (status, stored) = get_json(&app, "/api/templates/reload").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stored["id"], "reload");
+
+        let replaced = template_yaml_for("reload", "replaced");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/reload", "PUT", replaced.clone()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let detail = json_response(resp).await;
+        assert_eq!(detail["name"], "replaced");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("reload.yaml")).unwrap(),
+            replaced
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(delete_req("/api/templates/reload"))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!dir.join("reload.yaml").exists());
+        let (status, _) = get_json(&app, "/api/templates/reload").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3097,7 +3171,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/templates/reload")
+                    .uri("/api/template-registry/reload")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3161,7 +3235,7 @@ layout:
             .unwrap()
             .contains("undeclared parameter 'undeclared_name'"));
 
-        // 2. Reload: POST /api/templates/reload keeps valid served and bad quarantined
+        // 2. Reload: POST /api/template-registry/reload keeps valid served and bad quarantined
         let reload_body = reload(&app).await;
         assert_eq!(reload_body["count"], 1);
         assert_eq!(reload_body["broken_count"], 1);
@@ -3232,7 +3306,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/templates/reload")
+                    .uri("/api/template-registry/reload")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3257,7 +3331,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/templates/reload")
+                    .uri("/api/template-registry/reload")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3287,7 +3361,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/templates/reload")
+                    .uri("/api/template-registry/reload")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4927,6 +5001,37 @@ layout:
                 "{name} must not be an OpenAPI schema"
             );
         }
+    }
+
+    /// #428: registry reload is published at its own path and `/templates/reload` is no longer a
+    /// published operation, so the literal template id is served by the generic CRUD path.
+    #[test]
+    fn openapi_publishes_registry_reload_apart_from_template_crud() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let paths = &doc.paths.paths;
+        assert!(
+            paths
+                .get("/template-registry/reload")
+                .is_some_and(|item| item.post.is_some()),
+            "the registry reload is published: {:?}",
+            paths.keys().collect::<Vec<_>>()
+        );
+        let template = paths
+            .get("/templates/{id}")
+            .expect("the generic template CRUD path is published");
+        assert!(
+            template.get.is_some()
+                && template.put.is_some()
+                && template.post.is_some()
+                && template.delete.is_some(),
+            "/templates/{{id}} publishes the full CRUD"
+        );
+        assert!(
+            !paths.contains_key("/templates/reload"),
+            "the shadowing static path is gone: {:?}",
+            paths.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -10506,7 +10611,7 @@ mod auth_http_tests {
         let app = test_app_no_auth();
         let req = Request::builder()
             .method("POST")
-            .uri("/api/templates/reload")
+            .uri("/api/template-registry/reload")
             .header("origin", "http://evil.example")
             .body(Body::empty())
             .unwrap();
@@ -10520,7 +10625,7 @@ mod auth_http_tests {
         let app = test_app_no_auth();
         let req = Request::builder()
             .method("POST")
-            .uri("/api/templates/reload")
+            .uri("/api/template-registry/reload")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -10529,7 +10634,7 @@ mod auth_http_tests {
         let app = test_app_no_auth();
         let req = Request::builder()
             .method("POST")
-            .uri("/api/templates/reload")
+            .uri("/api/template-registry/reload")
             .header("host", "localhost")
             .header("origin", "http://evil.example")
             .body(Body::empty())

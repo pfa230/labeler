@@ -16,7 +16,7 @@ LABELER_CONFIG_DIR=./config-dev LABELER_NO_AUTH=true cargo run --bin labeler
 mkdir -p config-dev/templates
 cp catalog/tape/brother/brother_24mm.yaml catalog/sheet/avery/avery5163.yaml \
    tests/fixtures/templates/*.yaml config-dev/templates/
-curl -s -X POST localhost:8080/api/templates/reload
+curl -s -X POST localhost:8080/api/template-registry/reload
 
 # A single (tape) template renders to PNG.
 curl -s -X POST 'localhost:8080/api/render/label?format=png' \
@@ -29,7 +29,7 @@ curl -s -X POST localhost:8080/api/render \
   -d '{"template":"avery5163","labels":[{"data":{"message":"Hello"}}]}' -o out.pdf
 ```
 
-Nothing is seeded into a fresh config directory, so copy templates in yourself. After each edit, `POST /api/templates/reload` and render again. Open the image and check it against your intent: text inside the printable area, a square QR, no unexpected shrinking, nothing clipped at an edge. A `200` hides all of these.
+Nothing is seeded into a fresh config directory, so copy templates in yourself. After each edit, `POST /api/template-registry/reload` and render again. Open the image and check it against your intent: text inside the printable area, a square QR, no unexpected shrinking, nothing clipped at an edge. A `200` hides all of these.
 
 A file that fails to load does not stop the server. It is left out and listed under `broken` in `GET /api/templates`, with a message naming the offending key or item path. So is anything in `templates/` that is not a `<id>.yaml` file, such as a subfolder or a `.yml`.
 

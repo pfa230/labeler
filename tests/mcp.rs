@@ -43,16 +43,10 @@ fn find_tool<'a>(tools: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("tool {name} is published"))
 }
 
-/// The raw path segment the adapter must send for a template id: its first byte
-/// percent-escaped, the rest literal. `reload` therefore reads `%72eload` and can
-/// never be routed to the static registry-reload route.
+/// The raw path segment the adapter must send for a template id: the id
+/// unchanged, since every permitted character is literal in a URL path segment.
 fn template_path(id: &str, suffix: &str) -> String {
-    format!(
-        "/api/templates/%{:02X}{}{}",
-        id.as_bytes()[0],
-        &id[1..],
-        suffix
-    )
+    format!("/api/templates/{id}{suffix}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1538,9 +1532,9 @@ async fn the_valid_id_reload_addresses_the_template_not_the_registry_route() {
         .expect(1)
         .mount(&mock)
         .await;
-    // The static registry-reload route must never answer for the id `reload`.
+    // The registry-reload route must never answer for the id `reload`.
     wiremock::Mock::given(wiremock::matchers::method("POST"))
-        .and(wiremock::matchers::path("/api/templates/reload"))
+        .and(wiremock::matchers::path("/api/template-registry/reload"))
         .respond_with(
             wiremock::ResponseTemplate::new(200)
                 .set_body_json(json!({"count": 1, "broken_count": 0})),
@@ -2168,7 +2162,7 @@ async fn reload_returns_the_complete_json_even_with_quarantined_files() {
     let body = json!({"count": 2, "broken_count": 1, "reloaded_at": "2026-10-12T00:00:00Z"});
     let mock = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
-        .and(wiremock::matchers::path("/api/templates/reload"))
+        .and(wiremock::matchers::path("/api/template-registry/reload"))
         .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&body))
         .expect(1)
         .mount(&mock)
@@ -2198,7 +2192,7 @@ async fn a_failed_reload_preserves_the_service_error() {
     });
     let mock = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
-        .and(wiremock::matchers::path("/api/templates/reload"))
+        .and(wiremock::matchers::path("/api/template-registry/reload"))
         .respond_with(wiremock::ResponseTemplate::new(500).set_body_json(&envelope))
         .expect(1)
         .mount(&mock)
@@ -2328,7 +2322,7 @@ async fn template_mutation_redirects_are_not_followed() {
         ("POST", template_path("t", "")),
         ("PUT", template_path("t", "")),
         ("DELETE", template_path("t", "")),
-        ("POST", "/api/templates/reload".to_string()),
+        ("POST", "/api/template-registry/reload".to_string()),
     ] {
         wiremock::Mock::given(wiremock::matchers::method(method))
             .and(wiremock::matchers::path(path))
