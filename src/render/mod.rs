@@ -1860,7 +1860,7 @@ impl<'a> RenderContext<'a> {
         )?;
 
         let body = format!(
-            "#text(size: {}pt{weight_arg}{fill_arg})[#set par(leading: {leading_pt}pt)\n{body}]",
+            "#text(size: {}pt{weight_arg}{fill_arg}, overhang: false)[#set par(leading: {leading_pt}pt)\n{body}]",
             args.text_fit.font_size_pt
         );
 
@@ -1870,6 +1870,20 @@ impl<'a> RenderContext<'a> {
             crate::models::VerticalAlign::Center => 0.0,
         };
         let body = pad_block(&body, pad, args.alignment.vertical);
+
+        // The reservation the fit measured outside the advance block is emitted as an inset at the
+        // aligned edge: `left` pushes the block `l` in from the left, `right` `r` in from the right,
+        // and `center` splits the slack so it needs none.
+        let (hpad, side) = match args.alignment.horizontal {
+            crate::models::HorizontalAlign::Left => (args.text_fit.l, "left"),
+            crate::models::HorizontalAlign::Right => (args.text_fit.r, "right"),
+            crate::models::HorizontalAlign::Center => (0.0, ""),
+        };
+        let body = if hpad > 0.0 {
+            format!("#pad({side}: {hpad}pt)[{body}]")
+        } else {
+            body
+        };
 
         let inner = format!("#align({})[{body}]", typst_alignment(args.alignment));
         let top = args.pbox.y + args.pbox.h;
@@ -5857,23 +5871,17 @@ layout:
             &s[from..to]
         }
 
-        /// The first line of the one top-level item in `source` whose source holds `needle`, with
-        /// its clipped box's top and height in page points. An item runs from its `#place` line to
-        /// the next one, since a text item's body spans lines.
+        /// The first line of the text item in `source` whose emitted body holds `needle`, with its
+        /// clipped box's top and height in page points. A text item's body spans lines, and a nested
+        /// item's `#place` is inline rather than at a line start, so the item is the last `#place`
+        /// before the marker.
         fn item_box<'s>(source: &'s str, needle: &str) -> (&'s str, f64, f64) {
-            let starts: Vec<usize> = source
-                .match_indices("#place(top + left, dx: ")
-                .map(|(i, _)| i)
-                .filter(|&i| i == 0 || source.as_bytes()[i - 1] == b'\n')
-                .collect();
-            let items: Vec<&str> = starts
-                .iter()
-                .enumerate()
-                .map(|(k, &i)| &source[i..starts.get(k + 1).copied().unwrap_or(source.len())])
-                .filter(|item| item.contains(needle))
-                .collect();
-            assert_eq!(items.len(), 1, "one item holding {needle:?} in {source}");
-            let line = items[0].lines().next().expect("a line");
+            let at = source
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} in {source}"));
+            let marker = "#place(top + left, dx: ";
+            let start = source[..at].rfind(marker).expect("a place before the item");
+            let line = source[start..].lines().next().expect("a line");
             assert!(line.contains("clip: true"), "an unclipped item: {line}");
             let top = length_pt(between(line, "dy: ", ")[#box("));
             let height = length_pt(between(line, ", height: ", ", clip: true)"));
@@ -5905,17 +5913,20 @@ layout:
         }
 
         /// Containment as the layout-sizing spec defines it (task 6.1). The label is rendered twice
-        /// from the same source, once as emitted and once with only the item's `clip: true` removed.
-        /// Both pages grow by one inch on every side, which moves the item's box clear of every label
-        /// edge by exactly `DPI` raster rows, so the text keeps the raster phase it has when emitted.
-        /// Whatever the unclipped render adds in a row wholly outside the item's box is ink the clip
-        /// cut; judging that difference rather than all ink keeps other items out of the verdict.
+        /// from the same source, once as emitted and once with every `clip: true` removed, so a
+        /// capped container's enclosing clip is lifted with the item's own. Both pages grow by one
+        /// inch on every side, which moves the item's box clear of every label edge by exactly `DPI`
+        /// raster pixels, so the text keeps the raster phase it has when emitted. Whatever the
+        /// unclipped render adds in a row or column wholly outside the item's box is ink a clip cut;
+        /// judging that difference rather than all ink keeps other items out of the verdict.
         fn containment(
             source: &str,
             files: &[(String, Vec<u8>)],
             needle: &str,
         ) -> Result<(), String> {
             let (line, top, height) = item_box(source, needle);
+            let dx = length_pt(between(line, "dx: ", ", dy: "));
+            let width = length_pt(between(line, "#box(width: ", ", height: "));
             let page = source
                 .lines()
                 .find(|l| l.starts_with("#set page("))
@@ -5931,13 +5942,13 @@ layout:
                 &caps[1], &caps[2]
             );
             let clipped = source.replacen(page, &grown, 1);
-            let unclipped =
-                clipped.replacen(line, &line.replacen("clip: true", "clip: false", 1), 1);
-            assert_ne!(clipped, unclipped, "the item's clip was not removed");
+            let unclipped = clipped.replace("clip: true", "clip: false");
+            assert_ne!(clipped, unclipped, "no clip was removed");
             let (clipped, unclipped) = (raster(clipped, files), raster(unclipped, files));
 
             let scale = f64::from(DPI) / 72.0;
             let (top_px, bottom_px) = ((72.0 + top) * scale, (72.0 + top + height) * scale);
+            let (left_px, right_px) = ((72.0 + dx) * scale, (72.0 + dx + width) * scale);
             let stride = clipped.0 * 4;
             for (y, (a, b)) in clipped
                 .1
@@ -5953,6 +5964,16 @@ layout:
                         "the clip cut ink in raster row {y}, wholly {side} the box ({top_px:.2}..{bottom_px:.2})"
                     ));
                 }
+                for x in 0..clipped.0 {
+                    let left_of = (x + 1) as f64 <= left_px;
+                    let right_of = x as f64 >= right_px;
+                    if (left_of || right_of) && a[x * 4..x * 4 + 4] != b[x * 4..x * 4 + 4] {
+                        let side = if left_of { "left of" } else { "right of" };
+                        return Err(format!(
+                            "the clip cut ink in raster column {x}, wholly {side} the box ({left_px:.2}..{right_px:.2})"
+                        ));
+                    }
+                }
             }
             Ok(())
         }
@@ -5963,7 +5984,8 @@ layout:
         }
 
         /// One glyph as Typst laid it out, in page points with y down: the baseline of the nearest
-        /// enclosing frame that has one, and the top and bottom of its outline. Typst inlines each
+        /// enclosing frame that has one, the top and bottom of its outline, and its horizontal
+        /// interval relative to the item's origin, whose x it also carries. Typst inlines each
         /// line frame into its paragraph's, which keeps the first line's baseline, so the baseline
         /// is the glyph's own only in a one-line block; the tests read it from nothing else.
         #[derive(Debug, Clone, Copy)]
@@ -5974,6 +5996,13 @@ layout:
             item: f64,
             top: f64,
             bottom: f64,
+            /// The text item's origin x and this glyph's ink interval in page points. The interval
+            /// is the advance's origin for a left-to-right line.
+            origin_x: f64,
+            x_left: f64,
+            x_right: f64,
+            /// The pen after this glyph, in page points: the line's advance is the largest.
+            pen_end: f64,
         }
 
         /// Walk the frame tree, accumulating every group transform and item position down to each
@@ -5999,27 +6028,45 @@ layout:
                     ),
                     FrameItem::Text(text) => {
                         let baseline = baseline.expect("a text item sits in a line frame");
+                        let origin_x = Point::new(pos.x, pos.y).transform(ts).x.to_pt();
                         let mut x = pos.x;
                         for glyph in &text.glyphs {
                             let gx = x + glyph.x_offset.at(text.size);
                             x += glyph.x_advance.at(text.size);
-                            let Some((bottom, top)) = crate::render::helpers::glyph_ink(
+                            let Some(outline) = crate::render::helpers::glyph_ink(
                                 text.font.ttf(),
                                 ttf_parser::GlyphId(glyph.id),
                             ) else {
                                 continue;
                             };
-                            let y = |units: f32| {
-                                Point::new(gx, pos.y - text.font.to_em(units).at(text.size))
-                                    .transform(ts)
-                                    .y
-                                    .to_pt()
+                            let at = |dx: typst::layout::Abs, dy: typst::layout::Abs| {
+                                Point::new(gx + dx, pos.y - dy).transform(ts)
+                            };
+                            let x_at = |units: f32| {
+                                at(
+                                    text.font.to_em(units).at(text.size),
+                                    typst::layout::Abs::zero(),
+                                )
+                                .x
+                                .to_pt()
+                            };
+                            let y_at = |units: f32| {
+                                at(
+                                    typst::layout::Abs::zero(),
+                                    text.font.to_em(units).at(text.size),
+                                )
+                                .y
+                                .to_pt()
                             };
                             out.push(LaidGlyph {
                                 baseline,
-                                item: y(0.0),
-                                top: y(top),
-                                bottom: y(bottom),
+                                item: y_at(0.0),
+                                top: y_at(outline.y_max),
+                                bottom: y_at(outline.y_min),
+                                origin_x,
+                                x_left: x_at(outline.x_min),
+                                x_right: x_at(outline.x_max),
+                                pen_end: Point::new(x, pos.y).transform(ts).x.to_pt(),
                             });
                         }
                     }
@@ -6052,6 +6099,22 @@ layout:
                 }
             }
             out
+        }
+
+        /// A one-line block's shaped advance and ink interval in page points, relative to the text
+        /// item's origin, as Typst laid it out.
+        fn typst_line_metrics(glyphs: &[LaidGlyph]) -> (f64, f64, f64) {
+            let origin = glyphs[0].origin_x;
+            let advance = glyphs.iter().map(|g| g.pen_end).fold(f64::MIN, f64::max) - origin;
+            let left = glyphs
+                .iter()
+                .map(|g| g.x_left - origin)
+                .fold(f64::MAX, f64::min);
+            let right = glyphs
+                .iter()
+                .map(|g| g.x_right - origin)
+                .fold(f64::MIN, f64::max);
+            (advance, left, right)
         }
 
         fn row(pt: f64) -> i64 {
@@ -6200,6 +6263,52 @@ layout:
                     measured.fall
                 );
             }
+        }
+
+        /// The shaped horizontal geometry the fitter derives matches what Typst actually emits,
+        /// including the positive-kerning `W` run (whose shaped advance exceeds the character sum)
+        /// and the negative-bearing `j` (whose ink starts left of its advance origin).
+        #[test]
+        fn the_shaped_horizontal_geometry_matches_typsts_frame() {
+            let face = crate::render::helpers::instance(400, 20.0).expect("face");
+            for value in [
+                "WWWWWWWWWWWW",
+                "j",
+                "j...",
+                "Widget 42",
+                "Hg",
+                "...",
+                "Égypt",
+                "HELIX",
+            ] {
+                let (advance, left, right) =
+                    typst_line_metrics(&laid_out(&label(value, "top", "20", "content", "")));
+                let m = crate::render::helpers::measure_lines(&face, &[value], 20.0)[0];
+                assert!(
+                    (f64::from(m.advance) - advance).abs() <= 0.01
+                        && (f64::from(m.left) - left).abs() <= 0.01
+                        && (f64::from(m.right) - right).abs() <= 0.01,
+                    "{value:?}: measured advance {} left {} right {}, Typst laid out {advance} {left} {right}",
+                    m.advance,
+                    m.left,
+                    m.right
+                );
+            }
+
+            // The oracle distinguishes a shaped advance from the old character sum.
+            let w = "WWWWWWWWWWWW";
+            let shaped = crate::render::helpers::measure_lines(&face, &[w], 20.0)[0].advance;
+            let summed = crate::render::helpers::text_width_for_test(400, 20.0, w);
+            assert!(
+                shaped > summed,
+                "the W run's shaped advance {shaped} must exceed the character sum {summed}"
+            );
+            let j = crate::render::helpers::measure_lines(&face, &["j"], 20.0)[0];
+            assert!(
+                j.left < -0.01,
+                "j's ink starts {} pt left of its advance origin",
+                j.left
+            );
         }
 
         /// The calibration can tell a segmented measurement from a whole-line one: shaping `αH́` as
@@ -6633,7 +6742,7 @@ layout:
         /// source captured on the commit before #392 (`bf6d58a`).
         #[test]
         fn a_centred_item_with_headroom_is_unaffected() {
-            const BEFORE_392: &str = "#set page(width: 120mm, height: 80mm, margin: 0mm)\n#set text(font: \"Inter\")\n#place(top + left, dx: 10mm, dy: 50mm)[#box(width: 100mm, height: 20mm, clip: true)[#align(horizon + left)[#text(size: 14pt)[#set par(leading: 6.6144543pt)\n#text(\"Widget\u{a0}42\")]]]]\n";
+            const BEFORE_392: &str = "#set page(width: 120mm, height: 80mm, margin: 0mm)\n#set text(font: \"Inter\")\n#place(top + left, dx: 10mm, dy: 50mm)[#box(width: 100mm, height: 20mm, clip: true)[#align(horizon + left)[#text(size: 14pt, overhang: false)[#set par(leading: 6.6144543pt)\n#text(\"Widget\u{a0}42\")]]]]\n";
             let t = label("Widget 42", "center", "{ min: 8, max: 14 }", "20", "");
             assert_eq!(compiled(&t).expect("compile").source, BEFORE_392);
         }
@@ -6760,6 +6869,154 @@ layout:
                 compiled(&t).expect("a two-line run fits although the first line alone does not");
             assert_eq!(emitted_lines(&c.source), ["g\u{0323}", "HELIX..."]);
             assert_contained(&t);
+        }
+
+        // ---- 10. Horizontal ink is contained by content-sized boxes ----
+
+        /// The first and last columns of the rendered label carrying ink, and its width in pixels.
+        fn ink_cols(t: &TemplateContent) -> (u32, u32, u32) {
+            let png = crate::render::render_single_label(
+                t,
+                &HashMap::new(),
+                &no_settings(),
+                &no_datetime(),
+            )
+            .expect("render label");
+            let img = image::load_from_memory(&png).expect("decode").to_luma8();
+            let inked: Vec<u32> = (0..img.width())
+                .filter(|&x| (0..img.height()).any(|y| img.get_pixel(x, y).0[0] < 128))
+                .collect();
+            (inked[0], inked[inked.len() - 1], img.width())
+        }
+
+        /// Replace a horizontal `#pad(side: Xpt)` inset's value with zero, restoring the pre-#257
+        /// behavior of emitting the advance block at the box edge.
+        fn zero_pad(source: &str, side: &str) -> String {
+            let key = format!("#pad({side}: ");
+            let at = source
+                .find(&key)
+                .unwrap_or_else(|| panic!("no {side} pad in {source}"))
+                + key.len();
+            let end = source[at..].find("pt)").expect("a pt value") + at;
+            format!("{}0{}", &source[..at], &source[end..])
+        }
+
+        /// Narrow the item's clipped box by `pt`, restoring the under-measurement the old character
+        /// sum caused.
+        fn shrink_box(source: &str, pt: f64) -> String {
+            let key = "#box(width: ";
+            let at = source.find(key).expect("a box") + key.len();
+            let end = source[at..].find(", height: ").expect("a height") + at;
+            let width = length_pt(&source[at..end]);
+            format!(
+                "{}{:.9}mm{}",
+                &source[..at],
+                (width - pt) * 25.4 / 72.0,
+                &source[end..]
+            )
+        }
+
+        /// #257's first context: a dynamic-width label whose content-width line of repeated `W` is
+        /// shortened. Its width is the emitted line's shaped advance plus reservation, and the final
+        /// ink clears the last raster column because the shaped advance exceeds the outline.
+        #[test]
+        fn a_shaped_width_dynamic_label_contains_its_shortened_w_run() {
+            let value = serde_json::to_string(&"W".repeat(40)).expect("json");
+            let yaml = format!(
+                "name: W Run\nunit: mm\ndpi: 300\nformat:\n  type: single\n  width: {{ min: 10, max: 100 }}\n  height: 20\nlayout:\n  - type: text\n    value: {value}\n    at: [0, 0]\n    size: [content, content]\n    font_size: 24\n    alignment: {{ horizontal: left, vertical: top }}\n"
+            );
+            let t = parse_and_validate(&yaml).expect("valid template");
+            let c = compiled(&t).expect("compile");
+            assert!(
+                emitted_lines(&c.source)[0].ends_with("..."),
+                "expected a shortened W run: {}",
+                c.source
+            );
+            containment(&c.source, &c.files, "#text(\"").expect("the emitted box contains its ink");
+
+            let (_, last, width) = ink_cols(&t);
+            assert!(
+                last + 1 < width,
+                "final ink reaches column {last} of {width}"
+            );
+
+            // Restoring the old character-sum width leaves the box too narrow for the shaped ink.
+            containment(&shrink_box(&c.source, 5.0), &c.files, "#text(\"")
+                .expect_err("a box under the shaped width cuts the W run");
+        }
+
+        /// #257's second context: content-width text containing `j` in a capped content-width
+        /// container. The container grows by the measured left overhang, so the bearing is inset
+        /// inside the box rather than cut by the container's clip.
+        #[test]
+        fn a_capped_container_preserves_negative_bearing_ink() {
+            let yaml = r#"
+name: Capped J
+unit: mm
+dpi: 300
+format: { type: single, width: 60, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [content, 20]
+    max_w: 20
+    items:
+      - type: text
+        value: "j"
+        at: [0, 0]
+        size: [fill, 20]
+        font_size: 24
+        alignment: { horizontal: left, vertical: top }
+"#;
+            let t = parse_and_validate(yaml).expect("valid template");
+            let c = compiled(&t).expect("compile");
+            containment(&c.source, &c.files, "#text(\"")
+                .expect("the capped container contains j's ink");
+
+            let sabotaged = zero_pad(&c.source, "left");
+            containment(&sabotaged, &c.files, "#text(\"")
+                .expect_err("without the left inset the bearing is cut");
+        }
+
+        /// #257's third context: centered content-width text capped so an overflowing value is
+        /// shortened. With optical overhang off the final dot sits inside the box; the old overhang
+        /// pushes it past.
+        #[test]
+        fn a_centered_shortened_line_preserves_its_last_dot() {
+            let value = serde_json::to_string(&"W".repeat(30)).expect("json");
+            let yaml = format!(
+                "name: Centred Overflow\nunit: mm\ndpi: 300\nformat: {{ type: single, width: 100, height: 20 }}\nlayout:\n  - type: text\n    value: {value}\n    at: [10, 0]\n    size: [content, content]\n    max_w: 30\n    font_size: 24\n    alignment: {{ horizontal: center, vertical: top }}\n"
+            );
+            let t = parse_and_validate(&yaml).expect("valid template");
+            let c = compiled(&t).expect("compile");
+            assert!(emitted_lines(&c.source)[0].ends_with("..."), "{}", c.source);
+            containment(&c.source, &c.files, "#text(\"")
+                .expect("the centred box contains its marker");
+
+            let sabotaged = c.source.replace("overhang: false", "overhang: true");
+            containment(&sabotaged, &c.files, "#text(\"")
+                .expect_err("with optical overhang the final dot protrudes");
+        }
+
+        /// A content-sized label ending in a narrow glyph (`i`) and in a wide one (`W`) each keeps
+        /// its final ink clear of the last raster column.
+        #[test]
+        fn narrow_and_wide_ending_glyphs_clear_the_last_raster_column() {
+            for value in ["HHi", "HHW"] {
+                let v = serde_json::to_string(value).expect("json");
+                let yaml = format!(
+                    "name: Ending\nunit: mm\ndpi: 300\nformat:\n  type: single\n  width: {{ min: 10, max: 100 }}\n  height: 20\nlayout:\n  - type: text\n    value: {v}\n    at: [0, 0]\n    size: [content, content]\n    font_size: 24\n    alignment: {{ horizontal: left, vertical: top }}\n"
+                );
+                let t = parse_and_validate(&yaml).expect("valid template");
+                let c = compiled(&t).expect("compile");
+                containment(&c.source, &c.files, "#text(\"")
+                    .unwrap_or_else(|e| panic!("{value}: {e}"));
+                let (_, last, width) = ink_cols(&t);
+                assert!(
+                    last + 1 < width,
+                    "{value}: final ink reaches column {last} of {width}"
+                );
+            }
         }
     }
 
@@ -10378,7 +10635,7 @@ layout:
             "container box must carry rgb(\"#ff0000\"), got: {src}"
         );
         assert!(
-            src.contains("#text(size: 10pt, fill: rgb(\"#ff0000\"))"),
+            src.contains("#text(size: 10pt, fill: rgb(\"#ff0000\"), overhang: false)"),
             "text must carry rgb(\"#ff0000\"), got: {src}"
         );
 

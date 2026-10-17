@@ -657,7 +657,7 @@ pub enum ErrorCorrection {
     H,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Copy, Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HorizontalAlign {
     #[default]

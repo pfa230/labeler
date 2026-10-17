@@ -414,16 +414,17 @@ pub(super) fn instance(weight: u16, size_pt: f32) -> Result<rustybuzz::Face<'sta
 }
 
 fn break_lines(
-    face: &ttf_parser::Face,
+    face: &rustybuzz::Face<'_>,
     segments: &[&str],
     wrap: bool,
     size: f32,
     width_pt: f32,
+    horizontal: HorizontalAlign,
 ) -> Vec<String> {
     if wrap {
         segments
             .iter()
-            .flat_map(|seg| wrap_text(face, seg, size, width_pt))
+            .flat_map(|seg| wrap_text(face, seg, size, width_pt, horizontal))
             .collect()
     } else {
         segments.iter().map(|s| (*s).to_string()).collect()
@@ -440,46 +441,72 @@ fn fits_height(needed_pt: f32, height_pt: f32) -> bool {
 
 /// The width half of the same judgement, shared by the fit and the line budget so a line the fit
 /// accepts as it stands is never shortened by the budget.
-fn fits_width(face: &ttf_parser::Face, line: &str, size_pt: f32, width_pt: f32) -> bool {
-    text_width(face, line, size_pt) <= width_pt + FIT_EPS_PT
+fn fits_width(needed_pt: f32, width_pt: f32) -> bool {
+    needed_pt <= width_pt + FIT_EPS_PT
 }
 
-/// A block of lines judged against its box at one size.
+/// Whether one line judged on its own fits `width_pt`, from the same shaped geometry emission uses.
+/// Wrapping and ellipsis consult this; the block fit judges the lines together.
+fn line_fits_width(
+    face: &rustybuzz::Face<'_>,
+    line: &str,
+    size_pt: f32,
+    width_pt: f32,
+    horizontal: HorizontalAlign,
+) -> bool {
+    measure_lines(face, &[line], size_pt)
+        .first()
+        .is_none_or(|m| line_metrics_fit(m, width_pt, horizontal))
+}
+
+/// A block of lines judged against its box at one size: the shaped lines it was judged on, and the
+/// verdicts for each axis, so the overflow path can reuse the same measurement.
 struct Judgement {
+    metrics: Vec<LineMetrics>,
     ink: BlockInk,
-    fits: bool,
+    ink_x: BlockInkX,
+    metric_width: f32,
+    width_fits: bool,
+    height_fits: bool,
 }
 
-/// Judge `lines` as broken. `None` when they cannot fit whatever their ink: a line is over-wide, or
-/// the metric block alone overflows the height. Nothing is shaped then, which is what keeps a
-/// ten-thousand-line value from being measured when its metric block already says no (Decision 4).
+impl Judgement {
+    fn fits(&self) -> bool {
+        self.width_fits && self.height_fits
+    }
+}
+
+/// Judge `lines` as broken. `None` when the metric block alone overflows the height: nothing is
+/// shaped then, which is what keeps a ten-thousand-line value from being measured when its metric
+/// block already says no (Decision 4). Otherwise the lines are shaped once, and the width and height
+/// verdicts are read from that single measurement.
 fn judge_lines(
     face: &rustybuzz::Face<'_>,
     lines: &[String],
     size_pt: f32,
     line_spacing: Option<f32>,
     bounds_pt: (f32, f32),
-    vertical: VerticalAlign,
+    alignment: &Alignment,
 ) -> Option<Judgement> {
     let (width_pt, height_pt) = bounds_pt;
-    if !lines
-        .iter()
-        .all(|line| fits_width(face, line, size_pt, width_pt))
-    {
-        return None;
-    }
     let metric_h = metric_block_height(face, size_pt, lines.len(), line_spacing);
     if !fits_height(metric_h, height_pt) {
         return None;
     }
+    let metrics = measure_lines(face, lines, size_pt);
     let pitch = line_pitch(size_pt, resolve_line_spacing(line_spacing));
-    let ink = block_ink(
-        &line_inks(face, lines, size_pt),
-        cap_height(face, size_pt),
-        pitch,
-    );
-    let fits = fits_height(metric_h + ink.reserve(vertical), height_pt);
-    Some(Judgement { ink, fits })
+    let cap = cap_height(face, size_pt);
+    let ink = block_ink(&metrics, cap, pitch);
+    let ink_x = block_ink_x(&metrics, alignment.horizontal);
+    let metric_width = metric_width(&metrics);
+    Some(Judgement {
+        width_fits: fits_width(metric_width + ink_x.reserve(alignment.horizontal), width_pt),
+        height_fits: fits_height(metric_h + ink.reserve(alignment.vertical), height_pt),
+        ink,
+        ink_x,
+        metric_width,
+        metrics,
+    })
 }
 
 fn text_fits(
@@ -489,10 +516,17 @@ fn text_fits(
     size_pt: f32,
     line_spacing: Option<f32>,
     bounds_pt: (f32, f32),
-    vertical: VerticalAlign,
+    alignment: &Alignment,
 ) -> bool {
-    let lines = break_lines(face, segments, wrap, size_pt, bounds_pt.0);
-    judge_lines(face, &lines, size_pt, line_spacing, bounds_pt, vertical).is_some_and(|j| j.fits)
+    let lines = break_lines(
+        face,
+        segments,
+        wrap,
+        size_pt,
+        bounds_pt.0,
+        alignment.horizontal,
+    );
+    judge_lines(face, &lines, size_pt, line_spacing, bounds_pt, alignment).is_some_and(|j| j.fits())
 }
 
 /// Largest font in [min_size, max_size] (0.5pt steps) at which `text` fits the box, else min_size.
@@ -501,7 +535,7 @@ pub(super) fn largest_fitting_font(
     wrap: bool,
     weight: u16,
     line_spacing: Option<f32>,
-    vertical: VerticalAlign,
+    alignment: &Alignment,
     range: (f32, f32),
     fit: FitBox,
 ) -> f32 {
@@ -525,7 +559,7 @@ pub(super) fn largest_fitting_font(
             size,
             line_spacing,
             (width_pt, height_pt),
-            vertical,
+            alignment,
         ) {
             return size;
         }
@@ -545,6 +579,11 @@ pub struct TextFit {
     /// what `top` and `bottom` inset by, measured on the lines in `lines`.
     pub a: f32,
     pub d: f32,
+    /// The emitted block's outer ink left and right of its metric box, in points: what a `left`
+    /// alignment insets by on the left and a `right` alignment on the right, measured on the lines
+    /// in `lines`.
+    pub l: f32,
+    pub r: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -568,7 +607,7 @@ pub(super) fn layout_text(
 
     let width_pt = units_to_pt(box_size.0, unit);
     let height_pt = units_to_pt(box_size.1, unit);
-    let vertical = item.alignment.vertical;
+    let alignment = item.alignment;
 
     // Step 1: Break (Segmentation)
     let normalized = item.raw_text.replace("\r\n", "\n");
@@ -583,7 +622,7 @@ pub(super) fn layout_text(
                 item.wrap,
                 weight,
                 item.line_spacing,
-                vertical,
+                &alignment,
                 (*min, *max),
                 FitBox {
                     width_units: box_size.0,
@@ -596,20 +635,25 @@ pub(super) fn layout_text(
     };
 
     // Step 3: Break & Overflow at chosen_size
-    let raw_lines = break_lines(&face, &segments, item.wrap, chosen_size, width_pt);
+    let raw_lines = break_lines(
+        &face,
+        &segments,
+        item.wrap,
+        chosen_size,
+        width_pt,
+        alignment.horizontal,
+    );
     let judged = judge_lines(
         &face,
         &raw_lines,
         chosen_size,
         item.line_spacing,
         (width_pt, height_pt),
-        vertical,
+        &alignment,
     );
 
-    let (emitted_raw, ink) = match judged {
-        Some(Judgement {
-            fits: true, ink, ..
-        }) => (raw_lines, ink),
+    let (emitted_raw, ink, ink_x, metric_w) = match judged {
+        Some(j) if j.fits() => (raw_lines, j.ink, j.ink_x, j.metric_width),
         judged => match item.overflow {
             Overflow::Fail => {
                 return Err(AppError::unsupported_layout_item(
@@ -618,8 +662,7 @@ pub(super) fn layout_text(
                 ));
             }
             Overflow::Ellipsis => {
-                let ellipsis_width = text_width(&face, ELLIPSIS, chosen_size);
-                if width_pt < ellipsis_width {
+                if !line_fits_width(&face, ELLIPSIS, chosen_size, width_pt, alignment.horizontal) {
                     return Err(AppError::unsupported_layout_item(
                         Reason::TextDoesNotFit,
                         format!(
@@ -631,11 +674,11 @@ pub(super) fn layout_text(
                 line_budget(
                     &face,
                     &raw_lines,
-                    judged.is_some(),
+                    judged,
                     chosen_size,
-                    line_pitch(chosen_size, resolve_line_spacing(item.line_spacing)),
+                    item.line_spacing,
                     (width_pt, height_pt),
-                    vertical,
+                    &alignment,
                 )
                 .ok_or_else(|| {
                     AppError::unsupported_layout_item(
@@ -656,15 +699,12 @@ pub(super) fn layout_text(
         0.0
     } else {
         metric_block_height(&face, chosen_size, emitted_count, item.line_spacing)
-            + ink.reserve(vertical)
+            + ink.reserve(alignment.vertical)
     };
-    let max_w_pt = emitted_raw
-        .iter()
-        .map(|l| text_width(&face, l, chosen_size))
-        .fold(0.0_f32, f32::max);
+    let intrinsic_w_pt = metric_w + ink_x.reserve(alignment.horizontal);
 
     let height_units = pt_to_units(block_h_pt, unit);
-    let width_units = pt_to_units(max_w_pt, unit);
+    let width_units = pt_to_units(intrinsic_w_pt, unit);
 
     let lines = emitted_raw
         .iter()
@@ -679,6 +719,8 @@ pub(super) fn layout_text(
         line_spacing: item.line_spacing,
         a: ink.a,
         d: ink.d,
+        l: ink_x.l,
+        r: ink_x.r,
     })
 }
 
@@ -687,38 +729,51 @@ const ELLIPSIS: &str = "...";
 
 /// Shorten `line` until it and the marker fit in `width_pt`, then append the marker. Callers have
 /// already refused a box narrower than the marker itself, so the result always fits.
-fn ellipsize(face: &ttf_parser::Face, line: &str, size: f32, width_pt: f32) -> String {
+fn ellipsize(
+    face: &rustybuzz::Face<'_>,
+    line: &str,
+    size: f32,
+    width_pt: f32,
+    horizontal: HorizontalAlign,
+) -> String {
     let mut out = line.to_string();
-    while !out.is_empty() && text_width(face, &format!("{out}{ELLIPSIS}"), size) > width_pt {
+    while !out.is_empty()
+        && !line_fits_width(
+            face,
+            &format!("{out}{ELLIPSIS}"),
+            size,
+            width_pt,
+            horizontal,
+        )
+    {
         out.pop();
     }
     format!("{out}{ELLIPSIS}")
 }
 
-fn wrap_text(face: &ttf_parser::Face, segment: &str, size: f32, width_pt: f32) -> Vec<String> {
+fn wrap_text(
+    face: &rustybuzz::Face<'_>,
+    segment: &str,
+    size: f32,
+    width_pt: f32,
+    horizontal: HorizontalAlign,
+) -> Vec<String> {
     if segment.trim().is_empty() {
         return vec![String::new()];
     }
     let mut lines = Vec::new();
-    let space_width = text_width(face, " ", size);
     let mut current = String::new();
-    let mut current_width = 0.0;
     for word in segment.split_whitespace() {
-        let word_width = text_width(face, word, size);
         if current.is_empty() {
             current.push_str(word);
-            current_width = word_width;
             continue;
         }
-
-        if current_width + space_width + word_width <= width_pt {
-            current.push(' ');
-            current.push_str(word);
-            current_width += space_width + word_width;
+        let candidate = format!("{current} {word}");
+        if line_fits_width(face, &candidate, size, width_pt, horizontal) {
+            current = candidate;
         } else {
             lines.push(current);
             current = word.to_string();
-            current_width = word_width;
         }
     }
     if !current.is_empty() {
@@ -730,6 +785,7 @@ fn wrap_text(face: &ttf_parser::Face, segment: &str, size: f32, width_pt: f32) -
     lines
 }
 
+#[cfg(test)]
 fn text_width(face: &ttf_parser::Face, text: &str, size: f32) -> f32 {
     let upem = f32::from(face.units_per_em());
     text.chars()
@@ -831,28 +887,110 @@ fn baseline(cap: f32, pitch: f32, i: usize) -> f32 {
     cap + (i as f32 - 1.0) * pitch
 }
 
-fn block_ink(inks: &[Option<LineInk>], cap: f32, pitch: f32) -> BlockInk {
-    inks.iter()
+fn block_ink(metrics: &[LineMetrics], cap: f32, pitch: f32) -> BlockInk {
+    metrics
+        .iter()
         .enumerate()
-        .fold(InkExtent::default(), |ext, (idx, ink)| {
-            ext.with_line(*ink, baseline(cap, pitch, idx + 1))
+        .fold(InkExtent::default(), |ext, (idx, m)| {
+            ext.with_line(m.ink, baseline(cap, pitch, idx + 1))
         })
-        .block(baseline(cap, pitch, inks.len().max(1)))
+        .block(baseline(cap, pitch, metrics.len().max(1)))
 }
 
-/// Each line's ink as Typst draws the block (design Decision 2), in order. Typst collects an
-/// item's lines as one paragraph, joined by `\n` (`typst-layout` `src/inline/collect.rs`), runs
-/// BiDi and script segmentation over the whole of it, shapes each run as one buffer, and only then
-/// cuts it into lines, so a line's glyphs can depend on its neighbours: a run of characters of no
-/// specific script takes the script of the first line after it that has one. This reproduces that
-/// pipeline rather than shaping lines apart. `None` for a line that draws no ink.
-pub(super) fn line_inks(
+/// The widest shaped advance in a block: the horizontal metric block the text is positioned in.
+fn metric_width(metrics: &[LineMetrics]) -> f32 {
+    metrics.iter().map(|m| m.advance).fold(0.0, f32::max)
+}
+
+/// A block's horizontal outer ink: `l` left of its metric box and `r` right of it, in points, each
+/// floored at zero. Only lines that draw ink contribute.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct BlockInkX {
+    pub l: f32,
+    pub r: f32,
+}
+
+impl BlockInkX {
+    /// What the fit holds back for this ink, per horizontal alignment. `left` and `right` inset the
+    /// aligned edge and push the far edge's ink the same way, so they need both; `center` splits the
+    /// slack evenly, so each side must absorb its own ink alone.
+    pub(super) fn reserve(self, horizontal: HorizontalAlign) -> f32 {
+        match horizontal {
+            HorizontalAlign::Left | HorizontalAlign::Right => self.l + self.r,
+            HorizontalAlign::Center => 2.0 * self.l.max(self.r),
+        }
+    }
+}
+
+/// A block's horizontal outer ink over the lines positioned by `horizontal`: each line's advance box
+/// is placed at `x_i` inside the metric width, and its ink interval is read relative to that origin.
+fn block_ink_x(metrics: &[LineMetrics], horizontal: HorizontalAlign) -> BlockInkX {
+    let metric_width = metric_width(metrics);
+    let mut l = 0.0f32;
+    let mut r = 0.0f32;
+    for m in metrics.iter().filter(|m| m.ink.is_some()) {
+        let x = match horizontal {
+            HorizontalAlign::Left => 0.0,
+            HorizontalAlign::Center => (metric_width - m.advance) / 2.0,
+            HorizontalAlign::Right => metric_width - m.advance,
+        };
+        l = l.max(-(x + m.left));
+        r = r.max(x + m.right - metric_width);
+    }
+    BlockInkX {
+        l: l.max(0.0),
+        r: r.max(0.0),
+    }
+}
+
+/// Whether one line judged on its own fits `width_pt` under the horizontal reservation for its
+/// alignment. A single line's advance box sits at its own origin, so only its outer ink is reserved.
+fn line_metrics_fit(m: &LineMetrics, width_pt: f32, horizontal: HorizontalAlign) -> bool {
+    let l = (-m.left).max(0.0);
+    let r = (m.right - m.advance).max(0.0);
+    let reserve = match horizontal {
+        HorizontalAlign::Left | HorizontalAlign::Right => l + r,
+        HorizontalAlign::Center => 2.0 * l.max(r),
+    };
+    m.advance + reserve <= width_pt + FIT_EPS_PT
+}
+
+/// One line's shaped geometry, in points: its vertical ink (`None` when it draws none), its shaped
+/// advance, and the horizontal interval its ink occupies relative to the advance's origin. The
+/// horizontal bounds are meaningless when `ink` is `None` and are left at zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct LineMetrics {
+    pub ink: Option<LineInk>,
+    pub advance: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
+impl LineMetrics {
+    fn empty() -> Self {
+        LineMetrics {
+            ink: None,
+            advance: 0.0,
+            left: 0.0,
+            right: 0.0,
+        }
+    }
+}
+
+/// Each line's shaped geometry as Typst draws the block (design Decision 2), in order. Typst
+/// collects an item's lines as one paragraph, joined by `\n` (`typst-layout` `src/inline/collect.rs`),
+/// runs BiDi and script segmentation over the whole of it, shapes each run as one buffer, and only
+/// then cuts it into lines, so a line's glyphs can depend on its neighbours: a run of characters of
+/// no specific script takes the script of the first line after it that has one. This reproduces that
+/// pipeline rather than shaping lines apart. A line that draws no ink contributes its advance and no
+/// ink interval.
+pub(super) fn measure_lines(
     face: &rustybuzz::Face<'_>,
     lines: &[impl AsRef<str>],
     size_pt: f32,
-) -> Vec<Option<LineInk>> {
+) -> Vec<LineMetrics> {
     if lines.iter().all(|line| line.as_ref().is_empty()) {
-        return vec![None; lines.len()];
+        return vec![LineMetrics::empty(); lines.len()];
     }
     #[cfg(test)]
     SHAPED_LINES.with(|count| {
@@ -867,7 +1005,7 @@ pub(super) fn line_inks(
     let scale = size_pt / face.units_per_em() as f32;
     let mut first_run = 0;
     let mut start = 0;
-    let mut inks = Vec::with_capacity(forms.len());
+    let mut out = Vec::with_capacity(forms.len());
     for form in &forms {
         // A mandatory break's line runs up to its `\n`, which is trimmed before shaping
         // (`linebreak.rs` `Breakpoint::trim`, `line.rs` `collect_range`).
@@ -876,7 +1014,12 @@ pub(super) fn line_inks(
         while runs.get(first_run).is_some_and(|run| run.end <= line.start) {
             first_run += 1;
         }
-        let mut extent: Option<(f32, f32)> = None;
+        let mut pen = 0.0f32;
+        let mut advance = 0.0f32;
+        let mut x_min = f32::INFINITY;
+        let mut x_max = f32::NEG_INFINITY;
+        let mut y_min = f32::INFINITY;
+        let mut y_max = f32::NEG_INFINITY;
         for run in runs[first_run..]
             .iter()
             .take_while(|run| run.start < line.end)
@@ -896,16 +1039,43 @@ pub(super) fn line_inks(
                 reshaped = shape_run(face, &text, sliced, run.ltr);
                 &reshaped.glyphs[..]
             };
-            for (bottom, top) in glyphs.iter().filter_map(|g| g.ink) {
-                extent = Some(extent.map_or((bottom, top), |(b, t)| (b.min(bottom), t.max(top))));
+            for glyph in glyphs {
+                if let Some(outline) = glyph.outline {
+                    x_min = x_min.min(pen + outline.x_min);
+                    x_max = x_max.max(pen + outline.x_max);
+                    y_min = y_min.min(outline.y_min);
+                    y_max = y_max.max(outline.y_max);
+                }
+                pen += glyph.advance;
+                advance += glyph.advance;
             }
         }
-        inks.push(extent.map(|(bottom, top)| LineInk {
-            rise: top * scale,
-            fall: -bottom * scale,
-        }));
+        let has_ink = y_min <= y_max;
+        out.push(LineMetrics {
+            ink: has_ink.then(|| LineInk {
+                rise: y_max * scale,
+                fall: -y_min * scale,
+            }),
+            advance: advance * scale,
+            left: if has_ink { x_min * scale } else { 0.0 },
+            right: if has_ink { x_max * scale } else { 0.0 },
+        });
     }
-    inks
+    out
+}
+
+/// Each line's vertical ink as Typst draws the block, in order: `measure_lines` reduced to the
+/// vertical model the reservation has always used.
+#[cfg(test)]
+pub(super) fn line_inks(
+    face: &rustybuzz::Face<'_>,
+    lines: &[impl AsRef<str>],
+    size_pt: f32,
+) -> Vec<Option<LineInk>> {
+    measure_lines(face, lines, size_pt)
+        .into_iter()
+        .map(|m| m.ink)
+        .collect()
 }
 
 /// The `ellipsis` line budget (Decision 4): the emitted form of the largest leading run of lines
@@ -916,30 +1086,41 @@ pub(super) fn line_inks(
 /// the box admits, and each try measures its own emitted block, because a line's ink can depend on
 /// the lines after it. No line past that cutoff is measured, and the search stops within
 /// (largest reservation) / pitch tries, since every step down frees a pitch of height: the work
-/// grows with the line count, not its square. `whole_judged` says the block as broken was already
-/// measured and refused, so `k = n` needs no second measurement.
+/// grows with the line count, not its square. `judged` carries the fit's measurement of the block as
+/// broken; when its width fit, that block was fully judged and refused on height, so `k = n` needs no
+/// second measurement.
 fn line_budget(
     face: &rustybuzz::Face<'_>,
     raw_lines: &[String],
-    whole_judged: bool,
+    judged: Option<Judgement>,
     size_pt: f32,
-    pitch: f32,
+    line_spacing: Option<f32>,
     bounds_pt: (f32, f32),
-    vertical: VerticalAlign,
-) -> Option<(Vec<String>, BlockInk)> {
+    alignment: &Alignment,
+) -> Option<(Vec<String>, BlockInk, BlockInkX, f32)> {
     let (width_pt, height_pt) = bounds_pt;
+    let horizontal = alignment.horizontal;
+    let vertical = alignment.vertical;
+    let pitch = line_pitch(size_pt, resolve_line_spacing(line_spacing));
     let n = raw_lines.len();
     let cap = cap_height(face, size_pt);
     let k_metric = (1..=n)
         .take_while(|&k| fits_height(baseline(cap, pitch, k), height_pt))
         .count();
+    let whole_judged = judged.as_ref().is_some_and(|j| j.width_fits);
+    // The fit already shaped the whole block; reuse it when it is here. Otherwise only the lines the
+    // budget can keep are measured.
+    let raw_metrics = judged
+        .map(|j| j.metrics)
+        .unwrap_or_else(|| measure_lines(face, &raw_lines[..k_metric], size_pt));
     let forms: Vec<String> = raw_lines[..k_metric]
         .iter()
-        .map(|raw| {
-            if fits_width(face, raw, size_pt, width_pt) {
+        .zip(&raw_metrics[..k_metric])
+        .map(|(raw, m)| {
+            if line_metrics_fit(m, width_pt, horizontal) {
                 raw.clone()
             } else {
-                ellipsize(face, raw, size_pt, width_pt)
+                ellipsize(face, raw, size_pt, width_pt, horizontal)
             }
         })
         .collect();
@@ -950,11 +1131,16 @@ fn line_budget(
         }
         let mut emitted = forms[..k].to_vec();
         if k < n {
-            emitted[k - 1] = ellipsize(face, &raw_lines[k - 1], size_pt, width_pt);
+            emitted[k - 1] = ellipsize(face, &raw_lines[k - 1], size_pt, width_pt, horizontal);
         }
-        let ink = block_ink(&line_inks(face, &emitted, size_pt), cap, pitch);
-        if fits_height(baseline(cap, pitch, k) + ink.reserve(vertical), height_pt) {
-            return Some((emitted, ink));
+        let metrics = measure_lines(face, &emitted, size_pt);
+        let ink = block_ink(&metrics, cap, pitch);
+        let ink_x = block_ink_x(&metrics, horizontal);
+        let metric_w = metric_width(&metrics);
+        if fits_width(metric_w + ink_x.reserve(horizontal), width_pt)
+            && fits_height(baseline(cap, pitch, k) + ink.reserve(vertical), height_pt)
+        {
+            return Some((emitted, ink, ink_x, metric_w));
         }
     }
     None
@@ -972,76 +1158,135 @@ pub(super) fn take_shaped_lines() -> usize {
     SHAPED_LINES.with(|count| count.replace(0))
 }
 
-/// The vertical extent of a glyph's outline in font units, `(bottom, top)`, exact for the instance
-/// `face` holds. `ttf_parser::Face::glyph_bounding_box` truncates a variable instance's bounds to
-/// integers, which drops the bold `É`'s accent from 1939.7 units to 1939: 0.025 pt at 72 pt, past
-/// the fit's 0.01 pt tolerance. Tracing the outline keeps the fraction, and each curve's own
-/// extremum counts, not its control points. `None` for a glyph with no outline, such as a space.
-pub(super) fn glyph_ink(face: &ttf_parser::Face, glyph: ttf_parser::GlyphId) -> Option<(f32, f32)> {
+/// A glyph outline's bounds in font units, exact for the instance `face` holds.
+/// `ttf_parser::Face::glyph_bounding_box` truncates a variable instance's bounds to integers, which
+/// drops the bold `É`'s accent from 1939.7 units to 1939: 0.025 pt at 72 pt, past the fit's 0.01 pt
+/// tolerance. Tracing the outline keeps the fraction, and each curve's own extremum counts, not its
+/// control points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct GlyphOutline {
+    pub x_min: f32,
+    pub x_max: f32,
+    pub y_min: f32,
+    pub y_max: f32,
+}
+
+/// The outline bounds of a glyph in font units, exact for the instance `face` holds. `None` for a
+/// glyph with no outline, such as a space.
+pub(super) fn glyph_ink(
+    face: &ttf_parser::Face,
+    glyph: ttf_parser::GlyphId,
+) -> Option<GlyphOutline> {
     struct Extent {
-        last: f32,
-        bottom: f32,
-        top: f32,
+        last: (f32, f32),
+        x_min: f32,
+        x_max: f32,
+        y_min: f32,
+        y_max: f32,
     }
     impl Extent {
-        fn add(&mut self, y: f32) {
-            self.bottom = self.bottom.min(y);
-            self.top = self.top.max(y);
+        fn add(&mut self, x: f32, y: f32) {
+            self.x_min = self.x_min.min(x);
+            self.x_max = self.x_max.max(x);
+            self.y_min = self.y_min.min(y);
+            self.y_max = self.y_max.max(y);
         }
-        /// Where a curve's derivative `a·t² + b·t + c` vanishes inside the segment. The roots use
-        /// the form that does not cancel when `a` is small beside `b`.
-        fn add_turning_points(&mut self, (a, b, c): (f32, f32, f32), at: impl Fn(f32) -> f32) {
+        /// The roots of `a·t² + b·t + c` inside the segment, using the form that does not cancel
+        /// when `a` is small beside `b`.
+        fn turning_roots((a, b, c): (f32, f32, f32)) -> [Option<f32>; 2] {
             let disc = b * b - 4.0 * a * c;
-            let roots = if a == 0.0 {
+            if a == 0.0 {
                 [(b != 0.0).then(|| -c / b), None]
             } else if disc < 0.0 {
                 [None, None]
             } else {
                 let q = -0.5 * (b + b.signum() * disc.sqrt());
                 [(q != 0.0).then(|| q / a), (q != 0.0).then(|| c / q)]
-            };
-            for t in roots.into_iter().flatten().filter(|t| *t > 0.0 && *t < 1.0) {
-                self.add(at(t));
+            }
+        }
+        /// Every curve extremum inside the segment: where either coordinate's derivative vanishes.
+        fn add_turning_points(
+            &mut self,
+            dx: (f32, f32, f32),
+            dy: (f32, f32, f32),
+            at: impl Fn(f32) -> (f32, f32),
+        ) {
+            for t in Self::turning_roots(dx)
+                .into_iter()
+                .chain(Self::turning_roots(dy))
+                .flatten()
+                .filter(|t| *t > 0.0 && *t < 1.0)
+            {
+                let (x, y) = at(t);
+                self.add(x, y);
             }
         }
     }
     impl ttf_parser::OutlineBuilder for Extent {
-        fn move_to(&mut self, _: f32, y: f32) {
-            self.add(y);
-            self.last = y;
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.add(x, y);
+            self.last = (x, y);
         }
-        fn line_to(&mut self, _: f32, y: f32) {
-            self.add(y);
-            self.last = y;
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.add(x, y);
+            self.last = (x, y);
         }
-        fn quad_to(&mut self, _: f32, y1: f32, _: f32, y: f32) {
-            let p0 = self.last;
-            self.add_turning_points((0.0, 2.0 * (p0 - 2.0 * y1 + y), 2.0 * (y1 - p0)), |t| {
-                let u = 1.0 - t;
-                u * u * p0 + 2.0 * u * t * y1 + t * t * y
-            });
-            self.add(y);
-            self.last = y;
+        fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+            let (p0x, p0y) = self.last;
+            self.add_turning_points(
+                (0.0, 2.0 * (p0x - 2.0 * x1 + x), 2.0 * (x1 - p0x)),
+                (0.0, 2.0 * (p0y - 2.0 * y1 + y), 2.0 * (y1 - p0y)),
+                |t| {
+                    let u = 1.0 - t;
+                    (
+                        u * u * p0x + 2.0 * u * t * x1 + t * t * x,
+                        u * u * p0y + 2.0 * u * t * y1 + t * t * y,
+                    )
+                },
+            );
+            self.add(x, y);
+            self.last = (x, y);
         }
-        fn curve_to(&mut self, _: f32, y1: f32, _: f32, y2: f32, _: f32, y: f32) {
-            let p0 = self.last;
-            let (q0, q1, q2) = (y1 - p0, y2 - y1, y - y2);
-            self.add_turning_points((q0 - 2.0 * q1 + q2, 2.0 * (q1 - q0), q0), |t| {
-                let u = 1.0 - t;
-                u * u * u * p0 + 3.0 * u * u * t * y1 + 3.0 * u * t * t * y2 + t * t * t * y
-            });
-            self.add(y);
-            self.last = y;
+        fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+            let (p0x, p0y) = self.last;
+            let (qx0, qx1, qx2) = (x1 - p0x, x2 - x1, x - x2);
+            let (qy0, qy1, qy2) = (y1 - p0y, y2 - y1, y - y2);
+            self.add_turning_points(
+                (qx0 - 2.0 * qx1 + qx2, 2.0 * (qx1 - qx0), qx0),
+                (qy0 - 2.0 * qy1 + qy2, 2.0 * (qy1 - qy0), qy0),
+                |t| {
+                    let u = 1.0 - t;
+                    (
+                        u * u * u * p0x
+                            + 3.0 * u * u * t * x1
+                            + 3.0 * u * t * t * x2
+                            + t * t * t * x,
+                        u * u * u * p0y
+                            + 3.0 * u * u * t * y1
+                            + 3.0 * u * t * t * y2
+                            + t * t * t * y,
+                    )
+                },
+            );
+            self.add(x, y);
+            self.last = (x, y);
         }
         fn close(&mut self) {}
     }
     let mut extent = Extent {
-        last: 0.0,
-        bottom: f32::INFINITY,
-        top: f32::NEG_INFINITY,
+        last: (0.0, 0.0),
+        x_min: f32::INFINITY,
+        x_max: f32::NEG_INFINITY,
+        y_min: f32::INFINITY,
+        y_max: f32::NEG_INFINITY,
     };
     face.outline_glyph(glyph, &mut extent)?;
-    (extent.bottom <= extent.top).then_some((extent.bottom, extent.top))
+    (extent.y_min <= extent.y_max).then_some(GlyphOutline {
+        x_min: extent.x_min,
+        x_max: extent.x_max,
+        y_min: extent.y_min,
+        y_max: extent.y_max,
+    })
 }
 
 /// Typst's `is_generic_script`, copied verbatim (`typst-layout` `src/inline/shaping.rs`).
@@ -1055,14 +1300,15 @@ fn is_compatible(a: Script, b: Script) -> bool {
 }
 
 /// One glyph as Typst's `shape_segment` leaves it: the text it stands for, whether a line may begin
-/// or end at it without reshaping, and its outline's vertical extent in font units, moved by its
-/// shaped `y_offset`.
+/// or end at it without reshaping, its outline's bounds in font units moved by its shaped offsets,
+/// and its shaped horizontal advance.
 #[derive(Debug, Clone, Copy)]
 struct ShapedGlyph {
     start: usize,
     end: usize,
     safe_to_break: bool,
-    ink: Option<(f32, f32)>,
+    outline: Option<GlyphOutline>,
+    advance: f32,
 }
 
 /// A run of the paragraph shaped as one buffer: Typst's `ShapedText`, reduced to what ink needs.
@@ -1209,14 +1455,22 @@ fn shape_run(face: &rustybuzz::Face<'_>, text: &str, range: Range<usize>, ltr: b
                 }
             };
             // The outline is the instance `set_variation` selected, not the default master. A glyph
-            // with no outline, such as a space, contributes nothing.
-            let offset = positions[i].y_offset as f32;
+            // with no outline, such as a space, contributes no ink but still advances the pen.
+            let position = &positions[i];
+            let (x_offset, y_offset) = (position.x_offset as f32, position.y_offset as f32);
             ShapedGlyph {
                 start: base + infos[i].cluster as usize,
                 end,
                 safe_to_break: !infos[i].unsafe_to_break(),
-                ink: glyph_ink(face, ttf_parser::GlyphId(infos[i].glyph_id as u16))
-                    .map(|(bottom, top)| (bottom + offset, top + offset)),
+                outline: glyph_ink(face, ttf_parser::GlyphId(infos[i].glyph_id as u16)).map(|o| {
+                    GlyphOutline {
+                        x_min: o.x_min + x_offset,
+                        x_max: o.x_max + x_offset,
+                        y_min: o.y_min + y_offset,
+                        y_max: o.y_max + y_offset,
+                    }
+                }),
+                advance: position.x_advance as f32,
             }
         };
 
@@ -1279,7 +1533,7 @@ pub(super) fn measure_block_ink(
     pitch_pt: f32,
 ) -> BlockInk {
     block_ink(
-        &line_inks(face, lines, size_pt),
+        &measure_lines(face, lines, size_pt),
         cap_height(face, size_pt),
         pitch_pt,
     )
@@ -1658,7 +1912,10 @@ mod helpers_tests {
                 false,
                 400,
                 None,
-                VerticalAlign::Center,
+                &Alignment {
+                    horizontal: HorizontalAlign::Left,
+                    vertical: VerticalAlign::Center,
+                },
                 (6.0, 20.0),
                 FitBox {
                     width_units: 200.0,
@@ -1674,7 +1931,10 @@ mod helpers_tests {
                 false,
                 400,
                 None,
-                VerticalAlign::Center,
+                &Alignment {
+                    horizontal: HorizontalAlign::Left,
+                    vertical: VerticalAlign::Center,
+                },
                 (6.0, 20.0),
                 FitBox {
                     width_units: 2.0,
@@ -2419,7 +2679,10 @@ mod helpers_tests {
             10.0,
             None,
             (super::units_to_pt(100.0, "mm"), two_lines),
-            VerticalAlign::Top,
+            &Alignment {
+                horizontal: HorizontalAlign::Left,
+                vertical: VerticalAlign::Top,
+            },
         ));
         assert_eq!(
             super::take_shaped_lines(),
@@ -2438,10 +2701,13 @@ mod helpers_tests {
         .expect("two lines fit");
         let shaped = super::take_shaped_lines();
         assert_eq!(fit.lines, ["HELIX", "HELIX..."]);
-        assert!(shaped <= 4, "the budget shaped {shaped} lines");
+        // The marker's own width check, one measurement of the lines the budget can keep, one
+        // marker form, and the emitted block: linear in the run, not in the value.
+        assert!(shaped <= 6, "the budget shaped {shaped} lines");
 
         // A pitch small enough that every baseline lies in the box, which is still too short for
-        // the last line's `g`: each line is shaped once for the fit and the budget reuses it.
+        // the last line's `g`: the fit shapes the block once and the budget shapes the emitted
+        // prefix once, so the work stays linear in the value.
         let value = vec!["Hg"; 10_000].join("\n");
         let metric = cap_pt(10.0) + 9_999.0 * 5.0;
         let fit = layout_text(
@@ -2463,7 +2729,7 @@ mod helpers_tests {
         assert_eq!(fit.lines.len(), 9_999);
         assert_eq!(fit.lines[9_998], "Hg...");
         assert!(
-            (10_000..=20_000).contains(&shaped),
+            (10_000..=21_000).contains(&shaped),
             "{shaped} lines shaped for 10,000"
         );
     }
@@ -2583,6 +2849,63 @@ mod helpers_tests {
             .expect_err("Égypt's accent and descender do not fit one cap height");
             assert_eq!(err.reason(), Some("text_does_not_fit"));
         }
+    }
+
+    /// A single line with asymmetric overhang reserves twice the larger side when centered and the
+    /// sum when aligned to an edge (text delta, "Horizontal center reserves twice the larger side").
+    #[test]
+    fn horizontal_center_reserves_twice_the_larger_side() {
+        let width = |horizontal| {
+            test_layout(
+                "j",
+                &FontSize::Fixed(20.0),
+                false,
+                Alignment {
+                    horizontal,
+                    vertical: VerticalAlign::Top,
+                },
+                Overflow::Fail,
+                (200.0, 200.0),
+            )
+            .expect("j fits")
+            .width_units
+        };
+        let face = super::instance(400, 20.0).expect("face");
+        let m = super::measure_lines(&face, &["j"], 20.0)[0];
+        let advance = super::pt_to_units(m.advance, "mm");
+        let left = super::pt_to_units(-m.left, "mm");
+        assert!(left > 0.0, "j must carry a left overhang");
+        let (l, c, r) = (
+            width(HorizontalAlign::Left),
+            width(HorizontalAlign::Center),
+            width(HorizontalAlign::Right),
+        );
+        assert!((l - (advance + left)).abs() < 1e-4, "left {l}");
+        assert!((r - (advance + left)).abs() < 1e-4, "right {r}");
+        assert!((c - (advance + 2.0 * left)).abs() < 1e-4, "center {c}");
+
+        // Without horizontal overhang the reservation is zero, so alignment leaves the box alone.
+        let helix = super::measure_lines(&face, &["HELIX"], 20.0)[0];
+        assert!(
+            helix.left >= 0.0 && helix.right <= helix.advance,
+            "HELIX must carry no overhang"
+        );
+        let plain = |horizontal| {
+            test_layout(
+                "HELIX",
+                &FontSize::Fixed(20.0),
+                false,
+                Alignment {
+                    horizontal,
+                    vertical: VerticalAlign::Top,
+                },
+                Overflow::Fail,
+                (200.0, 200.0),
+            )
+            .expect("HELIX fits")
+            .width_units
+        };
+        assert_eq!(plain(HorizontalAlign::Left), plain(HorizontalAlign::Center));
     }
 }
 
@@ -2750,7 +3073,7 @@ mod measurement_tests {
         measure_block_ink, resolve_line_spacing, shape_line_ink, text_width, typo_ascender,
         units_to_pt, BlockInk, FitBox,
     };
-    use crate::models::VerticalAlign;
+    use crate::models::{Alignment, HorizontalAlign, VerticalAlign};
 
     const UPEM: f32 = 2048.0;
     /// `É`'s accent above cap height at wght 400, opsz 20: 1928 − 1490 units [fontTools].
@@ -2811,8 +3134,20 @@ mod measurement_tests {
             unit: "mm",
         };
         let height = units_to_pt(10.0, "mm");
-        let settle =
-            |vertical| largest_fitting_font(&["Hxy"], false, 400, None, vertical, (6.0, 80.0), fit);
+        let settle = |vertical| {
+            largest_fitting_font(
+                &["Hxy"],
+                false,
+                400,
+                None,
+                &Alignment {
+                    horizontal: HorizontalAlign::Left,
+                    vertical,
+                },
+                (6.0, 80.0),
+                fit,
+            )
+        };
         let need = |vertical, size: f32| {
             let face = instance(400, size).expect("face");
             let pitch = line_pitch(size, resolve_line_spacing(None));
@@ -2866,7 +3201,7 @@ mod measurement_tests {
         // baseline, where `colon`'s lower dot overshoots below it. So `1:1` inks no lower than `11`.
         let ink_of =
             |c| glyph_ink(&face_400, face_400.glyph_index(c).expect("mapped")).expect("ink");
-        assert!(ink_of(':').0 < ink_of('1').0);
+        assert!(ink_of(':').y_min < ink_of('1').y_min);
         assert_eq!(ink(&face_400, "1:1").fall, ink(&face_400, "11").fall);
     }
 
