@@ -20,7 +20,7 @@ import {
 } from "@svar-ui/react-grid";
 import "@svar-ui/react-grid/style.css";
 import type { LabelGridRow } from "../lib/labelGrid";
-import { blankOptionLabel } from "../lib/labelInputs";
+import { blankOptionLabel, getOwnKey } from "../lib/labelInputs";
 import type { Param } from "../api/types";
 
 // Which rows an edit touched, by index. Import clears a prior run's annotation on exactly those
@@ -128,7 +128,7 @@ function DataCell({ row, column }: ICellProps) {
     }
   });
 
-  const rawVal = labelRow.data[field];
+  const rawVal = getOwnKey(labelRow.data, field);
   const strValue = rawVal !== undefined && rawVal !== null ? String(rawVal) : "";
 
   // Read-only cases: no spec, or disabled
@@ -462,7 +462,7 @@ export function LabelGrid(props: LabelGridProps) {
       id: `${DATA_PREFIX}${field}`,
       header: cellInput?.(field)?.description || field,
       flexgrow: 1,
-      getter: (row: IRow) => (asRow(row).data[field] ?? "") as Value,
+      getter: (row: IRow) => (getOwnKey(asRow(row).data, field) ?? "") as Value,
       cell: DataCell,
     })),
     { id: ANNOTATION_COLUMN, header: "Status", flexgrow: 1, cell: AnnotationCell },

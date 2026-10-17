@@ -22,6 +22,20 @@ describe("parseCsv", () => {
     expect(r.rows[0].data.name).toBe("Widget, large");
   });
 
+  it("keeps __proto__ and constructor as own values alongside an ordinary header", () => {
+    const r = parseCsv("__proto__,constructor,name\nproto,ctor,Widget\n");
+    expect(r.fields).toEqual(["__proto__", "constructor", "name"]);
+    const data = r.rows[0].data;
+    // Ownership, not just a readable value: a direct `data[field] = value` write loses __proto__,
+    // and a direct read of a missing constructor would answer Object.prototype.constructor.
+    expect(Object.prototype.hasOwnProperty.call(data, "__proto__")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(data, "constructor")).toBe(true);
+    expect(data.__proto__).toBe("proto");
+    expect(data.constructor).toBe("ctor");
+    expect(data.name).toBe("Widget");
+    expect(JSON.stringify(data)).toBe('{"__proto__":"proto","constructor":"ctor","name":"Widget"}');
+  });
+
   it("flags empty and duplicate headers", () => {
     const r = parseCsv("sku,,sku\n1,2,3\n");
     expect(r.issues.join(" ")).toMatch(/empty header/i);

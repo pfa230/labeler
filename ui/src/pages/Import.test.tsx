@@ -1075,3 +1075,76 @@ describe("issue-413: Import reads the published parameter list", () => {
     ]);
   });
 });
+
+// #422: `__proto__` and `constructor` are legal parameter names and must survive CSV ingestion, a
+// grid edit and the outgoing batch for both Print and Download.
+describe("issue-422: special parameter names in Import", () => {
+  const specialDetail = {
+    ...detail,
+    params: [
+      { name: "__proto__", type: "string" as const, control: "text" as const },
+      { name: "constructor", type: "string" as const, control: "text" as const },
+      { name: "name", type: "string" as const, control: "text" as const },
+    ],
+  };
+
+  function stubSpecialFetch() {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/templates/t1")) return json(specialDetail);
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/render") return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      if (url === "/api/print") return json(summary);
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+    fetchMock = stubSpecialFetch();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("carries __proto__, constructor and an ordinary field through a grid edit into Print and Download", async () => {
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "__proto__,constructor,name\nproto,ctor,Widget\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    // The ingested special-name values are visible and editable.
+    const protoInput = (await screen.findByLabelText("edit __proto__")) as HTMLInputElement;
+    expect(protoInput.value).toBe("proto");
+    expect((screen.getByLabelText("edit constructor") as HTMLInputElement).value).toBe("ctor");
+    fireEvent.change(protoInput, { target: { value: "edited" } });
+
+    // The serialized request data carries all three as own fields with the edit applied.
+    const expected = '{"__proto__":"edited","constructor":"ctor","name":"Widget"}';
+
+    const download = await screen.findByRole("button", { name: /^download$/i });
+    await waitFor(() => expect(download).not.toBeDisabled());
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const downloadBody = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(JSON.stringify(downloadBody.labels[0].data)).toBe(expected);
+
+    fireEvent.change(screen.getByLabelText(/printer/i), { target: { value: "p1" } });
+    const print = await screen.findByRole("button", { name: /^print$/i });
+    await waitFor(() => expect(print).toBeEnabled());
+    fireEvent.click(print);
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    const printBody = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
+    expect(JSON.stringify(printBody.labels[0].data)).toBe(expected);
+  });
+});

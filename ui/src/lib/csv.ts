@@ -1,6 +1,7 @@
 // Named import: @types/papaparse has no default export, and this repo's tsconfig sets
 // verbatimModuleSyntax with no esModuleInterop, so `import Papa from "papaparse"` fails to build.
 import { parse } from "papaparse";
+import { setOwnKey } from "./labelInputs";
 
 export const MAX_CSV_BYTES = 2_000_000; // ~2 MB guard; label CSVs are small (<= 500 rows after expansion).
 
@@ -65,7 +66,7 @@ export function parseCsv(text: string): CsvParseResult {
     const data: Record<string, string> = {};
     columns.forEach((col, i) => {
       if (!col) return;
-      data[col] = cells[i] ?? "";
+      setOwnKey(data, col, cells[i] ?? "");
     });
     rows.push({ data });
   }

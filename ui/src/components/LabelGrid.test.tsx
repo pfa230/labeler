@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { LabelGrid, type GridCellParam, type LabelGridProps } from "./LabelGrid";
 import type { LabelGridRow } from "../lib/labelGrid";
-import { pruneDataForSubmit } from "../lib/labelInputs";
+import { getOwnKey, pruneDataForSubmit, setOwnKey } from "../lib/labelInputs";
 import type { Param } from "../api/types";
 
 const selectionBaseProps = {
@@ -842,5 +842,44 @@ describe("4.5 Regression checks on existing grid behavior", () => {
     expect(updatedRows[1].data.sku).toBe("999");
     expect(updatedRows[0].data.sku).toBe("1"); // Row 0 untouched
     expect(change).toEqual({ indexes: [1] });
+  });
+});
+
+describe("parameter names that shadow Object.prototype", () => {
+  it("shows supplied special-name values, keeps a missing constructor cell blank, and commits an own edited value", async () => {
+    // Build the supplied row the way ingestion does, so __proto__ is an own field rather than a
+    // prototype assignment.
+    const supplied: LabelGridRow = { id: "r1", data: {} };
+    setOwnKey(supplied.data, "__proto__", "proto");
+    setOwnKey(supplied.data, "constructor", "ctor");
+    setOwnKey(supplied.data, "name", "Widget");
+    const missing: LabelGridRow = { id: "r2", data: { name: "Gadget" } };
+
+    let currentRows: LabelGridRow[] = [supplied, missing];
+    const onRowsChange = vi.fn<LabelGridProps["onRowsChange"]>((next) => {
+      currentRows = next;
+    });
+
+    render(
+      <LabelGrid
+        rows={currentRows}
+        fields={["__proto__", "constructor", "name"]}
+        onRowsChange={onRowsChange}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    expect((screen.getAllByLabelText("edit __proto__")[0] as HTMLInputElement).value).toBe("proto");
+    const ctorInputs = screen.getAllByLabelText("edit constructor") as HTMLInputElement[];
+    expect(ctorInputs[0].value).toBe("ctor");
+    // A direct data[field] read would answer Object.prototype.constructor here.
+    expect(ctorInputs[1].value).toBe("");
+    expect((screen.getAllByLabelText("edit name")[0] as HTMLInputElement).value).toBe("Widget");
+
+    fireEvent.change(screen.getAllByLabelText("edit __proto__")[0], { target: { value: "edited" } });
+    await waitFor(() => expect(onRowsChange).toHaveBeenCalledTimes(1));
+    expect(Object.prototype.hasOwnProperty.call(currentRows[0].data, "__proto__")).toBe(true);
+    expect(getOwnKey(currentRows[0].data, "__proto__")).toBe("edited");
   });
 });
