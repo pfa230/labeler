@@ -953,7 +953,10 @@ fn block_ink_x(metrics: &[LineMetrics], horizontal: HorizontalAlign) -> BlockInk
 /// The emitted forms of `lines` and their geometry, with lines shortened in place until the block
 /// fits `width_pt`. The block's shared horizontal reservation, not each line's own, decides: a line
 /// that fits alone can still overrun because another line's overhang is reserved around the whole
-/// block. `metrics` is `lines` as last measured, so an already-fitting block costs no reshaping.
+/// block. Shortening removes one character at a time and judges the block each candidate would emit
+/// with that block's own reservation, so an overhanging suffix cannot keep a character out that the
+/// shorter form now admits. `metrics` is `forms` as last measured, so an already-fitting block costs
+/// no reshaping.
 fn shorten_block_to_width(
     face: &rustybuzz::Face<'_>,
     mut forms: Vec<String>,
@@ -963,37 +966,36 @@ fn shorten_block_to_width(
     horizontal: HorizontalAlign,
 ) -> (Vec<String>, Vec<LineMetrics>) {
     loop {
+        // The widest line is what the block overruns by: `metric_width > budget` means at least one
+        // line's advance exceeds it. Remove a single character from the first such line, then judge
+        // the block the removal leaves afresh.
         let budget = width_pt - block_ink_x(&metrics, horizontal).reserve(horizontal);
-        let mut changed = false;
-        for (form, m) in forms.iter_mut().zip(&metrics) {
-            if m.advance > budget + FIT_EPS_PT {
-                let shortened = ellipsize_advance(face, form, size_pt, budget);
-                if shortened != *form {
-                    *form = shortened;
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
+        let Some(i) = forms
+            .iter()
+            .zip(&metrics)
+            .position(|(_, m)| m.advance > budget + FIT_EPS_PT)
+        else {
+            return (forms, metrics);
+        };
+        let shortened = drop_one_char(&forms[i]);
+        if shortened == forms[i] {
             return (forms, metrics);
         }
+        forms[i] = shortened;
         metrics = measure_lines(face, &forms, size_pt);
     }
 }
 
-/// Shorten `line` until its emitted form's shaped advance no wider than `advance_pt` remains, then
-/// append the marker. The block it joins is judged after, so the marker's own ink is not added here.
-/// An existing marker is stripped first, so shortening a form twice does not stack markers.
-fn ellipsize_advance(face: &rustybuzz::Face<'_>, line: &str, size: f32, advance_pt: f32) -> String {
+/// `line` with its marker and one more character removed, re-marked. An existing marker is stripped
+/// first, so shortening a form twice does not stack markers. A form that is only its marker is
+/// returned unchanged, so a line that cannot shed another character leaves its caller to stop.
+fn drop_one_char(line: &str) -> String {
     let mut out = line.strip_suffix(ELLIPSIS).unwrap_or(line).to_string();
-    while !out.is_empty()
-        && measure_lines(face, &[format!("{out}{ELLIPSIS}")], size)
-            .first()
-            .is_none_or(|m| m.advance > advance_pt + FIT_EPS_PT)
-    {
-        out.pop();
+    if out.pop().is_none() {
+        line.to_string()
+    } else {
+        format!("{out}{ELLIPSIS}")
     }
-    format!("{out}{ELLIPSIS}")
 }
 
 /// One line's shaped geometry, in points: its vertical ink (`None` when it draws none), its shaped
@@ -3054,6 +3056,39 @@ mod helpers_tests {
         )
         .expect("the two remaining lines fit");
         assert_eq!(m.lines, vec!["WWW...".to_string(), "HELIX...".to_string()]);
+        assert!(m.width_units <= box_w + 1e-4, "{} > {box_w}", m.width_units);
+    }
+
+    /// The same rule one character at a time: `ï` carries a right overhang, so the block's
+    /// reservation still counts it after three `W`s. Replacing `ï` with the marker sheds that
+    /// overhang, and the block the removal leaves admits the third `W`. Judging `WWW...` against the
+    /// unshortened block's reservation would keep `WW...` and waste the freed width.
+    #[test]
+    fn a_removed_overhanging_suffix_frees_width_for_a_kept_character() {
+        let face = super::instance(400, 24.0).expect("face");
+        let block = super::measure_lines(&face, &["WWWWï"], 24.0)[0];
+        let kept = super::measure_lines(&face, &["WWW..."], 24.0)[0];
+        let reserve = super::block_ink_x(std::slice::from_ref(&block), HorizontalAlign::Left)
+            .reserve(HorizontalAlign::Left);
+        assert!(reserve > 0.05, "ï must carry a right overhang: {reserve}");
+        assert!(
+            kept.advance > 86.35 - reserve,
+            "the third W must only fit once ï's overhang is gone"
+        );
+        let box_w = super::pt_to_units(86.35, "mm");
+        let m = test_layout(
+            "WWWWï",
+            &FontSize::Fixed(24.0),
+            false,
+            Alignment {
+                horizontal: HorizontalAlign::Left,
+                vertical: VerticalAlign::Top,
+            },
+            Overflow::Ellipsis,
+            (box_w, 100.0),
+        )
+        .expect("the shortened block fits");
+        assert_eq!(m.lines, vec!["WWW...".to_string()]);
         assert!(m.width_units <= box_w + 1e-4, "{} > {box_w}", m.width_units);
     }
 }
