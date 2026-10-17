@@ -97,7 +97,11 @@ export interface ProbeCapabilities {
   color: "color" | "bilevel" | "unknown";
   accepts_png: boolean;
   chain_and_continue: boolean;
+  cut: boolean;
 }
 export type ProbeResult =
   | { status: "ok"; capabilities: ProbeCapabilities }
   | { status: "unreachable"; detail: string };
+
+// The cut answer: a printer-side failure carries the service's detail; an unknown id is an ApiError.
+export type CutResult = { status: "ok" } | { status: "failed"; detail: string };

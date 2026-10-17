@@ -253,12 +253,12 @@ async fn absent_token_sends_no_authorization_header() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn discovery_publishes_eleven_tools_with_schemas_and_annotations() {
+async fn discovery_publishes_twelve_tools_with_schemas_and_annotations() {
     let mut mcp = McpProcess::spawn(&[]).await;
     mcp.initialize().await;
     let tools = mcp.list_tools().await;
     assert_eq!(tool_names(&tools), template_management_tool_names());
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 11);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 12);
 
     let print = find_tool(&tools, "print_labels");
     let schema = &print["inputSchema"];
@@ -346,6 +346,7 @@ async fn discovery_publishes_eleven_tools_with_schemas_and_annotations() {
         "delete_template",
         "reload_templates",
         "print_labels",
+        "cut_printer",
     ] {
         let annotations = &find_tool(&tools, name)["annotations"];
         assert_eq!(annotations["readOnlyHint"], false, "{name} is a mutation");
@@ -429,6 +430,14 @@ async fn discovery_publishes_eleven_tools_with_schemas_and_annotations() {
     assert!(
         reload.contains("disk") && reload.contains("registry"),
         "reload_templates states the registry replacement: {reload}"
+    );
+    let cut = find_tool(&tools, "cut_printer")["description"]
+        .as_str()
+        .unwrap()
+        .to_lowercase();
+    assert!(
+        cut.contains("release") && cut.contains("chain and continue"),
+        "cut_printer states the release of the held label: {cut}"
     );
 
     let templates_desc = find_tool(&tools, "list_templates")["description"]
@@ -1042,6 +1051,74 @@ async fn partial_print_failure_returns_the_summary_with_is_error() {
 }
 
 #[tokio::test]
+async fn cut_printer_refuses_an_invalid_printer_id_without_calling_rest() {
+    // No mocks: any HTTP call would 404, so an isError result with an empty
+    // request log proves the adapter refused before calling REST.
+    let mock = wiremock::MockServer::start().await;
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", mock.uri().as_str())]).await;
+    mcp.initialize().await;
+
+    let result = mcp
+        .tool_result("cut_printer", json!({"printer": "../other"}))
+        .await;
+    assert!(
+        is_error(&result),
+        "an impossible printer id is refused: {result}"
+    );
+    assert!(
+        first_text(&result).contains("printer id"),
+        "the message names the refused argument: {result}"
+    );
+    assert!(
+        mock.received_requests().await.unwrap().is_empty(),
+        "the refusal makes no REST call"
+    );
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+}
+
+#[tokio::test]
+async fn a_failed_cut_returns_the_json_with_is_error_and_an_ok_cut_does_not() {
+    let failed_body = json!({
+        "status": "failed",
+        "detail": "printer returned IPP status ServerErrorOperationNotSupported"
+    });
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/printers/p1/cut"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&failed_body))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/printers/p2/cut"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", mock.uri().as_str())]).await;
+    mcp.initialize().await;
+
+    let refused = mcp
+        .tool_result("cut_printer", json!({"printer": "p1"}))
+        .await;
+    assert!(is_error(&refused), "a failed cut sets isError: {refused}");
+    let returned: Value = serde_json::from_str(&first_text(&refused)).expect("cut JSON");
+    assert_eq!(returned, failed_body, "the JSON is unchanged");
+
+    let ok = mcp
+        .tool_result("cut_printer", json!({"printer": "p2"}))
+        .await;
+    assert!(!is_error(&ok), "an ok cut is not an error: {ok}");
+    let returned: Value = serde_json::from_str(&first_text(&ok)).expect("cut JSON");
+    assert_eq!(returned, json!({"status": "ok"}));
+
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+}
+
+#[tokio::test]
 async fn dropped_print_response_reports_unknown_outcome_without_resending() {
     // A raw HTTP peer that reads each request fully, counts it, then closes the
     // connection without responding: the adapter must report an unknown outcome
@@ -1323,7 +1400,7 @@ async fn unavailable_service_is_an_execution_error_and_later_calls_still_run() {
         "still an execution error, not a crash: {second}"
     );
     let tools = mcp.list_tools().await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 11);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 12);
 
     let (success, _, _) = mcp.shutdown().await;
     assert!(success);

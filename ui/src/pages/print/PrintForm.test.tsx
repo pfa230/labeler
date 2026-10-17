@@ -45,9 +45,9 @@ const summary = { total: 1, sent: 1, failed: [], jobs: 1 };
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const probeOk = (chain: boolean) => ({
+const probeOk = (chain: boolean, cut = false) => ({
   status: "ok",
-  capabilities: { color: "bilevel", accepts_png: true, chain_and_continue: chain },
+  capabilities: { color: "bilevel", accepts_png: true, chain_and_continue: chain, cut },
 });
 
 // `probes` answers each stored printer's probe by id; a printer it does not name probes without
@@ -885,5 +885,77 @@ describe("PrintForm chain and continue", () => {
       for (const call of renders) expect(bodyOf(call)).not.toHaveProperty("chain_and_continue");
       cleanup();
     }
+  });
+});
+
+describe("PrintForm cut", () => {
+  const cutSupported = async () => json(probeOk(false, true));
+  const findCutButton = () => screen.findByRole("button", { name: /^cut$/i });
+  // A printer that answers cuts; other requests fall through to the standard stub.
+  const stubCut = (answer: () => Promise<Response>) => {
+    const base = stubFetch(printers, null, { p1: cutSupported });
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/printers/p1/cut") return answer();
+      return base(input, init);
+    });
+    fetchMock = mock;
+    vi.stubGlobal("fetch", mock);
+  };
+  const use = (mock: ReturnType<typeof stubFetch>) => {
+    fetchMock = mock;
+    vi.stubGlobal("fetch", fetchMock);
+  };
+
+  beforeEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("shows a Cut button beside Print only on confirmed cut support and posts to that printer's cut endpoint", async () => {
+    stubCut(async () => json({ status: "ok" }));
+    renderForm(tape);
+    await fillAndSelectPrinter();
+    const cut = await findCutButton();
+    const print = screen.getByRole("button", { name: /^print$/i });
+    expect(print.closest("div[class*='sticky']")).toContainElement(cut);
+
+    fireEvent.click(cut);
+    await waitFor(() => expect(countCalls("/api/printers/p1/cut")).toBe(1));
+    const call = fetchMock.mock.calls.find(([u]) => String(u) === "/api/printers/p1/cut")!;
+    expect((call[1] as RequestInit).method).toBe("POST");
+    expect(await screen.findByText("Cut Label Printer")).toBeInTheDocument();
+  });
+
+  it("shows no Cut button while support is loading, unsupported or unreachable", async () => {
+    const cases: Record<string, () => Promise<Response>> = {
+      loading: () => new Promise<Response>(() => {}),
+      unsupported: async () => json(probeOk(true)),
+      unreachable: async () => json({ status: "unreachable", detail: "down" }),
+      failed: async () => json({ error: { code: "Internal", message: "boom" } }, 500),
+    };
+    for (const [name, answer] of Object.entries(cases)) {
+      use(stubFetch(printers, null, { p1: answer }));
+      renderForm(tape);
+      await fillAndSelectPrinter();
+      await waitFor(() => expect(countCalls("/api/printers/p1/probe")).toBe(1));
+      expect(screen.queryByRole("button", { name: /^cut$/i }), name).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("shows the service's detail as an error notice when the cut fails", async () => {
+    stubCut(async () =>
+      json({ status: "failed", detail: "printer returned IPP status ServerErrorOperationNotSupported" }),
+    );
+    renderForm(tape);
+    await fillAndSelectPrinter();
+    fireEvent.click(await findCutButton());
+
+    expect(
+      await screen.findByText("printer returned IPP status ServerErrorOperationNotSupported"),
+    ).toBeInTheDocument();
+    expect(countCalls("/api/printers/p1/cut")).toBe(1);
   });
 });

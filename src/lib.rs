@@ -4187,6 +4187,7 @@ layout:
         assert_eq!(v["capabilities"]["model"], "Brother PT-2730");
         assert_eq!(v["capabilities"]["resolution_dpi"], 180);
         assert_eq!(v["capabilities"]["chain_and_continue"], false);
+        assert_eq!(v["capabilities"]["cut"], false);
     }
 
     #[tokio::test]
@@ -6083,6 +6084,54 @@ layout:
         assert_eq!(probe["status"], "unreachable");
         assert!(probe["detail"].is_string());
         assert_eq!(get_json(&app, "/api/printers/down").await, before);
+    }
+
+    #[tokio::test]
+    async fn cutting_a_stored_printer_answers_ok() {
+        let app = build_app();
+        let body = json!({ "id": "cut-ok", "name": "cut-ok", "uri": "ipp://fake.test/?cut=ok" });
+        assert_eq!(
+            post_batch(&app, "/api/printers", body).await.0,
+            StatusCode::CREATED
+        );
+        let (status, cut) = post_empty(&app, "/api/printers/cut-ok/cut").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cut, json!({ "status": "ok" }));
+    }
+
+    #[tokio::test]
+    async fn a_refused_cut_reports_a_failure_naming_the_ipp_status() {
+        let app = build_app();
+        let body = json!({
+            "id": "cut-no",
+            "name": "cut-no",
+            "uri": "ipp://fake.test/?cut=server-error-operation-not-supported"
+        });
+        assert_eq!(
+            post_batch(&app, "/api/printers", body).await.0,
+            StatusCode::CREATED
+        );
+        let (status, cut) = post_empty(&app, "/api/printers/cut-no/cut").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cut["status"], "failed");
+        assert!(
+            cut["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("server-error-operation-not-supported")),
+            "{cut}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cutting_an_unknown_printer_is_404() {
+        let app = build_app();
+        let (status, body) = post_empty(&app, "/api/printers/nope/cut").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "NotFound");
+        assert_eq!(
+            body["error"]["details"],
+            json!({ "kind": "printer", "id": "nope" })
+        );
     }
 
     #[tokio::test]

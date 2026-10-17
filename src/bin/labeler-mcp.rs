@@ -1,15 +1,16 @@
 //! `labeler-mcp`: an MCP (stdio) adapter that fronts a running labeler REST service.
 //!
-//! It publishes eleven tools — template listing, detail, source, thumbnail, create,
-//! replace, delete, reload, `render_label`, `list_printers` and `print_labels` — over
-//! the official Rust MCP SDK, forwarding each call as an HTTP request to the service
-//! origin in `LABELER_URL` (default `http://127.0.0.1:8080`), with `LABELER_TOKEN`
-//! (when set) as a bearer token. The service owns validation, rendering, printer
-//! connections and actor attribution; this process owns only the MCP protocol and
-//! the HTTP forwarding.
+//! It publishes twelve tools — template listing, detail, source, thumbnail, create,
+//! replace, delete, reload, `render_label`, `list_printers`, `print_labels` and
+//! `cut_printer` — over the official Rust MCP SDK, forwarding each call as an HTTP
+//! request to the service origin in `LABELER_URL` (default `http://127.0.0.1:8080`),
+//! with `LABELER_TOKEN` (when set) as a bearer token. The service owns validation,
+//! rendering, printer connections and actor attribution; this process owns only the
+//! MCP protocol and the HTTP forwarding.
 
 use std::collections::HashMap;
 
+use labeler::api::valid_printer_id;
 use labeler::templates::validate_template_id_stem;
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -125,6 +126,15 @@ where
     T: Deserialize<'de>,
 {
     T::deserialize(deserializer).map(Some)
+}
+
+/// The arguments of the cut tool: the printer's id, checked against the service's
+/// printer id rule before any request, like template ids are.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CutPrinterArgs {
+    /// Printer id: non-empty, matching ^[a-zA-Z0-9_-]+$ (letters, digits, '-' and '_').
+    printer: String,
 }
 
 /// The template argument shared by the read and delete tools. The id rule is the
@@ -598,6 +608,35 @@ impl LabelerMcp {
         };
         let mut result = json_text(&value);
         if !failed.is_empty() {
+            result.is_error = Some(true);
+        }
+        Ok(result)
+    }
+
+    #[tool(
+        name = "cut_printer",
+        description = "Cut the tape to release the last label held by chain and continue, on printers whose probe reports cut. The adapter does not retry: if the response is lost the outcome is unknown.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn cut_printer(
+        &self,
+        Parameters(args): Parameters<CutPrinterArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        if !valid_printer_id(&args.printer) {
+            return Err(error_text(format!(
+                "invalid printer id '{}': must be non-empty and match ^[a-zA-Z0-9_-]+$",
+                args.printer
+            )));
+        }
+        let url = self.url(&format!("api/printers/{}/cut", args.printer));
+        let body = self.mutate_json(reqwest::Method::POST, url, None).await?;
+        // The complete answer passes through unchanged; only its status decides isError.
+        let mut result = json_text(&body);
+        if body.get("status").and_then(Value::as_str) == Some("failed") {
             result.is_error = Some(true);
         }
         Ok(result)

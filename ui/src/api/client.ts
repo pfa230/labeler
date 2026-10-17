@@ -1,4 +1,4 @@
-import type { ApiErrorBody, PrintSummary } from "./types";
+import type { ApiErrorBody, CutResult, PrintSummary } from "./types";
 import type { BatchLabel } from "../lib/labelGrid";
 
 const BASE = "/api";
@@ -91,6 +91,11 @@ export function renderBatch(body: RenderBody): Promise<{ blob: Blob; filename?: 
 
 export function printBatch(body: PrintBody): Promise<PrintSummary> {
   return sendJson<PrintSummary>("POST", "/print", body);
+}
+
+// One cut for a stored printer: releases the label chain and continue holds.
+export function cutPrinter(printer: string): Promise<CutResult> {
+  return sendJson<CutResult>("POST", `/printers/${encodeURIComponent(printer)}/cut`, undefined);
 }
 
 // ui "What a screen submits": report how many labels were sent and each failed label with its error.

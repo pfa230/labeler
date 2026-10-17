@@ -3,7 +3,7 @@ import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
 import { pruneDataForSubmit } from "../../lib/labelInputs";
-import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../../api/client";
+import { ApiError, cutPrinter, printBatch, renderBatch, saveBlob, sentMessage } from "../../api/client";
 import { usePrinterProbe, usePrinters, useSettings } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 import type { PrintSummary, TemplateDetail } from "../../api/types";
@@ -53,6 +53,8 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const probe = usePrinterProbe(effectivePrinter);
   const chainSupported =
     probe.isSuccess && probe.data.status === "ok" && probe.data.capabilities.chain_and_continue;
+  const cutSupported =
+    probe.isSuccess && probe.data.status === "ok" && probe.data.capabilities.cut;
   const [chain, setChain] = useState(false);
   const [chainPrinter, setChainPrinter] = useState(effectivePrinter);
   if (chainPrinter !== effectivePrinter) {
@@ -125,6 +127,26 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
       showSummary(summary, printer);
     } catch (err) {
       reportError(err, "Print failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onCut = async () => {
+    setFormError(null);
+    const printer = effectivePrinter;
+    if (!printer) return;
+    setBusy(true);
+    try {
+      const result = await cutPrinter(printer);
+      if (result.status === "failed") {
+        push({ kind: "error", message: result.detail });
+      } else {
+        const name = printers?.find((p) => p.id === printer)?.name ?? printer;
+        push({ kind: "ok", message: `Cut ${name}` });
+      }
+    } catch (err) {
+      push({ kind: "error", message: err instanceof Error ? err.message : "Cut failed" });
     } finally {
       setBusy(false);
     }
@@ -220,6 +242,17 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
           >
             Print
           </button>
+          {cutSupported && (
+            <button
+              type="button"
+              onClick={onCut}
+              disabled={busy || !effectivePrinter || stale}
+              className={`${buttonBase} h-11 border`}
+              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+            >
+              Cut
+            </button>
+          )}
           {chainSupported && (
             <div className="flex flex-col">
               <label className="flex items-center gap-2 text-sm">

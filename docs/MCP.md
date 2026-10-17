@@ -1,6 +1,6 @@
 # MCP adapter
 
-`labeler-mcp` is a stdio [MCP](https://modelcontextprotocol.io) adapter for AI agents such as Claude Code. It forwards eleven tools to a running labeler REST service: the whole template API (list, detail, source, thumbnail, create, replace, delete, reload), filled PNG previews, printer discovery and batch printing. The service owns validation, rendering, printer connections and job attribution; the adapter owns only the MCP protocol and the HTTP calls.
+`labeler-mcp` is a stdio [MCP](https://modelcontextprotocol.io) adapter for AI agents such as Claude Code. It forwards twelve tools to a running labeler REST service: the whole template API (list, detail, source, thumbnail, create, replace, delete, reload), filled PNG previews, printer discovery, batch printing and cutting the tape to release a held label. The service owns validation, rendering, printer connections and job attribution; the adapter owns only the MCP protocol and the HTTP calls.
 
 ## Build
 
@@ -45,12 +45,13 @@ For a local service in no-auth mode, omit `-e LABELER_TOKEN`; prints are then at
 | `render_label` | `template`, `data` | `POST /api/render/label?format=png`. Returns the filled label as an inline PNG image. |
 | `list_printers` | — | `GET /api/printers`. The service's configured printers. |
 | `print_labels` | `template`, `printer`, `labels`, `start_slot?`, `chain_and_continue?` | `POST /api/print`. Sends physical print jobs for a batch of labels. |
+| `cut_printer` | `printer` | `POST /api/printers/{id}/cut`. Cuts the tape to release the last label held by chain and continue, on printers whose probe reports cut support. |
 
-`template` is a template id: non-empty, matching `^[a-zA-Z0-9_-]+$` (letters, digits, `-` and `_`). The six path-based template-management tools (`get_template`, `get_template_source`, `get_template_thumbnail`, `create_template`, `replace_template`, `delete_template`) refuse an id outside that rule before any request is sent; `render_label` and `print_labels` forward their `template` argument without adapter validation. Any argument key outside a tool's schema is refused before any request too. Every valid id addresses that template, including the id `reload`.
+`template` is a template id: non-empty, matching `^[a-zA-Z0-9_-]+$` (letters, digits, `-` and `_`). The six path-based template-management tools (`get_template`, `get_template_source`, `get_template_thumbnail`, `create_template`, `replace_template`, `delete_template`) refuse an id outside that rule before any request is sent; `render_label` and `print_labels` forward their `template` argument without adapter validation. `printer` in `cut_printer` is a printer id and follows the same rule, refused before any request too. Any argument key outside a tool's schema is refused before any request too. Every valid id addresses that template, including the id `reload`.
 
 `render_label` previews **single-label templates only**; the service refuses sheet templates (print those with `print_labels`). Use `get_template_thumbnail` for a sheet's one-slot preview.
 
-Read tools are advertised as read-only. The write tools and `print_labels` are advertised as non-read-only, destructive and non-idempotent, so a client can warn before they run.
+Read tools are advertised as read-only. The write tools, `print_labels` and `cut_printer` are advertised as non-read-only, destructive and non-idempotent, so a client can warn before they run.
 
 `chain_and_continue` selects the finishing of the dispatched jobs: `true` chains them and keeps the final end attached for the next print; `false` or omission prints ordinarily, with each job finished as the printer normally would. The service refuses `chain_and_continue: true` with `chain_and_continue_unsupported` before dispatch when the printer does not advertise support, rather than quietly switching to ordinary printing. A non-boolean or null value is refused by the adapter before any request is sent.
 

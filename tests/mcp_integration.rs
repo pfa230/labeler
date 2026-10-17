@@ -357,7 +357,7 @@ async fn personal_token_preview_print_and_attribution() {
     .await;
     mcp.initialize().await;
 
-    // The eleven tools are what a client discovers against the real service.
+    // The twelve tools are what a client discovers against the real service.
     let tools = mcp.list_tools().await;
     let mut names: Vec<String> = tools["tools"]
         .as_array()

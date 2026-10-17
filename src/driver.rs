@@ -136,6 +136,24 @@ pub fn print_job_request(
     Ok(request)
 }
 
+/// ptouch-print-server's project-local `Ptouch-Cut` operation: releases the last label chain and
+/// continue leaves attached, without a document or a job.
+const PTOUCH_CUT_OPERATION: u16 = 0x5f01;
+
+/// The `Ptouch-Cut` request for one printer: the standard operation attributes and the printer's
+/// URI, no document and no job.
+pub fn cut_request(uri: ipp::prelude::Uri) -> Result<ipp::prelude::IppRequestResponse, PrintError> {
+    use ipp::prelude::*;
+    let mut request = IppRequestResponse::new(
+        IppVersion::v1_1(),
+        Operation::GetPrinterAttributes,
+        Some(uri),
+    )
+    .map_err(|err| PrintError::Transport(err.to_string()))?;
+    request.header_mut().operation_or_status = PTOUCH_CUT_OPERATION;
+    Ok(request)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
     #[error("invalid printer: {0}")]
@@ -175,6 +193,8 @@ pub trait PrinterDriver: Send + Sync {
         }
     }
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError>;
+    /// Send one `Ptouch-Cut` request, releasing the label chain and continue holds.
+    async fn cut(&self) -> Result<(), PrintError>;
 }
 
 /// Reserved host (RFC 2606, never resolves) that routes a printer to `FakeDriver` in the test build,
@@ -359,6 +379,28 @@ impl PrinterDriver for CupsDriver {
             )))
         }
     }
+
+    async fn cut(&self) -> Result<(), PrintError> {
+        use ipp::prelude::*;
+
+        let uri: Uri = self.uri.parse().map_err(|err| {
+            PrintError::Transport(format!("invalid printer uri '{}': {err}", self.uri))
+        })?;
+        let request = cut_request(uri.clone())?;
+        let response = self
+            .build_client(uri, None)
+            .send(request)
+            .await
+            .map_err(|err| PrintError::Transport(err.to_string()))?;
+        if response.header().status_code().is_success() {
+            Ok(())
+        } else {
+            Err(PrintError::Transport(format!(
+                "printer returned IPP status {:?}",
+                response.header().status_code()
+            )))
+        }
+    }
 }
 
 /// Convert an IPP `media-size` `x-dimension` (hundredths of mm, Integer) to millimetres.
@@ -383,6 +425,8 @@ pub struct PrinterCapabilities {
     /// `finishings-col-supported` includes `finishing-template` and `finishing-template-supported`
     /// includes `ptouch-chain`.
     pub supports_chain_and_continue: bool,
+    /// `operations-supported` includes enum `0x5f01` (`Ptouch-Cut`).
+    pub supports_cut: bool,
 }
 
 const COLOR_RASTER_TYPES: &[&str] = &["srgb_8", "sgray_8", "cmyk_8", "adobe-rgb_8", "srgb_16"];
@@ -435,6 +479,7 @@ impl PrinterCapabilities {
             model,
             supports_trim: false,
             supports_chain_and_continue: false,
+            supports_cut: false,
         }
     }
 
@@ -521,6 +566,8 @@ impl PrinterCapabilities {
                 _ => false,
             },
         );
+        caps.supports_cut = values("operations-supported")
+            .contains(&ipp::value::IppValue::Enum(PTOUCH_CUT_OPERATION.into()));
         caps
     }
 }
@@ -562,7 +609,8 @@ pub fn effective_render(
 /// exercising the `/print` dispatch without a real printer. Knobs: `fail=1`, `probe=unreachable`,
 /// `password=<s>`, `insecure` (0/1), and capabilities `bilevel`, `png`, `trim`, `chain` (0/1), `dpi`,
 /// `media` (loaded width, mm), `model`; the printer reports capabilities iff at least one capability
-/// knob is present.
+/// knob is present. `cut` names the cut outcome: `ok` (the default) or an IPP status name to fail
+/// with.
 #[cfg(test)]
 struct FakeDriver {
     fail: bool,
@@ -580,6 +628,7 @@ struct FakeDriver {
     /// like a printer refusing media it does not have.
     expected_media_x: Option<i32>,
     expected_media_y: Option<i32>,
+    cut: Option<String>,
 }
 
 #[cfg(test)]
@@ -606,6 +655,7 @@ impl FakeDriver {
             model: knob("model").map(str::to_string),
             supports_trim: knob("trim") == Some("1"),
             supports_chain_and_continue: knob("chain") == Some("1"),
+            supports_cut: false,
         });
         Some(Self {
             fail: knob("fail") == Some("1"),
@@ -618,6 +668,7 @@ impl FakeDriver {
             insecure: connection.insecure,
             expected_media_x: knob("media_x").map(|v| v.parse().expect("numeric fake knob")),
             expected_media_y: knob("media_y").map(|v| v.parse().expect("numeric fake knob")),
+            cut: knob("cut").map(str::to_string),
         })
     }
 
@@ -690,6 +741,15 @@ impl PrinterDriver for FakeDriver {
             )));
         }
         Ok(())
+    }
+
+    async fn cut(&self) -> Result<(), PrintError> {
+        match self.cut.as_deref() {
+            None | Some("ok") => Ok(()),
+            Some(status) => Err(PrintError::Transport(format!(
+                "printer returned IPP status {status}"
+            ))),
+        }
     }
 }
 
@@ -879,6 +939,23 @@ mod tests {
         assert!(!caps_from(vec![("finishings-supported", IppValue::Integer(11))]).supports_trim);
         let silent = caps_from(vec![]);
         assert!(!silent.supports_trim && !silent.supports_chain_and_continue);
+    }
+
+    #[test]
+    fn cut_support_is_the_ptouch_cut_enum_in_operations_supported() {
+        use ipp::value::IppValue;
+        let cut = IppValue::Enum(0x5f01);
+        assert!(
+            caps_from(vec![(
+                "operations-supported",
+                IppValue::Array(vec![IppValue::Enum(3), cut.clone()])
+            )])
+            .supports_cut
+        );
+        assert!(caps_from(vec![("operations-supported", cut)]).supports_cut);
+        assert!(!caps_from(vec![("operations-supported", IppValue::Enum(3))]).supports_cut);
+        assert!(!caps_from(vec![("operations-supported", IppValue::Integer(0x5f01))]).supports_cut);
+        assert!(!caps_from(vec![]).supports_cut);
     }
 
     #[test]
@@ -1281,6 +1358,31 @@ mod tests {
             assert_eq!(size.get("x-dimension"), Some(&IppValue::Integer(2400)));
             assert_eq!(size.get("y-dimension"), Some(&IppValue::Integer(6250)));
         }
+    }
+
+    #[test]
+    fn cut_request_carries_the_vendor_operation_and_no_document() {
+        use ipp::model::DelimiterTag::OperationAttributes;
+        use ipp::value::IppValue;
+        use std::io::Read as _;
+        let uri: ipp::prelude::Uri = "ipp://printer.test/ipp/print".parse().unwrap();
+        let bytes = cut_request(uri).expect("request").to_bytes();
+        let mut req = ipp::parser::IppParser::new(std::io::Cursor::new(bytes.to_vec()))
+            .parse()
+            .expect("decodes");
+        assert_eq!(req.header().operation_or_status, 0x5f01);
+        assert_eq!(
+            attr(&req, OperationAttributes, "printer-uri"),
+            Some(IppValue::Uri(
+                "ipp://printer.test/ipp/print".try_into().unwrap()
+            ))
+        );
+        let mut document = [0u8; 1];
+        assert_eq!(
+            req.payload_mut().read(&mut document).expect("payload read"),
+            0,
+            "no document data"
+        );
     }
 
     #[tokio::test]

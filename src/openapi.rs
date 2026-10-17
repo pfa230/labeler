@@ -3,9 +3,9 @@ use utoipa::OpenApi;
 use crate::{
     api,
     api::{
-        AuthStatus, Credentials, DatetimePreviewRequest, DatetimePreviewResponse, OkResponse,
-        PasswordChange, ProbeCapabilities, ProbeResponse, ResolvedSetting, SettingValue,
-        TokenCreate, TokenCreated, TokenSummary, UserSummary,
+        AuthStatus, Credentials, CutResponse, DatetimePreviewRequest, DatetimePreviewResponse,
+        OkResponse, PasswordChange, ProbeCapabilities, ProbeResponse, ResolvedSetting,
+        SettingValue, TokenCreate, TokenCreated, TokenSummary, UserSummary,
     },
     models::{
         BatchRowError, BatchSummary, ErrorBody, ErrorResponse, HealthResponse, LabelInput,
@@ -35,6 +35,7 @@ use crate::{
         api::delete_printer,
         api::probe_printer,
         api::probe_stored_printer,
+        api::cut_printer,
         api::get_variables,
         api::put_variable,
         api::get_settings,
@@ -77,6 +78,7 @@ use crate::{
             RenderProfile,
             ProbeResponse,
             ProbeCapabilities,
+            CutResponse,
             TemplateList,
             TemplateSummary,
             TemplateFormat,

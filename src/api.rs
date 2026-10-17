@@ -177,6 +177,7 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/printers", get(list_printers).post(create_printer))
         .route("/printers/probe", post(probe_printer))
         .route("/printers/{id}/probe", post(probe_stored_printer))
+        .route("/printers/{id}/cut", post(cut_printer))
         .route(
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
@@ -634,12 +635,17 @@ pub async fn thumbnail(
         .into_response())
 }
 
-fn validate_printer(id: &str, name: &str, connection: &PrinterConnection) -> Result<(), AppError> {
-    if id.is_empty()
-        || !id
+/// The printer id rule (printing, "Printer fields"): non-empty, letters, digits, `'-'` or `'_'`.
+/// Shared with the MCP adapter, which checks a `cut_printer` id before building its request.
+pub fn valid_printer_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+}
+
+fn validate_printer(id: &str, name: &str, connection: &PrinterConnection) -> Result<(), AppError> {
+    if !valid_printer_id(id) {
         return Err(AppError::invalid_request(
             Reason::PrinterIdInvalid,
             format!(
@@ -969,6 +975,8 @@ pub struct ProbeCapabilities {
     pub accepts_png: bool,
     /// The printer advertises the `ptouch-chain` finishing template.
     pub chain_and_continue: bool,
+    /// The printer advertises the `Ptouch-Cut` operation.
+    pub cut: bool,
 }
 
 /// Result of a probe. Always returned inside a `200`; reachability is data, not the HTTP status.
@@ -996,6 +1004,7 @@ impl ProbeResponse {
                 color: color.to_string(),
                 accepts_png: caps.accepts_png,
                 chain_and_continue: caps.supports_chain_and_continue,
+                cut: caps.supports_cut,
             },
         }
     }
@@ -1041,6 +1050,41 @@ async fn probe_connection(connection: &PrinterConnection) -> Result<Json<ProbeRe
     Ok(Json(match driver.probe().await {
         crate::driver::ProbeOutcome::Ok(c) => ProbeResponse::ok(c),
         crate::driver::ProbeOutcome::Unreachable(d) => ProbeResponse::Unreachable { detail: d },
+    }))
+}
+
+/// Result of a cut. Always returned inside a `200`; a printer-side failure is data, not the HTTP
+/// status.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CutResponse {
+    Ok,
+    Failed { detail: String },
+}
+
+#[utoipa::path(
+    post,
+    path = "/printers/{id}/cut",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses(
+        (status = 200, description = "Cut result (ok or failed)", body = CutResponse),
+        (status = 404, description = "Printer not found", body = ErrorResponse)
+    )
+)]
+pub async fn cut_printer(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<CutResponse>, AppError> {
+    let Some(connection) = state.store().get_printer_connection(&id).await? else {
+        return Err(AppError::not_found(NotFoundKind::Printer, id));
+    };
+    let driver = crate::driver::driver_for(&connection)
+        .map_err(|e| AppError::printer_invalid(e.to_string()))?;
+    Ok(Json(match driver.cut().await {
+        Ok(()) => CutResponse::Ok,
+        Err(err) => CutResponse::Failed {
+            detail: err.to_string(),
+        },
     }))
 }
 
