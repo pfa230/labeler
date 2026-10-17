@@ -1184,31 +1184,28 @@ fn line_budget(
         .take_while(|&k| fits_height(baseline(cap, pitch, k), height_pt))
         .count();
     let whole_judged = judged.as_ref().is_some_and(|j| j.width_fits);
-    // The fit already shaped the whole block; reuse it when it is here. Otherwise only the lines the
-    // budget can keep are measured.
-    let raw_metrics = judged
-        .map(|j| j.metrics)
-        .unwrap_or_else(|| measure_lines(face, &raw_lines[..k_metric], size_pt));
-    // Shorten with the block's shared reservation, so a line that only overruns because of another
-    // line's overhang is shortened in place rather than dropped.
-    let (forms, _) = shorten_block_to_width(
-        face,
-        raw_lines[..k_metric].to_vec(),
-        raw_metrics,
-        size_pt,
-        width_pt,
-        horizontal,
-    );
+    // The fit already shaped the whole block; reuse it for the `k = n` candidate. Every other
+    // candidate is measured from its own raw prefix.
+    let mut judged_metrics = judged.map(|j| j.metrics);
 
     for k in (1..=k_metric).rev() {
         if k == n && whole_judged {
             continue;
         }
-        let mut emitted = forms[..k].to_vec();
+        // Build the candidate from the raw lines, including its final marker, and shorten it with
+        // its own measured reservation: a dropped trailing line's overhang must not leave the lines
+        // before it shortened for ink that is no longer emitted.
+        let mut emitted = raw_lines[..k].to_vec();
         if k < n {
             emitted[k - 1] = ellipsize(face, &raw_lines[k - 1], size_pt, width_pt, horizontal);
         }
-        let mut metrics = measure_lines(face, &emitted, size_pt);
+        let mut metrics = if k == n {
+            judged_metrics
+                .take()
+                .unwrap_or_else(|| measure_lines(face, &emitted, size_pt))
+        } else {
+            measure_lines(face, &emitted, size_pt)
+        };
         let ink_x = block_ink_x(&metrics, horizontal);
         if !fits_width(metric_width(&metrics) + ink_x.reserve(horizontal), width_pt) {
             (emitted, metrics) =
@@ -3028,6 +3025,35 @@ mod helpers_tests {
             "the W run must be shortened: {:?}",
             m.lines
         );
+        assert!(m.width_units <= box_w + 1e-4, "{} > {box_w}", m.width_units);
+    }
+
+    /// The inverse of the shared-reservation rule: shortening is judged on the lines actually
+    /// emitted. Dropping `j`'s descender-bearing line drops its left overhang with it, so the kept
+    /// line is shortened against the two-line block that remains, not the three-line block the fit
+    /// refused. Reserving the dropped line's overhang would leave `WW...` where `WWW...` fits.
+    #[test]
+    fn a_dropped_trailing_overhang_frees_width_for_the_kept_lines() {
+        let face = super::instance(400, 24.0).expect("face");
+        let cap = super::cap_height(&face, 24.0);
+        let pitch = super::line_pitch(24.0, super::resolve_line_spacing(None));
+        // Height exactly the three-line metric block: `baseline(3)` fits, `j`'s fall below it does
+        // not, so the budget must drop the last line.
+        let height_pt = super::baseline(cap, pitch, 3);
+        let box_w = super::pt_to_units(86.35, "mm");
+        let m = test_layout(
+            "WWWW\nHELIX\nj",
+            &FontSize::Fixed(24.0),
+            false,
+            Alignment {
+                horizontal: HorizontalAlign::Left,
+                vertical: VerticalAlign::Top,
+            },
+            Overflow::Ellipsis,
+            (box_w, super::pt_to_units(height_pt, "mm")),
+        )
+        .expect("the two remaining lines fit");
+        assert_eq!(m.lines, vec!["WWW...".to_string(), "HELIX...".to_string()]);
         assert!(m.width_units <= box_w + 1e-4, "{} > {box_w}", m.width_units);
     }
 }
