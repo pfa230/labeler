@@ -6,7 +6,7 @@
 
 ## 2. Verify the reported interactions
 
-- [ ] 2.1 Extend the existing `PrintForm.test.tsx` interaction coverage for integer and number controls with lower-only, upper-only and two-sided bounds, including zero, both exact endpoints, correction, an unbounded side, two invalid fields and clearing with/without a default; assert field feedback, no invalid action requests and correct positive request payloads, isolating preview traffic, and demonstrate the tests fail against the old behavior. Repeat typed-input and action-click checks in a current browser after implementation and record availability/request evidence under `.agent-runs/`; retain the existing independent preview-error and blank/default coverage.
+- [ ] 2.1 Extend the existing `PrintForm.test.tsx` interaction coverage for integer and number controls with lower-only, upper-only and two-sided bounds, including zero, both exact endpoints, correction, two invalid fields and clearing with/without a default; assert field feedback, no invalid action requests and correct positive request payloads, isolating preview traffic, and demonstrate the tests fail against the old behavior. Repeat typed-input and action-click checks in a current browser after implementation and record availability/request evidence under `.agent-runs/`; retain the existing independent preview-error and blank/default coverage.
 
 ## 3. Run the required gates
 

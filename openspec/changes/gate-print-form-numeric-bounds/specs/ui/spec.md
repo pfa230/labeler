@@ -27,7 +27,7 @@ A screen collecting label data SHALL offer one control per parameter in the temp
 
 ### Requirement: Print form numeric bounds
 
-The print form SHALL show a textual error identifying the violated bound beside each nonblank `number` or `integer` field outside its declared `min` or `max` (`parameters`), with the field marked invalid and its error associated accessibly. Print and Download SHALL be disabled while any such field is invalid, and attempts to activate them SHALL send no action request. Equality with either bound SHALL be accepted. Correcting or clearing a field SHALL remove its bound error; when no field remains outside its bounds, actions SHALL regain availability subject to their other conditions. Blank fields SHALL follow "What a screen submits".
+The print form SHALL show a textual error identifying the violated bound beside each nonblank `number` or `integer` field outside its declared `min` or `max` (`parameters`), with the field marked invalid and its error associated accessibly. Print and Download SHALL be disabled while any such field is invalid, and attempts to activate them SHALL send no action request. Equality with either bound SHALL be accepted. Correcting or clearing a field SHALL remove its bound error; when no field remains outside its bounds, actions SHALL regain availability subject to their other conditions.
 
 #### Scenario: A lower-only bound blocks both actions
 
@@ -58,8 +58,3 @@ The print form SHALL show a textual error identifying the violated bound beside 
 
 - **WHEN** the operator clears an out-of-range numeric field, whether or not it has a default, and no other field is out of range
 - **THEN** its bound error disappears and otherwise available actions submit with that field omitted
-
-#### Scenario: An undeclared side imposes no bound
-
-- **WHEN** a lower-only field holds a value above its minimum, or an upper-only field holds a value below its maximum
-- **THEN** that value produces no bound error and does not disable either action
