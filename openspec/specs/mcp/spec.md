@@ -35,7 +35,7 @@ The adapter SHALL connect to the service origin in `LABELER_URL`, defaulting to 
 
 ### Requirement: Tool surface
 
-The adapter SHALL publish exactly the following tools with descriptions and JSON input schemas. All arguments shown without `?` are required; arguments ending in `?` are optional and SHALL be omitted from forwarded requests when absent. Tool arguments and label entries SHALL refuse unlisted keys, while `data` SHALL allow arbitrary parameter names and JSON values. `start_slot` SHALL accept nonnegative integers and refuse explicit null. `chain_and_continue` SHALL accept only boolean values and refuse explicit null. Template identifiers in the seven template-management tools SHALL follow the id rule in `templates`; invalid identifiers SHALL return tool execution errors before calling REST. Every valid identifier, including `reload`, SHALL address that template rather than a different operation.
+The adapter SHALL publish exactly the following tools with descriptions and JSON input schemas. All arguments shown without `?` are required; arguments ending in `?` are optional and SHALL be omitted from forwarded requests when absent. Tool arguments and label entries SHALL refuse unlisted keys, while `data` SHALL allow arbitrary parameter names and JSON values. `start_slot` SHALL accept nonnegative integers and refuse explicit null. `chain_and_continue` SHALL accept only boolean values and refuse explicit null. Template identifiers in the seven template-management tools SHALL follow the id rule in `templates`; invalid identifiers SHALL return tool execution errors before calling REST. Every valid identifier, including `reload`, SHALL address that template rather than a different operation. The `cut_printer` identifier SHALL follow the printer id rule in `printing`; an invalid identifier SHALL return a tool execution error before calling REST.
 
 | Tool | Arguments | Operation |
 |---|---|---|
@@ -50,13 +50,14 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 | `render_label` | `{template: string, data: object}` | `POST /api/render/label?format=png` |
 | `list_printers` | `{}` | `GET /api/printers` |
 | `print_labels` | `{template: string, printer: string, labels: [{data: object}], start_slot?: integer, chain_and_continue?: boolean}` | `POST /api/print` |
+| `cut_printer` | `{printer: string}` | `POST /api/printers/{id}/cut` |
 
-`list_templates`, `get_template`, `get_template_source`, `get_template_thumbnail`, `render_label` and `list_printers` SHALL carry `readOnlyHint: true`. `create_template`, `replace_template`, `delete_template`, `reload_templates` and `print_labels` SHALL carry `readOnlyHint: false`, `destructiveHint: true` and `idempotentHint: false`. The `list_templates` description SHALL state that each summary includes published parameters. The write descriptions SHALL distinguish create from complete-source replacement and deletion; `reload_templates` SHALL describe replacing the live registry from disk. The `print_labels` description SHALL state that it sends physical print jobs and explain that `chain_and_continue: true` selects chain and continue, while false or omission selects ordinary printing (`printing`).
+`list_templates`, `get_template`, `get_template_source`, `get_template_thumbnail`, `render_label` and `list_printers` SHALL carry `readOnlyHint: true`. `create_template`, `replace_template`, `delete_template`, `reload_templates`, `print_labels` and `cut_printer` SHALL carry `readOnlyHint: false`, `destructiveHint: true` and `idempotentHint: false`. The `list_templates` description SHALL state that each summary includes published parameters. The write descriptions SHALL distinguish create from complete-source replacement and deletion; `reload_templates` SHALL describe replacing the live registry from disk. The `print_labels` description SHALL state that it sends physical print jobs and explain that `chain_and_continue: true` selects chain and continue, while false or omission selects ordinary printing (`printing`). The `cut_printer` description SHALL state that it cuts the tape to release the last label held by chain and continue, on printers whose probe reports `cut`.
 
 #### Scenario: Client discovers print arguments
 
 - **WHEN** a client requests the tool list
-- **THEN** it sees eleven tools and a `print_labels` schema requiring `template`, `printer` and `labels`, with physical-print annotations
+- **THEN** it sees twelve tools and a `print_labels` schema requiring `template`, `printer` and `labels`, with physical-print annotations
 - **AND** `chain_and_continue` is an optional, nonnullable boolean with no null default, and the description explains both selections
 
 #### Scenario: An unexpected print option
@@ -88,6 +89,11 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 
 - **WHEN** a client calls `print_labels` with `chain_and_continue` set to null, a string or a number
 - **THEN** the adapter returns a tool execution error with `isError: true` without calling REST
+
+#### Scenario: An invalid printer identifier
+
+- **WHEN** `cut_printer` receives `printer: "../other"`
+- **THEN** it returns an execution error without making an HTTP request
 
 ### Requirement: Catalog results
 
@@ -268,3 +274,12 @@ The adapter MUST NOT automatically retry or follow redirects for create, replace
 
 - **WHEN** a mutation request receives a redirect response
 - **THEN** the adapter does not follow it or replay the mutation at the redirect target
+
+### Requirement: Cut results
+
+A `200` response to `cut_printer` SHALL be returned as JSON text content, with `isError` true exactly when its `status` is `failed`. The adapter MUST NOT automatically retry a cut.
+
+#### Scenario: Failed cut
+
+- **WHEN** the cut endpoint returns `200` with `status: "failed"`
+- **THEN** the tool returns that JSON unchanged with `isError: true`
