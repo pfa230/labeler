@@ -78,7 +78,7 @@ With `wrap: false` each line SHALL be emitted as written, spaces preserved and n
 
 ### Requirement: Layout box
 
-A text SHALL be laid out against the box it will get: its own extent when authored, otherwise the available extent capped by `max_w`/`max_h` (`layout`); on a dynamic-width `single` the frame for this is `format.width.max`. Layout SHALL run for every active text item, including one whose box is fully authored. Breaks and size SHALL NOT be re-decided when the final box is larger than the box laid out against; the extra space is slack for alignment. The same box and value SHALL give the same lines and outcome on every format. `alignment.horizontal` SHALL position each line inside the box and SHALL NOT change the box.
+A text SHALL be laid out against the box it will get: its own extent when authored, otherwise the available extent capped by `max_w`/`max_h` (`layout`); on a dynamic-width `single` the frame for this is `format.width.max`. Layout SHALL run for every active text item, including one whose box is fully authored. Breaks and size SHALL NOT be re-decided when the final box is larger than the box laid out against; the extra space is slack for alignment. The same box and value SHALL give the same lines and outcome on every format. `alignment.horizontal` SHALL position each line's shaped advance box using the horizontal reservation and insets in "Measured block and ink reservation"; that reservation SHALL contribute to a `content` width.
 
 #### Scenario: A fully authored box still enforces its policy
 
@@ -87,8 +87,8 @@ A text SHALL be laid out against the box it will get: its own extent when author
 
 #### Scenario: Alignment does not change the box
 
-- **WHEN** the same `content`-width item renders with `alignment.horizontal` of `left` and of `center`
-- **THEN** both boxes are the laid-out text width
+- **WHEN** the same `content`-width item whose emitted lines have no horizontal ink overhang renders with `alignment.horizontal` of `left` and of `center`
+- **THEN** both boxes are the widest emitted line's shaped advance width
 
 ### Requirement: Auto-shrink
 
@@ -172,7 +172,15 @@ For `n` lines at size `s`, with `c` the instance's cap height and `p` the pitch,
 - `a = max(0, maxᵢ(rise_i − baseline_i))`, `d = max(0, maxᵢ(baseline_i + fall_i) − metric_block)`;
 - `reserve = a + d` for `top` and `bottom`, `2 × max(a, d)` for `center`.
 
-Lines SHALL fit a box of height `H` when `metric_block + reserve ≤ H + 0.01 pt`, computed on the lines being judged; size selection, the line budget and the `fail` verdict SHALL all use this comparison, and their width check carries the same 0.01 pt tolerance. The item's intrinsic height SHALL be `metric_block + reserve` and its intrinsic width the widest line, both on the lines finally emitted; an empty value has width 0 and height `c`. Ink inside the metric block reserves nothing. Fitted ink SHALL lie inside the item's box to within the tolerance, for every glyph Inter supplies.
+For horizontal measurement, each line SHALL have its shaped advance `advance_i` and its ink interval `[left_i, right_i]` relative to that advance's origin, using the same font instance and shaped glyph positions as emission. A line without ink contributes its advance and no ink interval. With `metric_width = maxᵢ(advance_i)`, the renderer SHALL use:
+
+- `x_i = 0` for `left`, `(metric_width − advance_i) / 2` for `center`, and `metric_width − advance_i` for `right`;
+- `l = max(0, maxᵢ(−(x_i + left_i)))`, `r = max(0, maxᵢ(x_i + right_i − metric_width))`, over lines with ink;
+- `horizontal_reserve = l + r` for `left` and `right`, `2 × max(l, r)` for `center`.
+
+Lines SHALL fit a box of height `H` when `metric_block + reserve ≤ H + 0.01 pt`, and width `W` when `metric_width + horizontal_reserve ≤ W + 0.01 pt`, computed on the lines being judged. Size selection, wrapping and ellipsis candidate width checks, the line budget and the `fail` verdict SHALL use the same shaped-width and ink comparisons. The item's intrinsic height SHALL be `metric_block + reserve` and its intrinsic width `metric_width + horizontal_reserve`, both on the lines finally emitted; an empty value has width 0 and height `c`. Ink inside the metric block reserves nothing.
+
+Horizontal `left` alignment SHALL inset the advance block by `l` from the left edge, `right` by `r` from the right edge, and `center` SHALL center each line's advance box with no inset. Punctuation SHALL keep its ordinary shaped position without hanging into the item's margin. Fitted ink SHALL lie inside the item's box to within the tolerance, for every glyph Inter supplies.
 
 #### Scenario: Ink between the lines reserves nothing
 
@@ -198,6 +206,16 @@ Lines SHALL fit a box of height `H` when `metric_block + reserve ≤ H + 0.01 pt
 
 - **WHEN** a `top`-aligned item at size 20 renders `α` followed by `H` with a combining acute (U+0301), in a box exactly its intrinsic height
 - **THEN** it is inset at the top by what the accented `H` alone is inset by, and its ink is contained
+
+#### Scenario: Shaped advances determine a dynamic label's width
+
+- **WHEN** a dynamic-width single label renders a content-width line of repeated `W` characters shortened with `...`
+- **THEN** its width is derived from the emitted line's shaped advances and horizontal ink reservation
+
+#### Scenario: Horizontal center reserves twice the larger side
+
+- **WHEN** one emitted line has advance `A`, left overhang `l` greater than zero and no right overhang
+- **THEN** its content width is `A + l` with left or right alignment and `A + 2l` with center alignment
 
 ### Requirement: Vertical alignment
 
