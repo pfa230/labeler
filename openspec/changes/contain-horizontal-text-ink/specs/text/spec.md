@@ -62,17 +62,6 @@ Horizontal `left` alignment SHALL inset the advance block by `l` from the left e
 
 - **WHEN** a dynamic-width single label renders a content-width line of repeated `W` characters shortened with `...`
 - **THEN** its width is derived from the emitted line's shaped advances and horizontal ink reservation
-- **AND** the final glyph's ink is contained rather than cut by the text box or label edge
-
-#### Scenario: A capped container preserves negative-bearing ink
-
-- **WHEN** a content-width text containing `j` renders in a capped content-width container with enough room for the emitted text and its measured reservation
-- **THEN** its left-bearing ink is inset inside the text box and the container
-
-#### Scenario: A centered shortened line preserves its last dot
-
-- **WHEN** a centered non-wrapping content-width text is capped so an overflowing value is shortened with `...`
-- **THEN** its final dot is contained within the text box
 
 #### Scenario: Horizontal center reserves twice the larger side
 
