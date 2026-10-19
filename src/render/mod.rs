@@ -4314,6 +4314,31 @@ layout:
         );
     }
 
+    /// #259: a lone CR and a CRLF are line terminators, so an auto-length tape renders `abc\rabc`
+    /// and `abc\r\nabc` to the same pixels and image size as `abc\nabc`. Without normalisation the
+    /// `\r` measures as a glyph and both the fitted width and the drawn pixels differ.
+    #[test]
+    fn carriage_return_tape_matches_lf() {
+        let lf = render_tape(&autolength_tape(
+            "abc\nabc",
+            false,
+            VerticalAlign::Center,
+            12.0,
+        ));
+        let lf_img = image::load_from_memory(&lf).expect("decode").to_luma8();
+        for cr_text in ["abc\rabc", "abc\r\nabc"] {
+            let cr = render_tape(&autolength_tape(
+                cr_text,
+                false,
+                VerticalAlign::Center,
+                12.0,
+            ));
+            let cr_img = image::load_from_memory(&cr).expect("decode").to_luma8();
+            assert_eq!(cr_img.dimensions(), lf_img.dimensions(), "{cr_text:?}");
+            assert_eq!(cr_img.as_raw(), lf_img.as_raw(), "{cr_text:?}");
+        }
+    }
+
     /// First and last image rows carrying ink, plus the image height.
     fn ink_rows(png: &[u8]) -> (u32, u32, u32) {
         let img = image::load_from_memory(png).expect("decode").to_luma8();

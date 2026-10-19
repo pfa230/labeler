@@ -629,7 +629,9 @@ pub(super) fn layout_text(
     let alignment = item.alignment;
 
     // Step 1: Break (Segmentation)
-    let normalized = item.raw_text.replace("\r\n", "\n");
+    // CRLF first, then any remaining lone CR: the reverse order would split a `\r\n` pair into two
+    // breaks. Every CR, LF and CRLF is then one line terminator (#259).
+    let normalized = item.raw_text.replace("\r\n", "\n").replace('\r', "\n");
     let segments: Vec<&str> = normalized.split('\n').collect();
 
     // Step 2: Shrink font_size if range
@@ -2403,30 +2405,47 @@ mod helpers_tests {
             "guard: bare \\r must measure non-zero (.notdef) in Inter"
         );
 
-        let crlf = test_layout(
-            "abc\r\nabc",
-            &font_size,
-            false,
-            align.clone(),
-            Overflow::Ellipsis,
-            (50.0, 20.0),
-        )
-        .unwrap();
-
-        let lf = test_layout(
-            "abc\nabc",
-            &font_size,
-            false,
-            align,
-            Overflow::Ellipsis,
-            (50.0, 20.0),
-        )
-        .unwrap();
-
-        assert_eq!(crlf.lines.len(), lf.lines.len());
-        assert_eq!(crlf.lines.len(), 2);
-        assert_eq!(crlf.font_size_pt, lf.font_size_pt);
-        assert_eq!(crlf.width_units, lf.width_units);
+        // Each pair is an LF spelling and the same value with lone CR, CRLF or a mix of all three.
+        // The last pair carries leading, interior and trailing blank lines, so those survive as
+        // line boxes too. Without lone-CR normalisation each CR spelling measures its `\r` as a
+        // glyph and differs from LF.
+        let cases = [
+            ("abc\nabc", "abc\rabc"),
+            ("abc\nabc", "abc\r\nabc"),
+            ("\nhello\n\nworld\n", "\rhello\r\n\rworld\n"),
+        ];
+        for wrap in [false, true] {
+            for (lf_text, cr_text) in cases {
+                let lf = test_layout(
+                    lf_text,
+                    &font_size,
+                    wrap,
+                    align.clone(),
+                    Overflow::Ellipsis,
+                    (50.0, 20.0),
+                )
+                .unwrap();
+                let cr = test_layout(
+                    cr_text,
+                    &font_size,
+                    wrap,
+                    align.clone(),
+                    Overflow::Ellipsis,
+                    (50.0, 20.0),
+                )
+                .unwrap();
+                assert_eq!(cr.lines, lf.lines, "wrap: {wrap}, {cr_text:?}");
+                assert_eq!(
+                    cr.font_size_pt, lf.font_size_pt,
+                    "wrap: {wrap}, {cr_text:?}"
+                );
+                assert_eq!(cr.width_units, lf.width_units, "wrap: {wrap}, {cr_text:?}");
+                assert_eq!(
+                    cr.height_units, lf.height_units,
+                    "wrap: {wrap}, {cr_text:?}"
+                );
+            }
+        }
     }
 
     #[test]
