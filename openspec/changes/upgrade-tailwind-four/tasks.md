@@ -4,7 +4,7 @@
 
 ## 2. Tailwind 4 migration
 
-- [ ] 2.1 Update package/lockfile to Tailwind 4 and its matching Vite plugin, replace the stylesheet entry, and remove the redundant PostCSS/Tailwind configs and direct pipeline-only dependencies. Migrate the inventoried rounded/outline usages and preserve actual default-dependent ring/border/placeholder/button behavior, `.dark` tokens and vendor grid overrides; verify the build uses the Vite plugin and the package/config diff contains only this migration.
+- [ ] 2.1 Update package/lockfile to Tailwind 4 and its matching Vite plugin, replace the stylesheet entry, and remove the redundant PostCSS/Tailwind configs and direct pipeline-only dependencies. Migrate the inventoried rounded/outline/flex-shrink usages and preserve actual default-dependent ring/border/placeholder/button behavior, `.dark` tokens and vendor grid overrides; verify the build uses the Vite plugin and the package/config diff contains only this migration.
 - [ ] 2.2 Repeat the baseline browser captures with identical data/state and produce before/after comparisons plus a written finding for every visual difference; fix migration regressions and retain evidence that layout, grid editors, both themes and keyboard indicators preserve their appearance and colors. Unit tests alone do not complete this task.
 
 ## 3. Clean-install gates
