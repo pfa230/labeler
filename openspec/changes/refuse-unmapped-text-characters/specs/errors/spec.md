@@ -52,4 +52,3 @@
 
 - **WHEN** a label supplies `2.7` for an `integer` parameter `copies`
 - **THEN** the response is `400` with `error.code` `InvalidRequest`, `error.details.reason` `param_value_invalid` and `error.details.param` `copies`
-
