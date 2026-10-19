@@ -1,0 +1,15 @@
+## 1. Font inventory and template admission
+
+- [ ] 1.1 Bundle the three selected regular variable fonts and their licenses under `fonts/`; record upstream versions/sources and actual byte/image-size increase. Verify the image's existing font copy includes them and their metadata family names match the spec.
+- [ ] 1.2 Build the process-lifetime loaded-font inventory shared by validation, measurement and compilation, using the existing Typst FontBook matcher. Verify with a temporary custom static regular/bold family that lookup is case-insensitive, bundled families win duplicates, removal leaves an existing inventory usable and rebuilding the inventory drops that family; also check the absent custom-directory case. These checks must fail if matching diverges or font access remains path-based.
+- [ ] 1.3 Add literal `font` through raw/domain/conversion, default-instantiation cloning and template validation. Extend existing validation tests for an available custom family and an unknown family at a nested text item's `font` path; verify implicit and explicit Inter resolve identically and the existing invalid-body/quarantine behavior is used.
+
+## 2. Selected-face layout and rendering
+
+- [ ] 2.1 Thread the selected face through shaping, variable instances, shrink, ellipsis, metrics/leading, intrinsic sizing and Typst text emission; replace the Inter-only axis prerequisite with application of supported axes. Extend existing text/render tests with Roboto Condensed versus Inter at a measured boundary where the fitting result differs, static regular/bold custom faces, and a weight-only variable font. Check emitted ink containment with existing helpers, and implicit-versus-explicit Inter PNG equality. The alternate-family assertions must fail if measurement or emission still uses Inter.
+- [ ] 2.2 Apply #254's pre-fitting drawable-character check to the selected face; extend its regression with a character whose support differs between two available faces, asserting refusal versus successful rendering, so checking Inter unconditionally fails.
+
+## 3. Guidance and gates
+
+- [ ] 3.1 Update `docs/AUTHORING.md` and `docs/DEPLOY.md` with the `font` syntax, shipped family names, `/config/fonts`, restart requirement and disappearance behavior; verify the documented YAML parses and renders with a custom font supplied through that directory.
+- [ ] 3.2 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` and `npx --no-install openspec validate --all --strict --no-interactive`; retain their results in `.agent-runs/`.
