@@ -5,4 +5,4 @@
 
 ## 2. Validation
 
-- [ ] 2.1 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, and `npx --no-install openspec validate --all --strict --no-interactive`; require every command to pass.
+- [x] 2.1 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, and `npx --no-install openspec validate --all --strict --no-interactive`; require every command to pass.
