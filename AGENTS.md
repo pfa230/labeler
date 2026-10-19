@@ -25,7 +25,7 @@ The behavior contract lives in `openspec/specs/<domain>/spec.md`, one capability
 **Behavior changes go through OpenSpec and openspec-loop; nothing else does.** Behavior means labeler's API, template schema, layout, rendering, errors and UI, which is what the specs describe. The OpenSpec CLI is pinned in the root npm manifest: `npm ci`, then `npx --no-install openspec`. openspec-loop is installed globally (`npm install -g openspec-loop`) and needs `openspec` 1.14.0 or later on `PATH`; `openspec/loop.yaml` configures it. In the change's worktree:
 
 1. `/opsx:propose` writes the proposal (with literal `Fixes #N`), delta specs, design and tasks. A person reviews the plan, then commits it on the issue branch. Proposing stops there: start the loop only when the user asks, and never apply a behavior change by hand.
-2. `loop run <change>`, supervised through the `openspec-loop` skill, reviews the plan, implements it, runs the gates, reviews the patch, archives the change and opens a pull request. The change lands as the loop's commits, its folder kept under `openspec/changes/archive/`.
+2. `loop run <change>`, supervised through the `loop-run` skill, reviews the plan, implements it, runs the gates, reviews the patch, archives the change and opens a pull request. The change lands as the loop's commits, its folder kept under `openspec/changes/archive/`.
 
 A docs fix, harness change (root npm manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `openspec/config.yaml`, `openspec/loop.yaml`), CI change, dependency bump or behavior-preserving refactor skips OpenSpec and the loop: issue, worktree, gates, one commit. So does code that catches up to a contract already in `openspec/specs/`: there is no delta to write, and the issue names the requirements it implements. Nothing checks whether a diff should have carried a delta; that judgment is yours.
 
@@ -80,5 +80,5 @@ A template that parses and renders is not proof it looks right. Render to PNG (`
 
 - `CLAUDE.md` is a symlink to this file. Personal, machine-specific instructions go in the gitignored `CLAUDE.local.md`.
 - The `openspec-*` skills and `opsx` commands under `.claude/`, `.agent/`, `.agents/` and `.opencode/` are generated. Never hand-edit them: upgrade the CLI, run `openspec update --force`, review, and commit the regeneration alone.
-- The `openspec-loop` skill under `.claude/skills/` and `.agents/skills/` is copied verbatim from the installed package. After `npm update -g openspec-loop`, copy it again from the installed package's `skills/openspec-loop` and commit the copy alone.
+- The bundled `loop-*` skills under `.claude/skills/` and `.agents/skills/` are copied verbatim from the installed package. After `npm update -g openspec-loop`, run `loop setup` and commit the refreshed copies alone.
 - Fonts: Inter loads from `fonts/InterVariable.ttf`; Typst is told to use `"Inter Variable"`/`"Inter"`.
