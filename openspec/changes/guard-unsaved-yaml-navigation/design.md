@@ -1,0 +1,24 @@
+## Context
+
+See proposal.md for motivation. App currently nests BrowserRouter/Routes, auth guards, Shell and route elements. RawYamlSection already tracks draft and an edit-start baseline independent of source refetches; its route-id key resets editor state. NewTemplate tracks YAML initialized empty and navigates to the created detail in its success callback. Neither protects navigation outside its own Cancel controls.
+
+RequireAuth handles both auth-query redirects and `labeler:unauthenticated`; main.tsx updates the auth cache on that event. These current mechanisms must retain the auth contract. Existing editor component tests use declarative MemoryRouter wrappers, which cannot supply data-router blocker context.
+
+## Goals / Non-Goals
+
+Protect the two existing YAML editors and preserve route behavior. Keep React Query for data/mutations; no route loaders/actions, React Router upgrade, generic dirty-form registry, persistent drafts, Labels/Import restoration or extra storage. #206 owns restoration. No auth or template-write delta is needed.
+
+## Decisions
+
+- **Routine router default:** Convert the existing route elements with createRoutesFromElements into one route definition used by createBrowserRouter/RouterProvider, with the router created once per app lifetime. Keep auth guard nesting, Shell and every current path/redirect/fallback. Do not duplicate the route tree in tests. If #407 has landed, retain its new route. The installed-version [createBrowserRouter API](https://reactrouter.com/7.18.4/api/data-routers/createBrowserRouter) supplies the data-router context required by the chosen blocker.
+- Reuse RawYamlSection's edit-start baseline and compare source text exactly, not trimmed text or reparsed YAML. In NewTemplate compare YAML to its initially empty/successfully saved baseline; editing only the id is outside unsaved YAML. Keep a local saved-baseline ref there and update it to the submitted YAML synchronously on successful creation before the existing navigate call; an event-time dirty predicate prevents that successful navigation from being blocked by stale render state. A failed mutation does not update the baseline. #144's freshly created copy initializes the existing editor with equal draft/baseline, so merely entering it is clean.
+- Use one small YAML-specific guard component in both editor locations. It accepts the current dirty predicate and owns [useBlocker](https://reactrouter.com/7.18.4/api/hooks/useBlocker) plus Discard/Keep editing controls. Reset cancels a blocked navigation; proceed resumes its actual destination, including POP/Back. Do not intercept every sidebar click or implement history handling separately. Keep the existing editor-local Cancel behavior. Clear any pending blocker when the draft becomes clean or is discarded, rather than leaving a stale confirmation.
+- Use [useBeforeUnload](https://reactrouter.com/7.18.4/api/hooks/useBeforeUnload) to request native confirmation only when that same predicate is dirty. Set the event's cancellation/returnValue needed by browsers; do not implement a custom unload message or recovery store. The router blocker covers SPA transitions and does not cover document reload/external navigation, so neither hook alone satisfies the issue.
+- Keep guards within the existing authenticated editor subtree and let auth redirects retain their contract. Exercise an API 401 while editing against the real route tree; do not introduce a separate auth-bypass flag or a new global navigation service. Preserve the current login/setup/public redirects and unknown-path fallback.
+- Adapt only editor-consuming test wrappers to data-router context and add route-level interactions using the shared application definitions. For real history/unload acceptance, serve the built App and use temporary browser tooling under `.agent-runs/` (reuse #139's tooling when available). Playwright's [dialog support](https://playwright.dev/docs/dialogs#beforeunload-dialog) can observe/accept/dismiss beforeunload; a synthetic jsdom event alone is not native-dialog evidence.
+
+## Risks / Trade-offs
+
+Browser-native unload confirmation requires browser/user-activation conditions and controls its own wording. Verify after typing/clicking in the page and do not claim unsupported browser behavior. Successful creation currently navigates while YAML remains populated, so baseline reset must precede that transition; otherwise the guard would warn immediately after saving.
+
+Real-browser coverage must include unchanged/saved and dirty paths, both editors, sidebar and Back cancellation/proceeding, reload native dialog and the existing route/auth redirects (`/templates` to `/`, unknown path, login/setup and API 401). Record exact scripts/results and any trace in `.agent-runs/`; use existing UI tests for editor error/source-refetch behavior rather than adding another state-restoration mechanism.
