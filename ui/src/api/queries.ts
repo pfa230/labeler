@@ -9,6 +9,19 @@ export function useTemplates() {
   });
 }
 
+export interface ReloadResult {
+  count: number;
+  broken_count: number;
+}
+
+export function useReloadTemplates() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => sendJson<ReloadResult>("POST", "/template-registry/reload", undefined),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
 export function useFavorites() {
   return useQuery({ queryKey: ["favorites"], queryFn: () => getJson<string[]>("/favorites") });
 }

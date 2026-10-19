@@ -33,8 +33,7 @@ export interface Param {
 
 export interface BrokenTemplate {
   path: string;
-  reason: string;
-  error?: string;
+  error: string;
 }
 
 export interface TemplateSummary {

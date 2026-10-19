@@ -49,12 +49,22 @@ const templates: Array<{
   },
 ];
 
-function jsonResponse(body: unknown) {
+function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+type Broken = { path: string; error: string };
 
 // Route the fetch mock by URL: /api/templates returns the template list, while /api/favorites and
 // /api/recent-templates default to [] (so their rows stay hidden). Favorites is a mutable closure so a
@@ -64,10 +74,15 @@ function stubFetch(opts?: {
   recent?: string[];
   empty?: boolean;
   templates?: typeof templates;
+  broken?: Broken[];
+  reloadGate?: Promise<void>;
+  reloadResult?: { templates?: typeof templates; broken?: Broken[] };
+  reloadError?: { status: number; body: unknown };
 }) {
   let favorites = [...(opts?.favorites ?? [])];
   const recent = [...(opts?.recent ?? [])];
-  const currentTemplates = [...(opts?.templates ?? (opts?.empty ? [] : templates))];
+  let currentTemplates = [...(opts?.templates ?? (opts?.empty ? [] : templates))];
+  let currentBroken = [...(opts?.broken ?? [])];
   const calls: { method: string; url: string }[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : (input as Request).url;
@@ -82,7 +97,19 @@ function stubFetch(opts?: {
     }
     if (url === "/api/favorites") return jsonResponse(favorites);
     if (url === "/api/recent-templates") return jsonResponse(recent);
-    return jsonResponse({ templates: currentTemplates });
+    if (url === "/api/template-registry/reload") {
+      if (opts?.reloadGate) await opts.reloadGate;
+      if (opts?.reloadError) return jsonResponse(opts.reloadError.body, opts.reloadError.status);
+      if (opts?.reloadResult) {
+        if (opts.reloadResult.templates) currentTemplates = [...opts.reloadResult.templates];
+        if (opts.reloadResult.broken) currentBroken = [...opts.reloadResult.broken];
+      }
+      return jsonResponse({ count: currentTemplates.length, broken_count: currentBroken.length });
+    }
+    return jsonResponse({
+      templates: currentTemplates,
+      ...(currentBroken.length ? { broken: currentBroken } : {}),
+    });
   });
   vi.stubGlobal("fetch", fetchMock);
   return calls;
@@ -406,5 +433,130 @@ describe("Templates list", () => {
     fireEvent.click(within(toolbar).getByRole("button", { name: "All" }));
     expect(screen.getByRole("region", { name: "Favorites" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Recent" })).toBeInTheDocument();
+  });
+});
+
+describe("Templates refused entries", () => {
+  const refusedTpl = (id: string, name: string, categories: string[] = []) => ({
+    id,
+    name,
+    description: "",
+    unit: "mm",
+    dpi: 300,
+    format: { type: "single" as const, width: 50, height: 25 },
+    categories,
+  });
+
+  it("shows the refused count while collapsed, full errors when expanded, and keeps both under filters", async () => {
+    stubFetch({
+      templates: [refusedTpl("pallet", "Pallet", ["Shipping"])],
+      broken: [
+        { path: "bad.yaml", error: "bad.yaml: unknown field `ink`" },
+        { path: "notes.txt", error: "notes.txt: not a template file" },
+      ],
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+    expect(screen.getByText("Refused entries (2)")).toBeInTheDocument();
+    expect(screen.queryByText("bad.yaml: unknown field `ink`")).toBeNull();
+
+    fireEvent.click(screen.getByText("Refused entries (2)"));
+    expect(await screen.findByText("bad.yaml: unknown field `ink`")).toBeInTheDocument();
+    expect(screen.getByText("bad.yaml")).toBeInTheDocument();
+    expect(screen.getByText("notes.txt")).toBeInTheDocument();
+    expect(screen.getByText("notes.txt: not a template file")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "zzz-no-match" } });
+    expect(screen.getByText("No templates match.")).toBeInTheDocument();
+    expect(screen.getByText("Refused entries (2)")).toBeInTheDocument();
+    expect(screen.getByText("notes.txt: not a template file")).toBeInTheDocument();
+  });
+
+  it("distinguishes an all-refused registry from an empty installation", async () => {
+    stubFetch({ empty: true, broken: [{ path: "broken.yaml", error: "broken.yaml: bad layout" }] });
+    renderPage();
+    expect(await screen.findByText("Refused entries (1)")).toBeInTheDocument();
+    expect(screen.getByText("No printable templates.")).toBeInTheDocument();
+    expect(screen.queryByText(/no templates yet/i)).toBeNull();
+
+    fireEvent.click(screen.getByText("Refused entries (1)"));
+    expect(await screen.findByText("broken.yaml: bad layout")).toBeInTheDocument();
+  });
+
+  it("offers Reload templates even when nothing is refused", async () => {
+    stubFetch();
+    renderPage();
+    await screen.findByText("Brother 24mm");
+    expect(await screen.findByRole("button", { name: "Reload templates" })).toBeInTheDocument();
+    expect(screen.queryByText(/refused entries/i)).toBeNull();
+  });
+
+  it("awaits the registry reload before refreshing, turning a repaired refusal printable", async () => {
+    const gate = deferred<void>();
+    const calls = stubFetch({
+      empty: true,
+      broken: [{ path: "bad.yaml", error: "bad.yaml: bad layout" }],
+      reloadGate: gate.promise,
+      reloadResult: { templates: [refusedTpl("fixed", "Fixed")], broken: [] },
+    });
+    renderPage();
+    const reload = await screen.findByRole("button", { name: "Reload templates" });
+    await screen.findByText("Refused entries (1)");
+    const listGets = () => calls.filter((c) => c.method === "GET" && c.url === "/api/templates").length;
+    const baseline = listGets();
+
+    fireEvent.click(reload);
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === "POST" && c.url === "/api/template-registry/reload"),
+      ).toBe(true),
+    );
+    // The POST is still gated, so no list refresh may have started.
+    expect(listGets()).toBe(baseline);
+    expect(reload).toBeDisabled();
+
+    gate.resolve();
+    expect(await screen.findByText("Fixed")).toBeInTheDocument();
+    expect(screen.queryByText(/refused entries/i)).toBeNull();
+    expect(screen.queryByText("No printable templates.")).toBeNull();
+    expect(listGets()).toBeGreaterThan(baseline);
+  });
+
+  it("keeps refusals that survive a successful reload", async () => {
+    stubFetch({
+      templates: [refusedTpl("good", "Good")],
+      broken: [{ path: "bad.yaml", error: "bad.yaml: bad layout" }],
+      reloadResult: {
+        templates: [refusedTpl("good", "Good")],
+        broken: [{ path: "notes.txt", error: "notes.txt: not a template file" }],
+      },
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("Refused entries (1)"));
+    expect(await screen.findByText("bad.yaml: bad layout")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload templates" }));
+    expect(await screen.findByText("notes.txt: not a template file")).toBeInTheDocument();
+    expect(screen.queryByText("bad.yaml: bad layout")).toBeNull();
+    expect(screen.getByText("Refused entries (1)")).toBeInTheDocument();
+  });
+
+  it("reports a failed reload and keeps the displayed templates and refusals", async () => {
+    stubFetch({
+      templates: [refusedTpl("good", "Good")],
+      broken: [{ path: "bad.yaml", error: "bad.yaml: bad layout" }],
+      reloadError: {
+        status: 500,
+        body: { error: { code: "Internal", message: "registry read failed" } },
+      },
+    });
+    renderPage();
+    await screen.findByText("Good");
+    expect(screen.getByText("Refused entries (1)")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload templates" }));
+    expect(await screen.findByText("registry read failed")).toBeInTheDocument();
+    expect(screen.getByText("Good")).toBeInTheDocument();
+    expect(screen.getByText("Refused entries (1)")).toBeInTheDocument();
   });
 });

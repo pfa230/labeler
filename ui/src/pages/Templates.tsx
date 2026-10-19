@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useFavorites, useRecentTemplates, useSetFavorite, useTemplates } from "../api/queries";
+import {
+  useFavorites,
+  useRecentTemplates,
+  useReloadTemplates,
+  useSetFavorite,
+  useTemplates,
+} from "../api/queries";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { FormatBadge } from "../components/FormatBadge";
@@ -92,9 +98,21 @@ export function Templates() {
   const favs = useFavorites();
   const recents = useRecentTemplates();
   const setFav = useSetFavorite();
+  const reload = useReloadTemplates();
   const { push } = useToast();
   const [query, setQuery] = useState("");
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>(ALL_FILTER);
+  const [refusedOpen, setRefusedOpen] = useState(false);
+
+  const broken = data?.broken ?? [];
+
+  const onReload = async () => {
+    try {
+      await reload.mutateAsync();
+    } catch (err) {
+      push({ kind: "error", message: err instanceof Error ? err.message : "Reload failed" });
+    }
+  };
 
   useEffect(() => {
     if (isError) {
@@ -161,6 +179,15 @@ export function Templates() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">Labels</h1>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onReload}
+            disabled={reload.isPending}
+            className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
+            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+          >
+            Reload templates
+          </button>
           <Link
             to="/templates/catalog"
             className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
@@ -254,7 +281,35 @@ export function Templates() {
         <p style={{ color: "var(--muted)" }}>No templates match.</p>
       )}
       {data && (data.templates ?? []).length === 0 && !query && selectedFilter.kind === "all" && (
-        <EmptyTemplates />
+        broken.length === 0 ? <EmptyTemplates /> : (
+          <p style={{ color: "var(--muted)" }}>No printable templates.</p>
+        )
+      )}
+
+      {data && broken.length > 0 && (
+        <details
+          className="rounded-lg border p-4"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+          onToggle={(e) => setRefusedOpen(e.currentTarget.open)}
+        >
+          <summary className="cursor-pointer text-sm font-medium" style={{ color: "var(--ink)" }}>
+            Refused entries ({broken.length})
+          </summary>
+          {refusedOpen && (
+            <ul className="mt-3 flex flex-col gap-3">
+              {broken.map((b) => (
+                <li key={b.path}>
+                  <code className="text-xs" style={{ color: "var(--ink)" }}>
+                    {b.path}
+                  </code>
+                  <p className="text-sm" style={{ color: "var(--bad)" }}>
+                    {b.error}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
       )}
       {!isFiltered && favTemplates.length > 0 && (
         <section aria-label="Favorites" className="flex flex-col gap-2">
