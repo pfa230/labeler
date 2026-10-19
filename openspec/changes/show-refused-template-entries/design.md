@@ -1,6 +1,6 @@
 ## Context
 
-See proposal.md for motivation. `useTemplates` already retains `broken`, but Labels reads only `templates`. The backend returns `{ path, error }`; the client incorrectly requires an obsolete `reason` and makes `error` optional. Listing reads the loaded registry; only `POST /api/template-registry/reload` rescans disk. A successful reload can still contain refused entries.
+See proposal.md for motivation. `useTemplates` already retains `broken`, but Labels reads only `templates`. The backend returns `{ path, error }`; the client incorrectly requires an obsolete `reason` and makes `error` optional. Listing reads the loaded registry; its GET never rescans disk, and `POST /api/template-registry/reload` is the Labels screen's rescan path. A successful reload can still contain refused entries.
 
 ## Goals / Non-Goals
 
