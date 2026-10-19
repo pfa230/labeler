@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
+import { createMemoryRouter, Outlet, RouterProvider, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { TemplateDetail } from "./TemplateDetail";
@@ -117,17 +117,29 @@ function GoToOther() {
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // A data router, not a declarative MemoryRouter: the YAML guard's useBlocker needs its context.
+  const router = createMemoryRouter(
+    [
+      {
+        element: (
+          <>
+            <GoToOther />
+            <Outlet />
+          </>
+        ),
+        children: [
+          { path: "/templates/:id", element: <TemplateDetail /> },
+          // The list is the app's index route; "/templates" is only a redirect to it.
+          { path: "/", element: <div>Labels list</div> },
+        ],
+      },
+    ],
+    { initialEntries: ["/templates/brother_24mm_qr"] },
+  );
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter initialEntries={["/templates/brother_24mm_qr"]}>
-          <GoToOther />
-          <Routes>
-            <Route path="/templates/:id" element={<TemplateDetail />} />
-            {/* The list is the app's index route; "/templates" is only a redirect to it. */}
-            <Route path="/" element={<div>Labels list</div>} />
-          </Routes>
-        </MemoryRouter>
+        <RouterProvider router={router} />
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -196,14 +208,13 @@ function stubSheetFetch() {
 
 function renderSheetPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createMemoryRouter([{ path: "/templates/:id", element: <TemplateDetail /> }], {
+    initialEntries: ["/templates/avery5163"],
+  });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter initialEntries={["/templates/avery5163"]}>
-          <Routes>
-            <Route path="/templates/:id" element={<TemplateDetail />} />
-          </Routes>
-        </MemoryRouter>
+        <RouterProvider router={router} />
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -427,7 +438,9 @@ describe("Template detail", () => {
     });
 
     // React Router reuses the templates/:id component, so without a reset the draft would follow.
+    // The dirty draft blocks the move first; Discard lets it through.
     fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
 
     // Immediately, while the new detail is still loading: the draft must already be gone.
     expect(screen.queryByRole("textbox", { name: /template yaml/i })).not.toBeInTheDocument();
@@ -435,6 +448,79 @@ describe("Template detail", () => {
     fireEvent.click(await screen.findByText(/raw yaml/i));
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
     expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(otherSource);
+  });
+
+  it("keeps a dirty draft on Keep editing, then reaches the destination on Discard", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Dirty\n" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
+    expect(await screen.findByRole("alertdialog", { name: /unsaved yaml changes/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+
+    // Staying put: the dialog is gone and the edited text survives.
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(
+      "id: brother_24mm_qr\nname: Dirty\n",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    expect(await screen.findByText("Other Label")).toBeInTheDocument();
+  });
+
+  it("does not ask when leaving with unchanged or reverted text", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    // Entering edit mode seeds draft from baseline, so it is clean; change then revert explicitly.
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Temporary\n" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), { target: { value: source } });
+
+    fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(await screen.findByText("Other Label")).toBeInTheDocument();
+  });
+
+  it("does not ask after a successful save", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Saved\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("button", { name: "Edit" });
+
+    fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(await screen.findByText("Other Label")).toBeInTheDocument();
+  });
+
+  it("keeps protecting a failed save", async () => {
+    stubFetch(204, 422);
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Broken\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findAllByText(/out of bounds/);
+
+    fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
+    expect(await screen.findByRole("alertdialog", { name: /unsaved yaml changes/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(
+      "id: brother_24mm_qr\nname: Broken\n",
+    );
   });
 
   it("disables Edit and shows an error when the source cannot be loaded", async () => {
@@ -567,15 +653,17 @@ describe("Template page print form", () => {
 
   function renderTemplatePage(path: string) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        { path: "/templates/:id", element: <TemplateDetail /> },
+        { path: "/", element: <div>labels grid</div> },
+      ],
+      { initialEntries: [path] },
+    );
     return render(
       <QueryClientProvider client={qc}>
         <ToastProvider>
-          <MemoryRouter initialEntries={[path]}>
-            <Routes>
-              <Route path="/templates/:id" element={<TemplateDetail />} />
-              <Route path="/" element={<div>labels grid</div>} />
-            </Routes>
-          </MemoryRouter>
+          <RouterProvider router={router} />
         </ToastProvider>
       </QueryClientProvider>,
     );

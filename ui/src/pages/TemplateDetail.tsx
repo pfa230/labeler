@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
+import { UnsavedYamlGuard } from "../app/UnsavedYamlGuard";
 import { useToast } from "../app/toast-context";
 import type { Dimension, TemplateFormat } from "../api/types";
 import { FormatBadge } from "../components/FormatBadge";
@@ -43,6 +44,7 @@ function RawYamlSection({ id }: { id: string }) {
   const { push } = useToast();
 
   return (
+    <UnsavedYamlGuard dirty={() => draft !== null && draft !== baseline}>
       <details
         className="rounded-lg border p-4"
         style={{ background: "var(--surface)", borderColor: "var(--border)" }}
@@ -163,6 +165,7 @@ function RawYamlSection({ id }: { id: string }) {
           </>
         )}
       </details>
+    </UnsavedYamlGuard>
   );
 }
 
