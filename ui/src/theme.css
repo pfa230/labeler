@@ -7,7 +7,7 @@
   --default-ring-color: #3b82f680;
 }
 @layer base {
-  input::placeholder {
+  input::placeholder, textarea::placeholder {
     color: #9ca3af;
   }
   button:not(:disabled), [role="button"]:not(:disabled) {
