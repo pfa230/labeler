@@ -11,7 +11,7 @@ With `wrap: false` each line SHALL be emitted as written, spaces preserved and n
 - **WHEN** a `wrap: false` item renders two non-blank lines in a box tall enough for both and wide enough for each
 - **THEN** both lines are emitted, in order, unbroken
 
-#### Scenario: CR and CRLF cost nothing
+#### Scenario: CRLF costs nothing
 
 - **WHEN** an item on a dynamic-width single label renders `"abc\rabc"` or `"abc\r\nabc"`
 - **THEN** it lays out and renders exactly as `"abc\nabc"`, including line count, chosen size and auto-length label width
