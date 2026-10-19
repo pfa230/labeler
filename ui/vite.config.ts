@@ -1,8 +1,9 @@
 import { defineConfig } from "vitest/config"; // re-exports vite's defineConfig + the `test` field
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   base: "/",
   build: { outDir: "dist", cssTarget: "esnext" },
   server: {

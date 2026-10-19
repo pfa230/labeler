@@ -12,7 +12,7 @@ export type FormValue = {
 };
 
 const inputClass =
-  "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
+  "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = {
   background: "var(--surface)",
   borderColor: "var(--border)",

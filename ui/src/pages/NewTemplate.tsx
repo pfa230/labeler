@@ -79,7 +79,7 @@ export function NewTemplate() {
           aria-label="Template ID"
           required
           pattern="[A-Za-z0-9_-]+"
-          className="rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+          className="rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2"
           style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
         />
       </div>
@@ -96,7 +96,7 @@ export function NewTemplate() {
           spellCheck={false}
           rows={16}
           aria-label="Template YAML"
-          className="w-full rounded-md border p-3 font-mono text-sm focus-visible:outline-none focus-visible:ring-2"
+          className="w-full rounded-md border p-3 font-mono text-sm focus-visible:outline-hidden focus-visible:ring-2"
           style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
         />
       </div>
@@ -107,7 +107,7 @@ export function NewTemplate() {
         <button
           type="submit"
           disabled={save.isPending || id.trim() === "" || yaml.trim() === ""}
-          className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+          className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2"
           style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
         >
           {save.isPending ? "Creating…" : "Create"}

@@ -24,14 +24,14 @@ export function EmptyTemplates({ context }: { context?: string }) {
       <div className="flex flex-wrap items-center gap-3">
         <Link
           to="/templates/catalog"
-          className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+          className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-hidden focus-visible:ring-2"
           style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
         >
           Browse the catalog
         </Link>
         <Link
           to="/templates/new"
-          className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+          className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-hidden focus-visible:ring-2"
           style={{ borderColor: "var(--border)", color: "var(--ink)" }}
         >
           Paste YAML

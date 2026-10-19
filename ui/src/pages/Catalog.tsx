@@ -7,7 +7,7 @@ import { useCreateTemplate, useReplaceTemplate, useTemplates } from "../api/quer
 import { useToast } from "../app/toast-context";
 
 const buttonBase =
-  "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
+  "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
 
 /** Pending replace: the entry the user tried to install and the YAML already on disk, for the diff. */
 interface Conflict {

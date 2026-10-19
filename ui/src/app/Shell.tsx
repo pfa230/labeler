@@ -11,7 +11,7 @@ const NAV_ITEMS = [
 
 function navLinkClass({ isActive }: { isActive: boolean }) {
   return [
-    "block rounded-md px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2",
+    "block rounded-md px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2",
     isActive ? "font-semibold" : "",
   ].join(" ");
 }
@@ -94,7 +94,7 @@ export function Shell() {
                 type="button"
                 onClick={onLogout}
                 disabled={logout.isPending}
-                className="rounded-md px-2 py-1 text-sm underline disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                className="rounded-md px-2 py-1 text-sm underline disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2"
                 style={{ color: "var(--ink)" }}
               >
                 Logout
@@ -125,7 +125,7 @@ export function Shell() {
             onClick={() => setDrawerOpen((open) => !open)}
             aria-label="Toggle navigation"
             aria-expanded={drawerOpen}
-            className="rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+            className="rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2"
             style={{ borderColor: "var(--border)", color: "var(--ink)" }}
           >
             ☰

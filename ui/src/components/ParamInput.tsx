@@ -10,7 +10,7 @@ export interface ParamInputProps {
 }
 
 const inputClass =
-  "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
+  "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = {
   background: "var(--surface)",
   borderColor: "var(--border)",
@@ -102,7 +102,7 @@ export function ParamInput({
               type="button"
               aria-label={`clear ${label}`}
               onClick={() => onChange("")}
-              className="rounded-md border px-2 py-0.5 focus-visible:outline-none focus-visible:ring-2"
+              className="rounded-md border px-2 py-0.5 focus-visible:outline-hidden focus-visible:ring-2"
               style={{ borderColor: "var(--border)", color: "var(--ink)" }}
             >
               Clear
@@ -168,7 +168,7 @@ export function ParamInput({
         aria-label={label}
         checked={value === undefined ? spec.default === true : value === true}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border"
+        className="h-4 w-4 rounded-sm border"
         style={{ accentColor: "var(--accent)" }}
       />
     );
@@ -251,7 +251,7 @@ export function ParamInput({
                   next[idx - 1] = tmp;
                   onChange(next);
                 }}
-                className="rounded-md border p-1.5 text-xs focus-visible:outline-none focus-visible:ring-2"
+                className="rounded-md border p-1.5 text-xs focus-visible:outline-hidden focus-visible:ring-2"
                 style={{
                   borderColor: "var(--border)",
                   color: "var(--ink)",
@@ -276,7 +276,7 @@ export function ParamInput({
                   next[idx + 1] = tmp;
                   onChange(next);
                 }}
-                className="rounded-md border p-1.5 text-xs focus-visible:outline-none focus-visible:ring-2"
+                className="rounded-md border p-1.5 text-xs focus-visible:outline-hidden focus-visible:ring-2"
                 style={{
                   borderColor: "var(--border)",
                   color: "var(--ink)",
@@ -302,7 +302,7 @@ export function ParamInput({
                   const next = items.filter((_, i) => i !== idx);
                   onChange(next);
                 }}
-                className="rounded-md border p-1.5 text-xs focus-visible:outline-none focus-visible:ring-2"
+                className="rounded-md border p-1.5 text-xs focus-visible:outline-hidden focus-visible:ring-2"
                 style={{ borderColor: "var(--border)", color: "var(--ink)" }}
               >
                 ✕
@@ -317,7 +317,7 @@ export function ParamInput({
           onClick={() => {
             onChange([...items, ""]);
           }}
-          className="self-start rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
+          className="self-start rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:outline-hidden focus-visible:ring-2"
           style={{ borderColor: "var(--border)", color: "var(--ink)" }}
         >
           + Add

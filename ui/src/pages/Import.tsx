@@ -23,8 +23,8 @@ import { EmptyTemplates } from "../components/EmptyTemplates";
 import type { TemplateDetail } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
-const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
-const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
+const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
+const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
 
 export function Import() {

@@ -51,7 +51,7 @@ interface GridContextValue extends LabelGridProps {
 const GRID_LABEL = "label rows";
 const inertStyle = { color: "var(--muted)", opacity: 0.35 } as const;
 const editableControlClass =
-  "w-full rounded border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1";
+  "w-full rounded-sm border border-input bg-background px-2 py-1 text-sm focus-visible:outline-hidden focus-visible:ring-1";
 const editableControlStyle = {
   background: "var(--surface)",
   borderColor: "var(--border)",
@@ -196,7 +196,7 @@ function DataCell({ row, column }: ICellProps) {
           onMouseDown={handleMouseDown}
           onFocus={handleFocus}
           onKeyDown={handleControlKeyDown}
-          className="rounded border border-input bg-background text-sm cursor-pointer"
+          className="rounded-sm border border-input bg-background text-sm cursor-pointer"
         />
         {isUnrepresentable && (
           <span
@@ -344,7 +344,7 @@ function DataCell({ row, column }: ICellProps) {
         {isMultiline && (
           <span
             style={{ color: "var(--muted)", opacity: 0.6 }}
-            className="text-xs flex-shrink-0"
+            className="text-xs shrink-0"
           >
             +{remaining}
           </span>
@@ -377,7 +377,7 @@ function DataCell({ row, column }: ICellProps) {
       {isMultiline && (
         <span
           style={{ color: "var(--muted)", opacity: 0.6 }}
-          className="text-xs flex-shrink-0"
+          className="text-xs shrink-0"
         >
           +{remaining}
         </span>

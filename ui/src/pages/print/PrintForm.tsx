@@ -12,7 +12,7 @@ import { PreviewPane } from "../../components/PreviewPane";
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
 
 const buttonBase =
-  "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
+  "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
 
 const MIN_COPIES = 1;
 const MAX_COPIES = 100;
@@ -266,7 +266,7 @@ export function PrintForm({ detail, stale, version }: { detail: TemplateDetail; 
                   checked={chain}
                   onChange={(e) => setChain(e.target.checked)}
                   aria-describedby="chain-help"
-                  className="h-4 w-4 rounded border"
+                  className="h-4 w-4 rounded-sm border"
                   style={{ accentColor: "var(--accent)" }}
                 />
                 <span className="font-medium">Chain and continue</span>
