@@ -102,7 +102,6 @@ export function Templates() {
   const { push } = useToast();
   const [query, setQuery] = useState("");
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>(ALL_FILTER);
-  const [refusedOpen, setRefusedOpen] = useState(false);
 
   const broken = data?.broken ?? [];
 
@@ -182,7 +181,7 @@ export function Templates() {
           <button
             type="button"
             onClick={onReload}
-            disabled={reload.isPending}
+            disabled={reload.isPending || isLoading}
             className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
             style={{ borderColor: "var(--border)", color: "var(--ink)" }}
           >
@@ -290,25 +289,22 @@ export function Templates() {
         <details
           className="rounded-lg border p-4"
           style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-          onToggle={(e) => setRefusedOpen(e.currentTarget.open)}
         >
           <summary className="cursor-pointer text-sm font-medium" style={{ color: "var(--ink)" }}>
             Refused entries ({broken.length})
           </summary>
-          {refusedOpen && (
-            <ul className="mt-3 flex flex-col gap-3">
-              {broken.map((b) => (
-                <li key={b.path}>
-                  <code className="text-xs" style={{ color: "var(--ink)" }}>
-                    {b.path}
-                  </code>
-                  <p className="text-sm" style={{ color: "var(--bad)" }}>
-                    {b.error}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
+          <ul className="mt-3 flex flex-col gap-3">
+            {broken.map((b) => (
+              <li key={b.path}>
+                <code className="text-xs" style={{ color: "var(--ink)" }}>
+                  {b.path}
+                </code>
+                <p className="text-sm" style={{ color: "var(--bad)" }}>
+                  {b.error}
+                </p>
+              </li>
+            ))}
+          </ul>
         </details>
       )}
       {!isFiltered && favTemplates.length > 0 && (

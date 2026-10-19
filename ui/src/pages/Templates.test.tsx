@@ -75,6 +75,7 @@ function stubFetch(opts?: {
   empty?: boolean;
   templates?: typeof templates;
   broken?: Broken[];
+  listGate?: Promise<void>;
   reloadGate?: Promise<void>;
   reloadResult?: { templates?: typeof templates; broken?: Broken[] };
   reloadError?: { status: number; body: unknown };
@@ -105,6 +106,13 @@ function stubFetch(opts?: {
         if (opts.reloadResult.broken) currentBroken = [...opts.reloadResult.broken];
       }
       return jsonResponse({ count: currentTemplates.length, broken_count: currentBroken.length });
+    }
+    if (url === "/api/templates") {
+      if (opts?.listGate) await opts.listGate;
+      return jsonResponse({
+        templates: currentTemplates,
+        ...(currentBroken.length ? { broken: currentBroken } : {}),
+      });
     }
     return jsonResponse({
       templates: currentTemplates,
@@ -458,13 +466,13 @@ describe("Templates refused entries", () => {
     renderPage();
     await screen.findByText("Pallet");
     expect(screen.getByText("Refused entries (2)")).toBeInTheDocument();
-    expect(screen.queryByText("bad.yaml: unknown field `ink`")).toBeNull();
+    expect(screen.getByText("bad.yaml: unknown field `ink`")).not.toBeVisible();
 
     fireEvent.click(screen.getByText("Refused entries (2)"));
-    expect(await screen.findByText("bad.yaml: unknown field `ink`")).toBeInTheDocument();
-    expect(screen.getByText("bad.yaml")).toBeInTheDocument();
-    expect(screen.getByText("notes.txt")).toBeInTheDocument();
-    expect(screen.getByText("notes.txt: not a template file")).toBeInTheDocument();
+    expect(await screen.findByText("bad.yaml: unknown field `ink`")).toBeVisible();
+    expect(screen.getByText("bad.yaml")).toBeVisible();
+    expect(screen.getByText("notes.txt")).toBeVisible();
+    expect(screen.getByText("notes.txt: not a template file")).toBeVisible();
 
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "zzz-no-match" } });
     expect(screen.getByText("No templates match.")).toBeInTheDocument();
@@ -477,10 +485,11 @@ describe("Templates refused entries", () => {
     renderPage();
     expect(await screen.findByText("Refused entries (1)")).toBeInTheDocument();
     expect(screen.getByText("No printable templates.")).toBeInTheDocument();
+    expect(screen.getByText("broken.yaml: bad layout")).not.toBeVisible();
     expect(screen.queryByText(/no templates yet/i)).toBeNull();
 
     fireEvent.click(screen.getByText("Refused entries (1)"));
-    expect(await screen.findByText("broken.yaml: bad layout")).toBeInTheDocument();
+    expect(await screen.findByText("broken.yaml: bad layout")).toBeVisible();
   });
 
   it("offers Reload templates even when nothing is refused", async () => {
@@ -492,16 +501,23 @@ describe("Templates refused entries", () => {
   });
 
   it("awaits the registry reload before refreshing, turning a repaired refusal printable", async () => {
+    const listGate = deferred<void>();
     const gate = deferred<void>();
     const calls = stubFetch({
       empty: true,
       broken: [{ path: "bad.yaml", error: "bad.yaml: bad layout" }],
+      listGate: listGate.promise,
       reloadGate: gate.promise,
       reloadResult: { templates: [refusedTpl("fixed", "Fixed")], broken: [] },
     });
     renderPage();
     const reload = await screen.findByRole("button", { name: "Reload templates" });
+    // While the initial listing is still in flight, activating reload would let that stale response
+    // land after the reload POST and be reused by invalidateQueries instead of a fresh GET.
+    expect(reload).toBeDisabled();
+    listGate.resolve();
     await screen.findByText("Refused entries (1)");
+    expect(reload).toBeEnabled();
     const listGets = () => calls.filter((c) => c.method === "GET" && c.url === "/api/templates").length;
     const baseline = listGets();
 
@@ -533,10 +549,10 @@ describe("Templates refused entries", () => {
     });
     renderPage();
     fireEvent.click(await screen.findByText("Refused entries (1)"));
-    expect(await screen.findByText("bad.yaml: bad layout")).toBeInTheDocument();
+    expect(await screen.findByText("bad.yaml: bad layout")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Reload templates" }));
-    expect(await screen.findByText("notes.txt: not a template file")).toBeInTheDocument();
+    expect(await screen.findByText("notes.txt: not a template file")).toBeVisible();
     expect(screen.queryByText("bad.yaml: bad layout")).toBeNull();
     expect(screen.getByText("Refused entries (1)")).toBeInTheDocument();
   });
