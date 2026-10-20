@@ -51,6 +51,9 @@ export function ParamInput({
   const moveLaterRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const removeRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const appendRef = useRef<HTMLButtonElement | null>(null);
+  // Values cannot identify occurrences (duplicates and empties are valid), so a drag tracks
+  // the source by its position in this editor's array.
+  const dragIndexRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     if (!pendingFocusRef.current) return;
@@ -222,7 +225,35 @@ export function ParamInput({
           const isLast = idx === items.length - 1;
 
           return (
-            <div key={idx} className="flex items-center gap-2">
+            <div
+              key={idx}
+              className="flex items-center gap-2"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = dragIndexRef.current;
+                dragIndexRef.current = null;
+                if (from === null || from === idx) return;
+                const next = [...items];
+                const [moved] = next.splice(from, 1);
+                next.splice(idx, 0, moved);
+                onChange(next);
+              }}
+            >
+              <span
+                draggable
+                aria-label={`drag ${name} ${pos}`}
+                onDragStart={() => {
+                  dragIndexRef.current = idx;
+                }}
+                onDragEnd={() => {
+                  dragIndexRef.current = null;
+                }}
+                className="cursor-grab touch-none select-none px-0.5 text-xs"
+                style={{ color: "var(--muted)" }}
+              >
+                ⠿
+              </span>
               <input
                 type="text"
                 aria-label={`${name} ${pos}`}

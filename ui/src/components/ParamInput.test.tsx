@@ -297,6 +297,55 @@ describe("ParamInput", () => {
     expect(onChangeRemove).toHaveBeenLastCalledWith(["A", "C"]);
   });
 
+  it("dragging moves the source occurrence to the target index through non-adjacent moves in both directions past duplicates and an empty element", () => {
+    function Stateful(props: { initial: string[]; onChange: (v: ParamValue) => void }) {
+      const [val, setVal] = useState<ParamValue | undefined>(props.initial);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ name: "tags", type: "list", control: "list", description: "Tags" }}
+          value={val}
+          onChange={(v) => {
+            setVal(v);
+            props.onChange(v);
+          }}
+        />
+      );
+    }
+
+    const dragTo = (fromPos: number, toPos: number) => {
+      fireEvent.dragStart(screen.getByLabelText(`drag tags ${fromPos}`));
+      const target = screen.getByRole("textbox", { name: `tags ${toPos}` });
+      fireEvent.dragOver(target);
+      fireEvent.drop(target);
+    };
+
+    // Upward: the fourth (empty) element to the second position, past duplicates.
+    const onChangeUp = vi.fn();
+    const { unmount: unmountUp } = render(<Stateful initial={["A", "B", "A", ""]} onChange={onChangeUp} />);
+    dragTo(4, 2);
+    expect(onChangeUp).toHaveBeenLastCalledWith(["A", "", "B", "A"]);
+    expect((screen.getByRole("textbox", { name: "tags 2" }) as HTMLInputElement).value).toBe("");
+    expect((screen.getByRole("textbox", { name: "tags 3" }) as HTMLInputElement).value).toBe("B");
+    unmountUp();
+
+    // Downward: the first element to the fourth position, past duplicates and the empty element.
+    const onChangeDown = vi.fn();
+    const { unmount: unmountDown } = render(<Stateful initial={["A", "B", "A", ""]} onChange={onChangeDown} />);
+    dragTo(1, 4);
+    expect(onChangeDown).toHaveBeenLastCalledWith(["B", "A", "", "A"]);
+    expect((screen.getByRole("textbox", { name: "tags 1" }) as HTMLInputElement).value).toBe("B");
+    expect((screen.getByRole("textbox", { name: "tags 4" }) as HTMLInputElement).value).toBe("A");
+    unmountDown();
+
+    // The second "A" moves, not the first: value-based occurrence selection would yield a
+    // different array, so a wrong occurrence, lost value or bad insertion fails this assertion.
+    const onChangeOccurrence = vi.fn();
+    render(<Stateful initial={["A", "B", "A", ""]} onChange={onChangeOccurrence} />);
+    dragTo(3, 1);
+    expect(onChangeOccurrence).toHaveBeenLastCalledWith(["A", "A", "B", ""]);
+  });
+
   it("inert move controls at boundaries report unavailable, do not call onChange, and remain reachable by keyboard", () => {
     const onChange = vi.fn();
     render(
@@ -483,6 +532,8 @@ describe("ParamInput", () => {
     // tags controls
     expect(screen.getByRole("textbox", { name: "tags 1" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "tags 2" })).toBeInTheDocument();
+    expect(screen.getByLabelText("drag tags 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("drag tags 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "move tags 1 earlier" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "move tags 1 later" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "move tags 2 earlier" })).toBeInTheDocument();
@@ -494,6 +545,8 @@ describe("ParamInput", () => {
     // codes controls
     expect(screen.getByRole("textbox", { name: "codes 1" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "codes 2" })).toBeInTheDocument();
+    expect(screen.getByLabelText("drag codes 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("drag codes 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "move codes 1 earlier" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "move codes 1 later" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "move codes 2 earlier" })).toBeInTheDocument();
