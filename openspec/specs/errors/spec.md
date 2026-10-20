@@ -31,6 +31,7 @@ Every error response SHALL have `Content-Type: application/json` and the body `{
 | `edge_rect_inverted` | UnsupportedLayoutItem | At render, a `to` resolves below or left of its `at`. |
 | `size_invalid` | UnsupportedLayoutItem | At render, a parameter-supplied extent is not greater than 0, or a resolved extent is negative. |
 | `text_does_not_fit` | UnsupportedLayoutItem | A `text` does not fit its box under its `overflow` policy. |
+| `text_character_unmapped` | UnsupportedLayoutItem | A drawable character in a resolved text value is not mapped by its measurement font; `details.field` is the text-value layout path and `details.character` the unmapped Unicode scalar as a string. |
 | `image_format_unsupported` | UnsupportedLayoutItem | The image's MIME type or file extension is not supported. |
 | `image_data_invalid` | UnsupportedLayoutItem | Inline image data is not a usable base64 `data:` URI. |
 | `image_asset_missing` | UnsupportedLayoutItem | The referenced asset file does not exist. |
