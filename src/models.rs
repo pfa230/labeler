@@ -857,6 +857,7 @@ pub enum LayoutItem {
         padding: Padding,
         flow: Option<Flow>,
         repeat: Option<String>,
+        trim_marker: Option<String>,
         items: Vec<LayoutItem>,
     },
 }

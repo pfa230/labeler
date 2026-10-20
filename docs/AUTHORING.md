@@ -286,7 +286,32 @@ A container with `flow:` packs its children in order instead of placing each by 
 
 Each packed child is sized as if it sat alone at the inner box's origin, then placed after its predecessor. So an uncapped `content` or `fill` child placed after a sibling can claim the whole inner width and overrun it (`item_out_of_frame`); cap it with `max_w` as above. Gated-off and empty children leave no gap. `wrap: true` continues onto further lines, and `overflow: trim` drops what does not fit instead of failing. `repeat:` on a packed container draws it once per element of a `list` parameter.
 
-Governing spec: [flow](../openspec/specs/layout/spec.md#requirement-a-flow-block-packs-a-containers-children), [packed children](../openspec/specs/layout/spec.md#requirement-packed-children), [repeat](../openspec/specs/layout/spec.md#requirement-repeat-draws-a-container-once-per-list-element).
+A repeating container MAY declare `trim_marker:`, a literal string drawn as one more instance, with the repeated parameter bound to the marker, when trimming first discards an instance of that repeat. Trailing instances are dropped until the marker fits, so a shortened list is visible rather than silent. A list that fits exactly draws every element and no marker. `trim_marker` without `repeat` is refused at load.
+
+```yaml
+  - type: container
+    at: [0.0, 0.0]
+    size: [60.0, 12.0]
+    padding: 1.0
+    flow:
+      direction: row
+      gap: 1.0
+      overflow: trim
+    items:
+      - type: container
+        repeat: tags
+        trim_marker: "..."
+        size: [15.0, 10.0]
+        items:
+          - type: text
+            value: "{tags}"
+            size: [15.0, 4.0]
+            font_size: 8
+```
+
+With `tags: [A, B, C, D]` the strip reads `A B ...`; with `tags: [A, B, C]` it reads `A B C`.
+
+Governing spec: [flow](../openspec/specs/layout/spec.md#requirement-a-flow-block-packs-a-containers-children), [packed children](../openspec/specs/layout/spec.md#requirement-packed-children), [repeat](../openspec/specs/layout/spec.md#requirement-repeat-draws-a-container-once-per-list-element), [a trimmed repeat can end with a marker](../openspec/specs/layout/spec.md#requirement-a-trimmed-repeat-can-end-with-a-marker).
 
 ## Parameters and tokens
 

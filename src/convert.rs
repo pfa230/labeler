@@ -264,7 +264,15 @@ impl ContainerRaw {
                 }
                 Some(r)
             }
-            None => None,
+            None => {
+                if self.trim_marker.is_some() {
+                    return Err(TemplateError::Validation {
+                        path: "trim_marker".to_string(),
+                        msg: "trim_marker is only valid on a repeating container".to_string(),
+                    });
+                }
+                None
+            }
         };
 
         let is_flow = flow.is_some();
@@ -285,6 +293,7 @@ impl ContainerRaw {
             padding,
             flow,
             repeat,
+            trim_marker: self.trim_marker,
             items,
         })
     }
@@ -1336,6 +1345,38 @@ mod tests {
                 "expected type in message for {name}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn trim_marker_accepted_on_repeat_and_refused_without() {
+        let content = try_build_with_params(
+            "  - name: tags\n    type: list\n",
+            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column, overflow: trim }\n    items:\n      - type: container\n        repeat: tags\n        trim_marker: \"...\"\n        size: [10, 10]\n        items:\n          - type: text\n            value: \"{tags}\"\n            at: [0, 0]\n            size: [8, 5]\n            font_size: 8\n",
+        )
+        .unwrap();
+        let crate::models::Layout::Items(items) = &content.layout;
+        let crate::models::LayoutItem::Container { items: inner, .. } = &items[0] else {
+            panic!("expected the outer container");
+        };
+        let crate::models::LayoutItem::Container {
+            repeat,
+            trim_marker,
+            ..
+        } = &inner[0]
+        else {
+            panic!("expected the repeating container");
+        };
+        assert_eq!(repeat.as_deref(), Some("tags"));
+        assert_eq!(trim_marker.as_deref(), Some("..."));
+
+        let err = try_build(
+            "  - type: container\n    at: [0, 0]\n    size: [10, 10]\n    trim_marker: \"...\"\n    items: []\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("layout[0].trim_marker"),
+            "expected the key's path in {err}"
+        );
     }
 
     #[test]

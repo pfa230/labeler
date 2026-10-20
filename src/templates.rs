@@ -1056,6 +1056,7 @@ fn instantiate_item_defaults(
             padding,
             flow,
             repeat,
+            trim_marker,
             items,
         } => LayoutItem::Container {
             placement: inst_placement(placement),
@@ -1067,6 +1068,7 @@ fn instantiate_item_defaults(
             padding: *padding,
             flow: flow.clone(),
             repeat: repeat.clone(),
+            trim_marker: trim_marker.clone(),
             items: items
                 .iter()
                 .map(|child| instantiate_item_defaults(child, params))
@@ -1247,6 +1249,7 @@ fn validate_layout_item(
             padding,
             flow,
             repeat: _,
+            trim_marker: _,
             items,
         } => {
             if let Some(s) = stroke {
@@ -1757,6 +1760,7 @@ mod tests {
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![],
             }])
         };
@@ -1783,6 +1787,7 @@ mod tests {
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![],
             }])
         };
@@ -2897,6 +2902,7 @@ layout:
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![],
             }]),
         };
