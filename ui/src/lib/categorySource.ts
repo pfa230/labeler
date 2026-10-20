@@ -1,4 +1,4 @@
-import { isMap, isScalar, isSeq, parseDocument } from "yaml";
+import { isAlias, isMap, isScalar, isSeq, parseDocument } from "yaml";
 
 const INVALID_SOURCE = "The template source is not valid YAML.";
 const UNSUPPORTED_SOURCE =
@@ -35,7 +35,7 @@ function indentationAt(source: string, position: number): string {
 }
 
 function locate(source: string): Located {
-  const doc = parseDocument(source);
+  const doc = parseDocument(source, { keepSourceTokens: true });
   if (doc.errors.length > 0) return { kind: "unsupported", reason: INVALID_SOURCE };
 
   const root = doc.contents;
@@ -43,7 +43,16 @@ function locate(source: string): Located {
     return { kind: "unsupported", reason: UNSUPPORTED_SOURCE };
   }
 
-  const pair = root.items.find((p) => isScalar(p.key) && p.key.value === "categories");
+  const pair = root.items.find((p) => {
+    const key = p.key;
+    if (!key) return false;
+    if (isScalar(key)) return key.value === "categories";
+    if (isAlias(key)) {
+      const resolved = key.resolve(doc);
+      return isScalar(resolved) && resolved.value === "categories";
+    }
+    return false;
+  });
   if (!pair) {
     return absentKey(root, source);
   }
@@ -95,7 +104,8 @@ function absentKey(root: ReturnType<typeof parseDocument>["contents"], source: s
     return { kind: "insert", at, indent: "", flow: true, newline: "" };
   }
 
-  let at = lineStart(source, first.key.range[0]);
+  const explicitKey = first.srcToken?.start.find((t) => t.type === "explicit-key-ind");
+  let at = lineStart(source, explicitKey?.offset ?? first.key.range[0]);
   if (at === 0 && source.charCodeAt(0) === 0xfeff) at = 1;
   let end = at;
   while (end < source.length && (source[end] === " " || source[end] === "\t")) end++;

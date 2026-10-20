@@ -28,6 +28,13 @@ describe("readCategories", () => {
     expect(readCategories(source)).toEqual({ ok: false, reason: expect.any(String) });
   });
 
+  it("refuses an indirect category key through an alias", () => {
+    expect(readCategories("name: &field categories\n*field : [Old]\n")).toEqual({
+      ok: false,
+      reason: expect.any(String),
+    });
+  });
+
   it("refuses an explicit tag on the list", () => {
     expect(readCategories("categories: !foo [A]\n")).toEqual({
       ok: false,
@@ -158,6 +165,17 @@ describe("editCategories", () => {
     expect(parse(result.source)).toEqual({ name: "Pallet", categories: ["A"] });
   });
 
+  it("inserts before a multiline explicit key entry", () => {
+    const source = "?\n  name\n: Pallet\n";
+    const result = editCategories(source, ["A"]);
+    expect(result).toEqual({
+      ok: true,
+      source: 'categories: ["A"]\n?\n  name\n: Pallet\n',
+    });
+    if (!result.ok) throw new Error("expected an edit");
+    expect(parse(result.source)).toEqual({ name: "Pallet", categories: ["A"] });
+  });
+
   it("inserts before an anchored first entry, leaving the anchor on its key", () => {
     const source = "&field name: Pallet\ndescription: *field\n";
     const result = editCategories(source, ["A"]);
@@ -256,6 +274,7 @@ describe("editCategories", () => {
 
   it.each([
     ["a shared anchor reused through an alias", "base: &c [Old]\ncategories: *c\n"],
+    ["an indirect categories key through an alias", "name: &field categories\n*field : [Old]\n"],
     ["an anchored list", "categories: &c [Old]\n"],
     ["a tagged list", "categories: !foo [A]\n"],
     ["an anchored entry", "categories: [&a A]\n"],
