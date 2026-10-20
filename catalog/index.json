@@ -25,6 +25,7 @@
     "media_width_mm": null,
     "name": "OnlineLabels OL1417 6\" x 5\" Rounded Rectangle",
     "path": "sheet/onlinelabels/ol1417.yaml",
+    "position_count": 2,
     "vendor": "onlinelabels"
   },
   {
@@ -39,6 +40,7 @@
     "media_width_mm": null,
     "name": "OnlineLabels OL2682 2\" Circle",
     "path": "sheet/onlinelabels/ol2682.yaml",
+    "position_count": 12,
     "vendor": "onlinelabels"
   },
   {
