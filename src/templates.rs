@@ -2534,14 +2534,17 @@ layout:
     #[test]
     fn a_sheet_refuses_a_radius_outside_its_contract() {
         for (rounded, expected) in [
-            ("20.0001", "at rounded: rounded radius must be at most half"),
+            (
+                "20.0001",
+                "at format.rounded: rounded radius must be at most half",
+            ),
             (
                 "0",
-                "at rounded: rounded radius must be a finite number greater than 0",
+                "at format.rounded: rounded radius must be a finite number greater than 0",
             ),
             (
                 "-1",
-                "at rounded: rounded radius must be a finite number greater than 0",
+                "at format.rounded: rounded radius must be a finite number greater than 0",
             ),
         ] {
             let yaml = format!(
@@ -2557,13 +2560,13 @@ layout:
         let on_ellipse = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  shape: ellipse\n  rounded: 5\n  positions: [[0.0, 0.0]]\nlayout: []\n";
         let err = parse_and_validate(on_ellipse).expect_err("expected a refusal");
         assert!(
-            err.contains("at rounded: rounded is only supported on rect sheets"),
+            err.contains("at format.rounded: rounded is only supported on rect sheets"),
             "{err}"
         );
 
         let unknown = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  shape: circle\n  positions: [[0.0, 0.0]]\nlayout: []\n";
         let err = parse_and_validate(unknown).expect_err("expected a refusal");
-        assert!(err.contains("at shape:"), "{err}");
+        assert!(err.contains("at format.shape:"), "{err}");
         assert!(err.contains("circle"), "{err}");
     }
 

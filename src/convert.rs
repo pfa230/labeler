@@ -415,7 +415,7 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
                     Some("ellipse") => Shape::Ellipse,
                     Some(other) => {
                         return Err(TemplateError::Validation {
-                            path: "shape".to_string(),
+                            path: "format.shape".to_string(),
                             msg: format!(
                                 "unknown shape '{other}', accepted values are: rect, ellipse"
                             ),
@@ -424,14 +424,14 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
                 };
                 if rounded.is_some() && shape == Shape::Ellipse {
                     return Err(TemplateError::Validation {
-                        path: "rounded".to_string(),
+                        path: "format.rounded".to_string(),
                         msg: "rounded is only supported on rect sheets".to_string(),
                     });
                 }
                 if let Some(r) = rounded {
                     if !r.is_finite() || r <= 0.0 {
                         return Err(TemplateError::Validation {
-                            path: "rounded".to_string(),
+                            path: "format.rounded".to_string(),
                             msg: "rounded radius must be a finite number greater than 0"
                                 .to_string(),
                         });
@@ -439,7 +439,7 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
                     let max_radius = label_width.min(label_height) / 2.0;
                     if r > max_radius {
                         return Err(TemplateError::Validation {
-                            path: "rounded".to_string(),
+                            path: "format.rounded".to_string(),
                             msg: format!(
                                 "rounded radius must be at most half the shorter label side ({max_radius})"
                             ),

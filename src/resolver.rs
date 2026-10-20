@@ -846,11 +846,14 @@ impl StockOutline {
                 dx * dx + dy * dy <= limit * limit
             }
             StockOutline::Ellipse { w, h } => {
-                let rx = w / 2.0;
-                let ry = h / 2.0;
-                let nx = (x - rx) / rx;
-                let ny = (y - ry) / ry;
-                nx * nx + ny * ny <= 1.0 + BOUNDS_EPSILON
+                // Inflate the radii by the tolerance so it applies in template units, not on the
+                // dimensionless squared distance: a point 0.0001 units outside the exact ellipse
+                // stays in, one farther out is refused.
+                let rx = w / 2.0 + BOUNDS_EPSILON;
+                let ry = h / 2.0 + BOUNDS_EPSILON;
+                let nx = (x - w / 2.0) / rx;
+                let ny = (y - h / 2.0) / ry;
+                nx * nx + ny * ny <= 1.0
             }
         }
     }
@@ -1628,6 +1631,17 @@ mod tests {
         assert!(circle.contains_box(0.55, 20.0, 35.3553, 10.0));
         // A shade wider crosses the curve at the corners.
         assert!(!circle.contains_box(0.55, 20.0, 49.1, 10.0));
+    }
+
+    #[test]
+    fn the_ellipse_tolerance_is_measured_in_template_units() {
+        let circle = StockOutline::Ellipse { w: 50.0, h: 50.0 };
+        // The far corner sits about 0.0006 mm past the exact boundary, beyond the 0.0001 tolerance;
+        // a dimensionless squared-distance tolerance would wrongly admit it.
+        assert!(!circle.contains_box(25.0, 25.0, 17.678, 17.678));
+        // On the right limb, the tolerance admits 0.00005 units past and refuses 0.0002 units past.
+        assert!(circle.contains_point(50.0 + BOUNDS_EPSILON / 2.0, 25.0));
+        assert!(!circle.contains_point(50.0 + 2.0 * BOUNDS_EPSILON, 25.0));
     }
 
     #[test]

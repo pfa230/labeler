@@ -2494,7 +2494,8 @@ pub const SAMPLE_PNG_DATA_URI: &str =
 mod tests {
     use super::{
         count_pdf_pages, render_sheet_pages, render_single_label, render_single_label_image,
-        render_single_label_pdf, render_thumbnail_png, Frame, FrameItem, SAMPLE_PNG_DATA_URI,
+        render_single_label_pdf, render_thumbnail_png, Curve, Frame, FrameItem,
+        SAMPLE_PNG_DATA_URI,
     };
     use crate::errors::AppError;
     use crate::models::{
@@ -2508,6 +2509,8 @@ mod tests {
     use indexmap::IndexMap;
     use serde_json::{json, Value as JsonValue};
     use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use typst::layout::{Abs, Point};
+    use typst::visualize::FillRule;
 
     fn render_test_items(items: &[LayoutItem], frame: (f32, f32)) -> Result<String, AppError> {
         let data: HashMap<String, super::JsonValue> = HashMap::new();
@@ -5097,6 +5100,30 @@ layout:
         err.details()?["failures"][0]["details"]["reason"].as_str()
     }
 
+    /// The content width in `mm` the renderer measures for `text` at `size` points: the shaped
+    /// advance plus the left-aligned ink reserve, the same terms `layout_text` emits.
+    fn measured_content_width_mm(text: &str, size: f32) -> f32 {
+        let face = super::helpers::instance(400, size).expect("face");
+        let m = super::helpers::measure_lines(&face, &[text], size)[0];
+        let reserve = (-m.left).max(0.0) + (m.right - m.advance).max(0.0);
+        super::helpers::pt_to_units_for_test(m.advance + reserve, "mm")
+    }
+
+    /// The font size in points at which `text` measures `target` mm wide, by bisecting the
+    /// monotonic measured width.
+    fn font_size_for_width_mm(text: &str, target: f32) -> f32 {
+        let (mut lo, mut hi) = (0.5_f32, 200.0_f32);
+        for _ in 0..60 {
+            let mid = (lo + hi) / 2.0;
+            if measured_content_width_mm(text, mid) < target {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo + hi) / 2.0
+    }
+
     fn ellipse_sheet_with(params_block: &str, layout: &str) -> String {
         format!(
             "name: T\nunit: mm\ndpi: 200\n{params_block}format:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 50\n  label_height: 50\n  shape: ellipse\n  positions: [[0.0, 0.0]]\nlayout:\n{layout}\n"
@@ -5154,6 +5181,56 @@ layout:
         );
     }
 
+    #[test]
+    fn a_content_width_box_is_checked_after_measurement() {
+        // The spec's 50-by-50 ellipse at [5, 20] with size [content, 10]: load must not substitute
+        // an available-width stand-in, so the measured width decides. 40 stays inside; 45 crosses.
+        let text = "M".repeat(30);
+        for (target, accepted) in [(40.0_f32, true), (45.0_f32, false)] {
+            let size = font_size_for_width_mm(&text, target);
+            assert!(
+                (measured_content_width_mm(&text, size) - target).abs() < 0.05,
+                "calibration for {target} mm"
+            );
+            let yaml = ellipse_sheet_with(
+                "",
+                &format!(
+                    "  - type: text\n    value: \"{text}\"\n    at: [5.0, 20.0]\n    size: [content, 10.0]\n    font_size: {size}\n"
+                ),
+            );
+            let result = render_sheet_yaml(&yaml, json!({}));
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "a {target} mm resolved width: {result:?}"
+            );
+            if !accepted {
+                let err = result.unwrap_err();
+                assert_eq!(first_batch_reason(&err), Some("item_out_of_frame"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_repeat_instance_crossing_the_curve_names_its_indexed_path() {
+        // The packed containers sit in the slot's upper right, so the second repeated instance's
+        // text leaves the ellipse while the first stays inside. The failure names that instance.
+        let yaml = ellipse_sheet_with(
+            "params:\n  - name: tags\n    type: list\n",
+            "  - type: container\n    at: [20.0, 10.0]\n    size: [28.0, 30.0]\n    flow:\n      direction: row\n    items:\n      - type: container\n        repeat: tags\n        size: [14.0, 12.0]\n        items:\n          - type: text\n            value: \"{tags}\"\n            at: [0.0, 0.0]\n            size: [14.0, 12.0]\n            font_size: 6\n",
+        );
+        let err = render_sheet_yaml(&yaml, json!({"tags": ["a", "b"]})).unwrap_err();
+        assert_eq!(first_batch_reason(&err), Some("item_out_of_frame"));
+        assert!(
+            err.details()
+                .unwrap()
+                .to_string()
+                .contains("layout[0].items[0]#1.items[0]"),
+            "{}",
+            err.details().unwrap()
+        );
+    }
+
     /// A one-slot thumbnail of `yaml`, decoded to a grayscale image.
     fn thumbnail_gray(yaml: &str) -> image::GrayImage {
         let content = crate::parse::parse_template(yaml).expect("parse sheet template");
@@ -5198,22 +5275,39 @@ layout:
         assert_dark(&img, mid_x, mid_y);
     }
 
-    fn collect_slot_clips(frame: &Frame, out: &mut Vec<(f64, f64)>) {
+    /// Every compiled group clip and its frame size, found by walking the page's frames.
+    fn collect_clips(frame: &Frame, out: &mut Vec<(f64, f64, Curve)>) {
         for (_, item) in frame.items() {
             if let FrameItem::Group(group) = item {
-                if group
-                    .label
-                    .is_some_and(|label| label.resolve().as_str() == super::SLOT_CLIP_LABEL)
-                {
-                    assert!(
-                        group.clip.is_some(),
-                        "a labelled ellipse slot must carry a clip"
-                    );
-                    out.push((group.frame.width().to_pt(), group.frame.height().to_pt()));
+                if let Some(clip) = &group.clip {
+                    out.push((
+                        group.frame.width().to_pt(),
+                        group.frame.height().to_pt(),
+                        clip.clone(),
+                    ));
                 }
-                collect_slot_clips(&group.frame, out);
+                collect_clips(&group.frame, out);
             }
         }
+    }
+
+    /// The slot-sized clips that drop their bounding-box corner, i.e. the stock outline rather than
+    /// a full-slot item's rectangular clip.
+    fn slot_outline_clips(clips: &[(f64, f64, Curve)], w: f64, h: f64) -> Vec<&Curve> {
+        clips
+            .iter()
+            .filter(|(cw, ch, clip)| {
+                (cw - w).abs() < 0.5
+                    && (ch - h).abs() < 0.5
+                    && !clip.contains(FillRule::NonZero, clip_point(1.0, 1.0))
+            })
+            .map(|(_, _, clip)| clip)
+            .collect()
+    }
+
+    /// A point in a clip curved coordinate space, from pixel-free points.
+    fn clip_point(x: f64, y: f64) -> Point {
+        Point::new(Abs::pt(x), Abs::pt(y))
     }
 
     #[test]
@@ -5240,14 +5334,70 @@ layout:
         assert_eq!(doc.pages().len(), 2);
         let mut clips = Vec::new();
         for page in doc.pages() {
-            collect_slot_clips(&page.frame, &mut clips);
+            collect_clips(&page.frame, &mut clips);
         }
-        // One clip per populated slot: 2 on page one, 1 on page two.
-        assert_eq!(clips.len(), 3);
         let expected = 50.0 / 25.4 * 72.0;
-        for (w, h) in clips {
-            assert!((w - expected).abs() < 0.5, "slot clip width {w}");
-            assert!((h - expected).abs() < 0.5, "slot clip height {h}");
+        // The stock ellipse is the only slot-sized clip that drops its bounding-box corner; the
+        // full-slot container's rectangular clip keeps it. One per populated slot: 2 and 1.
+        let outlines = slot_outline_clips(&clips, expected, expected);
+        assert_eq!(outlines.len(), 3);
+        for clip in outlines {
+            // The clip is the stock ellipse, not the slot rectangle: its centre is retained.
+            assert!(
+                clip.contains(
+                    FillRule::NonZero,
+                    clip_point(expected / 2.0, expected / 2.0)
+                ),
+                "the ellipse clip must retain the slot centre"
+            );
+        }
+    }
+
+    #[test]
+    fn each_populated_rounded_slot_clips_only_its_corners_across_pages() {
+        let yaml = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  rounded: 5\n  positions: [[0.0, 0.0], [0.0, 50.0]]\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [60.0, 40.0]\n    background: black\n    items: []\n";
+        let content = crate::parse::parse_template(yaml).expect("parse");
+        content.validate().expect("validate");
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            content,
+        };
+        let labels: Vec<LabelInput> = (0..3)
+            .map(|_| LabelInput {
+                data: HashMap::new(),
+                copies: std::num::NonZeroU32::MIN,
+            })
+            .collect();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = crate::render::resolve_environment(&template, &settings, &datetime).unwrap();
+        let doc =
+            super::compile_sheet_document(&template, &labels, 0, &env).expect("compile sheet");
+
+        assert_eq!(doc.pages().len(), 2);
+        let mut clips = Vec::new();
+        for page in doc.pages() {
+            collect_clips(&page.frame, &mut clips);
+        }
+        // The slot box's rounded clip is the only one that drops the bounding-box corner; the
+        // full-slot container's own rectangular clip keeps it. One per populated slot.
+        let slot_w = 60.0 / 25.4 * 72.0;
+        let slot_h = 40.0 / 25.4 * 72.0;
+        let rounded = slot_outline_clips(&clips, slot_w, slot_h);
+        assert_eq!(rounded.len(), 3, "one rounded clip per populated slot");
+        for clip in rounded {
+            assert!(
+                clip.contains(FillRule::NonZero, clip_point(slot_w / 2.0, slot_h / 2.0)),
+                "the rounded clip must retain the slot centre"
+            );
+            assert!(
+                clip.contains(FillRule::NonZero, clip_point(slot_w / 2.0, 1.0)),
+                "the rounded clip must retain the straight edge midpoint"
+            );
+            assert!(
+                !clip.contains(FillRule::NonZero, clip_point(1.0, 1.0)),
+                "the rounded clip must exclude the square corner"
+            );
         }
     }
 
