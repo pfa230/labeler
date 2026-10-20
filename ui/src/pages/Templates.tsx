@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useFavorites, useRecentTemplates, useSetFavorite, useTemplates } from "../api/queries";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  fetchTemplateSource,
+  useFavorites,
+  useRecentTemplates,
+  useReplaceTemplate,
+  useSetFavorite,
+  useTemplates,
+} from "../api/queries";
+import { editCategories, readCategories } from "../lib/categorySource";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { FormatBadge } from "../components/FormatBadge";
@@ -34,10 +43,12 @@ function TemplateCard({
   template,
   favorite,
   onToggleFavorite,
+  onEditCategories,
 }: {
   template: TemplateSummary;
   favorite: boolean;
   onToggleFavorite: () => void;
+  onEditCategories: () => void;
 }) {
   return (
     <div
@@ -69,6 +80,15 @@ function TemplateCard({
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
+            onClick={onEditCategories}
+            aria-label={`Edit categories for ${template.name}`}
+            className="rounded-md border px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-2"
+            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+          >
+            Edit categories
+          </button>
+          <button
+            type="button"
             onClick={onToggleFavorite}
             aria-label={favorite ? `unfavorite ${template.name}` : `favorite ${template.name}`}
             aria-pressed={favorite}
@@ -87,14 +107,153 @@ function TemplateCard({
   );
 }
 
+function CategoryEditor({
+  id,
+  source,
+  onClose,
+  onSaved,
+}: {
+  id: string;
+  source: string;
+  onClose: () => void;
+  onSaved: (categories: string[]) => void;
+}) {
+  const parsed = useMemo(() => readCategories(source), [source]);
+  const [entries, setEntries] = useState<string[]>(() => (parsed.ok ? parsed.categories : []));
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const save = useReplaceTemplate();
+  const { push } = useToast();
+
+  if (!parsed.ok) {
+    return (
+      <section
+        aria-label={`Edit categories for ${id}`}
+        className="flex flex-col gap-3 rounded-lg border p-4"
+        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+      >
+        <h2 className="text-lg font-semibold">Edit categories for {id}</h2>
+        <p style={{ color: "var(--bad)" }}>{parsed.reason}</p>
+        <p style={{ color: "var(--ink)" }}>
+          Edit this template in the{" "}
+          <Link className="underline" to={`/templates/${encodeURIComponent(id)}`}>
+            template YAML editor
+          </Link>
+          .
+        </p>
+        <div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-2 text-sm"
+            style={{ color: "var(--muted)" }}
+          >
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  const submit = () => {
+    const result = editCategories(source, entries);
+    if (!result.ok) {
+      setSaveError(result.reason);
+      return;
+    }
+    save.mutate(
+      { id, yaml: result.source },
+      {
+        onSuccess: () => {
+          push({ kind: "ok", message: `Saved ${id}` });
+          onSaved(entries);
+        },
+        onError: (err) => {
+          const message = err instanceof Error ? err.message : "Save failed";
+          setSaveError(message);
+          push({ kind: "error", message });
+        },
+      },
+    );
+  };
+
+  return (
+    <section
+      aria-label={`Edit categories for ${id}`}
+      className="flex flex-col gap-3 rounded-lg border p-4"
+      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+    >
+      <h2 className="text-lg font-semibold">Edit categories for {id}</h2>
+      <div className="flex flex-col gap-2">
+        {entries.map((entry, index) => (
+          <div key={index} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={entry}
+              aria-label={`Category ${index + 1}`}
+              onChange={(e) => {
+                const next = [...entries];
+                next[index] = e.target.value;
+                setEntries(next);
+              }}
+              className="w-full max-w-sm rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+            />
+            <button
+              type="button"
+              aria-label={`Remove category ${index + 1}`}
+              onClick={() => setEntries(entries.filter((_, i) => i !== index))}
+              className="rounded-md px-3 py-2 text-sm"
+              style={{ color: "var(--bad)" }}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        <div>
+          <button
+            type="button"
+            onClick={() => setEntries([...entries, ""])}
+            className="rounded-md px-3 py-2 text-sm"
+            style={{ color: "var(--accent)" }}
+          >
+            Add
+          </button>
+        </div>
+      </div>
+      {saveError && <p style={{ color: "var(--bad)" }}>{saveError}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={save.isPending}
+          onClick={submit}
+          className="rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50"
+          style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-md px-3 py-2 text-sm"
+          style={{ color: "var(--muted)" }}
+        >
+          Cancel
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function Templates() {
   const { data, isLoading, isError, error } = useTemplates();
   const favs = useFavorites();
   const recents = useRecentTemplates();
   const setFav = useSetFavorite();
   const { push } = useToast();
+  const qc = useQueryClient();
   const [query, setQuery] = useState("");
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>(ALL_FILTER);
+  const [editor, setEditor] = useState<{ id: string; source: string } | null>(null);
 
   useEffect(() => {
     if (isError) {
@@ -133,6 +292,41 @@ export function Templates() {
   const isFavorite = (id: string) => favoriteIds.includes(id);
   const toggleFavorite = (id: string) => setFav.mutate({ id, favorite: !isFavorite(id) });
 
+  const openEditor = async (id: string) => {
+    try {
+      const source = await qc.fetchQuery({
+        queryKey: ["template-source", id],
+        queryFn: () => fetchTemplateSource(id),
+      });
+      setEditor({ id, source });
+    } catch (err) {
+      push({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Failed to load template source",
+      });
+    }
+  };
+
+  const handleSaved = (id: string, categories: string[]) => {
+    setEditor(null);
+    // The summaries refetch asynchronously; decide against the categories this save wrote.
+    setSelectedFilter((current) => {
+      if (current.kind === "category") {
+        const exists = (data?.templates ?? []).some((t) =>
+          (t.id === id ? categories : t.categories).includes(current.name),
+        );
+        return exists ? current : ALL_FILTER;
+      }
+      if (current.kind === "uncategorized") {
+        const exists = (data?.templates ?? []).some(
+          (t) => (t.id === id ? categories : t.categories).length === 0,
+        );
+        return exists ? current : ALL_FILTER;
+      }
+      return current;
+    });
+  };
+
   const byId = useMemo(() => {
     const map = new Map<string, TemplateSummary>();
     for (const t of data?.templates ?? []) map.set(t.id, t);
@@ -153,6 +347,7 @@ export function Templates() {
       template={t}
       favorite={isFavorite(t.id)}
       onToggleFavorite={() => toggleFavorite(t.id)}
+      onEditCategories={() => openEditor(t.id)}
     />
   );
 
@@ -243,6 +438,16 @@ export function Templates() {
         className="w-full max-w-sm rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
         style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
       />
+
+      {editor && (
+        <CategoryEditor
+          key={editor.id}
+          id={editor.id}
+          source={editor.source}
+          onClose={() => setEditor(null)}
+          onSaved={(categories) => handleSaved(editor.id, categories)}
+        />
+      )}
 
       {isLoading && <p style={{ color: "var(--muted)" }}>loading…</p>}
       {isError && (

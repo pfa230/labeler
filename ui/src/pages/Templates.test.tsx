@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { Templates } from "./Templates";
+import { readCategories } from "../lib/categorySource";
 import { SHEET_ICON, SINGLE_ICON, iconGeometry } from "../setupTests";
 
 const templates: Array<{
@@ -64,11 +65,15 @@ function stubFetch(opts?: {
   recent?: string[];
   empty?: boolean;
   templates?: typeof templates;
+  sources?: Record<string, string>;
+  putFails?: (id: string) => boolean;
 }) {
   let favorites = [...(opts?.favorites ?? [])];
   const recent = [...(opts?.recent ?? [])];
   const currentTemplates = [...(opts?.templates ?? (opts?.empty ? [] : templates))];
+  const sources = { ...(opts?.sources ?? {}) };
   const calls: { method: string; url: string }[] = [];
+  const writes: { id: string; body: string }[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     const method = init?.method ?? "GET";
@@ -80,12 +85,37 @@ function stubFetch(opts?: {
       if (method === "DELETE") favorites = favorites.filter((f) => f !== id);
       return new Response(null, { status: 204 });
     }
+    if (url.startsWith("/api/templates/") && url.endsWith("/source")) {
+      const id = decodeURIComponent(url.slice("/api/templates/".length, -"/source".length));
+      return new Response(sources[id] ?? "", { status: 200, headers: { "content-type": "text/plain" } });
+    }
+    if (url.startsWith("/api/templates/") && method === "PUT") {
+      const id = decodeURIComponent(url.slice("/api/templates/".length));
+      const body = typeof init?.body === "string" ? init.body : "";
+      writes.push({ id, body });
+      if (opts?.putFails?.(id)) {
+        return new Response(
+          JSON.stringify({ error: { code: "Invalid", message: "server said no" } }),
+          { status: 422, headers: { "content-type": "application/json" } },
+        );
+      }
+      sources[id] = body;
+      const parsed = readCategories(body);
+      if (parsed.ok) {
+        const index = currentTemplates.findIndex((t) => t.id === id);
+        if (index >= 0) {
+          currentTemplates[index] = { ...currentTemplates[index], categories: parsed.categories };
+        }
+      }
+      const updated = currentTemplates.find((t) => t.id === id);
+      return jsonResponse({ ...(updated ?? { id, name: id, description: "", unit: "mm", dpi: 300, format: {} }), variables: [] });
+    }
     if (url === "/api/favorites") return jsonResponse(favorites);
     if (url === "/api/recent-templates") return jsonResponse(recent);
     return jsonResponse({ templates: currentTemplates });
   });
   vi.stubGlobal("fetch", fetchMock);
-  return calls;
+  return { calls, writes };
 }
 
 function renderPage() {
@@ -240,7 +270,7 @@ describe("Templates list", () => {
   });
 
   it("star toggle favorites and unfavorites", async () => {
-    const calls = stubFetch();
+    const { calls } = stubFetch();
     renderPage();
     // Rows start empty; the grid card exposes a "favorite" star.
     const favBtn = await screen.findByRole("button", { name: "favorite Brother 24mm" });
@@ -406,5 +436,152 @@ describe("Templates list", () => {
     fireEvent.click(within(toolbar).getByRole("button", { name: "All" }));
     expect(screen.getByRole("region", { name: "Favorites" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Recent" })).toBeInTheDocument();
+  });
+
+  const editButton = (name: string) =>
+    screen.getByRole("button", { name: `Edit categories for ${name}` });
+
+  const filterButton = (name: string) =>
+    within(screen.getByRole("toolbar", { name: "Category filter" })).getByRole("button", { name });
+
+  it("saves edited categories, refreshes the summaries and returns a removed filter to All", async () => {
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Shipping"])],
+      sources: { pallet: "id: pallet\nname: Pallet\ncategories: [Shipping]\n" },
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+    fireEvent.click(filterButton("Shipping"));
+
+    fireEvent.click(editButton("Pallet"));
+    const input = await screen.findByLabelText("Category 1");
+    expect(input).toHaveValue("Shipping");
+    fireEvent.change(input, { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      id: "pallet",
+      body: 'id: pallet\nname: Pallet\ncategories: ["Warehouse"]\n',
+    });
+    expect(await screen.findByText("Saved pallet")).toBeInTheDocument();
+
+    await waitFor(() => {
+      const toolbar = screen.getByRole("toolbar", { name: "Category filter" });
+      expect(within(toolbar).queryByRole("button", { name: "Shipping" })).not.toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "Warehouse" })).toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+    });
+    fireEvent.click(filterButton("Warehouse"));
+    expect(screen.getByText("Pallet")).toBeInTheDocument();
+  });
+
+  it("inserts an absent categories key when saving", async () => {
+    const { writes } = stubFetch({
+      templates: [tpl("loose", "Loose", [])],
+      sources: { loose: "id: loose\nname: Loose\n" },
+    });
+    renderPage();
+    await screen.findByText("Loose");
+
+    fireEvent.click(editButton("Loose"));
+    expect(await screen.findByText("Edit categories for loose")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Category 1")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.change(screen.getByLabelText("Category 1"), { target: { value: "Shipping" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.change(screen.getByLabelText("Category 2"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({
+      id: "loose",
+      body: 'categories: ["Shipping","Warehouse"]\nid: loose\nname: Loose\n',
+    });
+  });
+
+  it("clears categories to an empty list", async () => {
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Shipping"])],
+      sources: { pallet: "id: pallet\ncategories: [Shipping]\nname: x\n" },
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove category 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toEqual({ id: "pallet", body: "id: pallet\ncategories: []\nname: x\n" });
+  });
+
+  it("keeps comma-bearing category strings as separate entries", async () => {
+    stubFetch({
+      templates: [tpl("pallet", "Pallet", ["A,B", "C"])],
+      sources: { pallet: 'id: pallet\ncategories: ["A,B", "C"]\nname: x\n' },
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+
+    fireEvent.click(editButton("Pallet"));
+    const inputs = await screen.findAllByLabelText(/^Category \d+$/);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toHaveValue("A,B");
+    expect(inputs[1]).toHaveValue("C");
+  });
+
+  it("does not write or report success on Cancel", async () => {
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Shipping"])],
+      sources: { pallet: "id: pallet\ncategories: [Shipping]\nname: x\n" },
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.change(await screen.findByLabelText("Category 1"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Edit categories for pallet")).not.toBeInTheDocument(),
+    );
+    expect(writes).toHaveLength(0);
+    expect(screen.queryByText("Saved pallet")).not.toBeInTheDocument();
+  });
+
+  it("refuses an anchored categories list and links to the YAML editor without writing", async () => {
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Old"])],
+      sources: { pallet: "base: &c [Old]\ncategories: *c\n" },
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+
+    fireEvent.click(editButton("Pallet"));
+    const link = await screen.findByRole("link", { name: "template YAML editor" });
+    expect(link).toHaveAttribute("href", "/templates/pallet");
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(writes).toHaveLength(0);
+  });
+
+  it("shows a failed save without reporting success and keeps the edit", async () => {
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Shipping"])],
+      sources: { pallet: "id: pallet\ncategories: [Shipping]\nname: x\n" },
+      putFails: (id) => id === "pallet",
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.change(await screen.findByLabelText("Category 1"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect((await screen.findAllByText("server said no")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Saved pallet")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Category 1")).toHaveValue("Warehouse");
   });
 });

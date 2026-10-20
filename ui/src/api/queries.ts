@@ -36,14 +36,19 @@ export function useTemplate(id: string) {
     placeholderData: keepPreviousData,
   });
 }
+// Decode the source bytes ourselves: Response.text() strips a leading UTF-8 BOM, which would turn a
+// round-tripped source edit into a rewrite of every byte after it.
+export async function fetchTemplateSource(id: string): Promise<string> {
+  const res = await fetch(`/api/templates/${id}/source`);
+  if (!res.ok) throw new Error(`source ${res.status}`);
+  const bytes = await res.arrayBuffer();
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+}
+
 export function useTemplateSource(id: string) {
   return useQuery({
     queryKey: ["template-source", id],
-    queryFn: async () => {
-      const res = await fetch(`/api/templates/${id}/source`);
-      if (!res.ok) throw new Error(`source ${res.status}`);
-      return res.text();
-    },
+    queryFn: () => fetchTemplateSource(id),
     enabled: !!id,
   });
 }
