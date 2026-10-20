@@ -1550,7 +1550,7 @@ impl<'a> RenderContext<'a> {
         for kept in (0..=cut - group_start).rev() {
             let mut candidate = inputs[..group_start + kept].to_vec();
             candidate.push(marker_input);
-            let resolved =
+            let mut resolved =
                 crate::resolver::arrange_flow(frame, flow, &candidate).map_err(|_| {
                     AppError::unsupported_layout_item(
                         Reason::ItemOutOfFrame,
@@ -1558,7 +1558,11 @@ impl<'a> RenderContext<'a> {
                     )
                 })?;
             if resolved.rects.len() == candidate.len() {
-                selected = Some((resolved, group_start + kept));
+                let prefix_len = group_start + kept;
+                // The drawn prefix keeps the placements it already had, so adopting the marker
+                // does not move earlier siblings; only the marker is newly placed.
+                resolved.rects[..prefix_len].copy_from_slice(&base.rects[..prefix_len]);
+                selected = Some((resolved, prefix_len));
                 break;
             }
         }
@@ -11943,6 +11947,91 @@ layout:
         assert!(
             !exact.contains("Tag:\u{a0}...") && !exact.contains("Tag: ..."),
             "an exactly fitting list shows no marker"
+        );
+    }
+
+    /// Adopting a repeat's marker must not move earlier siblings. The empty text between the fixed
+    /// box and the repeat is zero-width, so its place is the one the next occupying child takes;
+    /// dropping a repeat instance to fit the marker must leave that place as the normal
+    /// arrangement had it.
+    #[test]
+    fn repeating_container_trim_marker_keeps_earlier_siblings_in_place() {
+        let rep_yaml = r#"
+name: RepTrimWrap
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+params:
+  - name: tags
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [20, 10]
+    flow: { direction: row, wrap: true, gap: 2, overflow: trim }
+    items:
+      - type: container
+        size: [12, 1]
+        items: []
+      - type: text
+        value: ""
+        size: [content, content]
+        font_size: 6
+      - type: container
+        repeat: tags
+        trim_marker: "OMITTED"
+        size: [content, content]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "{tags}"
+            size: [content, content]
+            font_size: 6
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+            defaults: Default::default(),
+        };
+        let tag = |c: char| format!("{c}\n").repeat(15);
+        let data = HashMap::from([(
+            "tags".to_string(),
+            serde_json::json!([tag('A'), tag('B'), tag('C')]),
+        )]);
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(items, (20.0, 10.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        let src = ctx
+            .render_items(items, &meas, (20.0, 10.0), &HashMap::new(), None, "layout")
+            .unwrap();
+
+        assert!(
+            src.contains("OMITTED"),
+            "the marker ends the trimmed repeat"
+        );
+        let zero = src
+            .find("#box(width: 0mm")
+            .expect("the zero-width sibling is drawn");
+        let dx_at = src[..zero].rfind("dx: ").expect("dx precedes the box");
+        let dx = &src[dx_at + 4..];
+        let dx = &dx[..dx.find("mm").expect("dx is a length")];
+        assert_eq!(
+            dx, "14",
+            "the earlier sibling keeps the place the normal arrangement gave it"
         );
     }
 
