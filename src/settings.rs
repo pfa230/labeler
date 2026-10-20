@@ -115,10 +115,8 @@ pub fn resolve_datetime_formats_from(
 }
 
 /// Resolve the effective `datetime_formats` from the store.
-pub async fn resolve_datetime_formats(
-    store: &Store,
-) -> Result<BTreeMap<String, String>, SettingError> {
-    let stored = store.get_setting(DATETIME_FORMATS).await?;
+pub fn resolve_datetime_formats(store: &Store) -> Result<BTreeMap<String, String>, SettingError> {
+    let stored = store.get_setting(DATETIME_FORMATS)?;
     resolve_datetime_formats_from(stored)
 }
 

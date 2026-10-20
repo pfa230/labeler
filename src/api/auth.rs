@@ -120,7 +120,7 @@ pub async fn setup(
     Json(body): Json<Credentials>,
 ) -> Result<Response, AppError> {
     let _guard = state.write_lock.lock().await;
-    if state.store().count_users().await.map_err(AppError::from)? > 0 {
+    if state.store().count_users().map_err(AppError::from)? > 0 {
         return Err(AppError::conflict("setup already completed"));
     }
     validate_new_account(&body.username, &body.password)?;
@@ -129,9 +129,8 @@ pub async fn setup(
     let user = state
         .store()
         .create_user(&body.username, &hash)
-        .await
         .map_err(AppError::from)?;
-    start_session(&state, jar, &user.id, req_https.0).await
+    start_session(&state, jar, &user.id, req_https.0)
 }
 
 #[utoipa::path(
@@ -154,11 +153,10 @@ pub async fn login(
     match state
         .store()
         .get_user_by_username(&body.username)
-        .await
         .map_err(AppError::from)?
     {
         Some(user) if crate::auth::verify_password(&body.password, &user.password_hash) => {
-            start_session(&state, jar, &user.id, req_https.0).await
+            start_session(&state, jar, &user.id, req_https.0)
         }
         Some(_) => Err(AppError::unauthorized()),
         None => {
@@ -168,7 +166,7 @@ pub async fn login(
     }
 }
 
-async fn start_session(
+fn start_session(
     state: &AppState,
     jar: CookieJar,
     user_id: &str,
@@ -178,14 +176,12 @@ async fn start_session(
     if let Some(old) = jar.get(crate::middleware::SESSION_COOKIE) {
         let _ = state
             .store()
-            .delete_session(&crate::auth::sha256_hex(old.value()))
-            .await;
+            .delete_session(&crate::auth::sha256_hex(old.value()));
     }
     let secret = crate::auth::random_secret();
     state
         .store()
         .create_session(&crate::auth::sha256_hex(&secret), user_id, "+30 days")
-        .await
         .map_err(AppError::from)?;
     let jar = jar.add(crate::middleware::session_cookie(secret, https));
     Ok((jar, Json(serde_json::json!({"ok": true}))).into_response())
@@ -205,8 +201,7 @@ pub async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Respo
     if let Some(c) = jar.get(crate::middleware::SESSION_COOKIE) {
         let _ = state
             .store()
-            .delete_session(&crate::auth::sha256_hex(c.value()))
-            .await;
+            .delete_session(&crate::auth::sha256_hex(c.value()));
     }
     (
         jar.add(crate::middleware::clear_cookie()),
@@ -251,7 +246,7 @@ pub async fn me(
         ));
     }
     if let Some(crate::middleware::Principal::User { id, username, .. }) =
-        crate::middleware::resolve_optional(&state, &headers).await
+        crate::middleware::resolve_optional(&state, &headers)
     {
         return Ok(no_store(
             Json(serde_json::json!({
@@ -262,7 +257,7 @@ pub async fn me(
             .into_response(),
         ));
     }
-    let needs_setup = state.store().count_users().await.map_err(AppError::from)? == 0;
+    let needs_setup = state.store().count_users().map_err(AppError::from)? == 0;
     Ok(no_store(
         Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response(),
     ))
@@ -278,7 +273,7 @@ pub async fn me(
     )
 )]
 pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
-    let users = state.store().list_users().await.map_err(AppError::from)?;
+    let users = state.store().list_users().map_err(AppError::from)?;
     Ok(Json(
         users
             .into_iter()
@@ -310,7 +305,6 @@ pub async fn create_user_h(
     if state
         .store()
         .get_user_by_username(&body.username)
-        .await
         .map_err(AppError::from)?
         .is_some()
     {
@@ -321,7 +315,6 @@ pub async fn create_user_h(
     let u = state
         .store()
         .create_user(&body.username, &hash)
-        .await
         .map_err(AppError::from)?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -348,7 +341,7 @@ pub async fn delete_user_h(
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let _guard = state.write_lock.lock().await;
-    if state.store().count_users().await.map_err(AppError::from)? <= 1 {
+    if state.store().count_users().map_err(AppError::from)? <= 1 {
         return Err(AppError::conflict("cannot delete the last user"));
     }
     // Deleting your own account cascades your session (FK ON DELETE CASCADE), silently logging you out;
@@ -358,12 +351,7 @@ pub async fn delete_user_h(
             return Err(AppError::conflict("cannot delete your own account"));
         }
     }
-    if !state
-        .store()
-        .delete_user(&id)
-        .await
-        .map_err(AppError::from)?
-    {
+    if !state.store().delete_user(&id).map_err(AppError::from)? {
         return Err(AppError::not_found(NotFoundKind::User, &id));
     }
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
@@ -404,7 +392,6 @@ pub async fn change_password(
     let user = state
         .store()
         .get_user_by_id(&id)
-        .await
         .map_err(AppError::from)?
         .ok_or_else(AppError::unauthorized)?;
     if !crate::auth::verify_password(&body.current_password, &user.password_hash) {
@@ -417,7 +404,6 @@ pub async fn change_password(
     state
         .store()
         .set_user_password(&id, &hash)
-        .await
         .map_err(AppError::from)?;
     let keep = jar
         .get(crate::middleware::SESSION_COOKIE)
@@ -426,7 +412,6 @@ pub async fn change_password(
     state
         .store()
         .delete_user_sessions_except(&id, &keep)
-        .await
         .map_err(AppError::from)?;
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
@@ -464,7 +449,6 @@ pub async fn list_tokens(
     let t = state
         .store()
         .list_tokens(token_owner(&p)?)
-        .await
         .map_err(AppError::from)?;
     Ok(Json(
         t.into_iter()
@@ -497,7 +481,6 @@ pub async fn create_token_h(
     let t = state
         .store()
         .create_token(owner, &body.name, &crate::auth::sha256_hex(&secret))
-        .await
         .map_err(AppError::from)?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -527,7 +510,6 @@ pub async fn delete_token_h(
     if !state
         .store()
         .delete_token(owner, &id)
-        .await
         .map_err(AppError::from)?
     {
         return Err(AppError::not_found(NotFoundKind::Token, &id));

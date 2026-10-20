@@ -35,7 +35,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
 pub async fn get_variables(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<std::collections::BTreeMap<String, String>>, AppError> {
-    Ok(Json(state.store().all_variables().await?))
+    Ok(Json(state.store().all_variables()?))
 }
 
 #[utoipa::path(
@@ -65,7 +65,7 @@ pub async fn put_variable(
         ));
     }
     let _guard = state.write_lock.lock().await;
-    state.store().set_variable(&key, &body.value).await?;
+    state.store().set_variable(&key, &body.value)?;
     Ok(Json(body))
 }
 
@@ -93,7 +93,7 @@ pub struct SettingValue {
 pub async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let mut out = std::collections::BTreeMap::new();
     for key in crate::settings::KNOWN {
-        let stored = state.store().get_setting(key).await?;
+        let stored = state.store().get_setting(key)?;
         out.insert(key.to_string(), resolved_setting(key, stored)?);
     }
     Ok(Json(out).into_response())
@@ -142,8 +142,7 @@ pub async fn put_setting(
     let missing = match key.as_str() {
         crate::settings::DEFAULT_PRINTER_ID => state
             .store()
-            .get_printer(&canonical)
-            .await?
+            .get_printer(&canonical)?
             .is_none()
             .then_some("printer"),
         _ => None,
@@ -154,7 +153,7 @@ pub async fn put_setting(
             format!("{kind} '{canonical}' does not exist"),
         ));
     }
-    state.store().set_setting(&key, &canonical).await?;
+    state.store().set_setting(&key, &canonical)?;
     Ok(Json(resolved_setting(&key, Some(canonical))?).into_response())
 }
 
@@ -177,7 +176,7 @@ pub async fn delete_setting(
     }
     let _guard = state.write_lock.lock().await;
     // idempotent: a known setting that was never overridden is already at its default
-    state.store().delete_setting(&key).await?;
+    state.store().delete_setting(&key)?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 

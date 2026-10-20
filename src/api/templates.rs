@@ -55,7 +55,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
 pub async fn list_templates(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<TemplateList>, AppError> {
-    let context = detail_context(&state).await?;
+    let context = detail_context(&state)?;
     let dt_resolver = crate::datetime_fmt::DateTimeResolver {
         formats: &context.dt_formats,
         now: chrono::Local::now(),
@@ -123,11 +123,10 @@ struct DetailContext {
     dt_formats: BTreeMap<String, String>,
 }
 
-async fn detail_context(state: &AppState) -> Result<DetailContext, AppError> {
+fn detail_context(state: &AppState) -> Result<DetailContext, AppError> {
     Ok(DetailContext {
-        variables: state.store().all_variables().await?,
+        variables: state.store().all_variables()?,
         dt_formats: crate::settings::resolve_datetime_formats(state.store())
-            .await
             .map_err(|e| AppError::internal(e.to_string()))?,
     })
 }
@@ -173,7 +172,7 @@ pub async fn create_template(
     let content = parse_and_validate(&body)?;
 
     let _guard = state.write_lock.lock().await;
-    let context = detail_context(&state).await?;
+    let context = detail_context(&state)?;
     let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
     state.before_publish();
     // The exclusive publish decides existence from the disk, atomically, so a file copied in out of
@@ -231,7 +230,7 @@ pub async fn replace_template(
             )));
         }
     }
-    let context = detail_context(&state).await?;
+    let context = detail_context(&state)?;
     let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
     fs_safe::stage_and_replace(root_fd.as_fd(), &filename, &body)?;
     reload_and_describe(&state, id, content, &context, axum::http::StatusCode::OK)
@@ -257,7 +256,7 @@ pub async fn delete_template(
     let _guard = state.write_lock.lock().await;
     let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
     fs_safe::unlink_file(root_fd.as_fd(), &id)?;
-    state.store().remove_favorites_for_template(&id).await?;
+    state.store().remove_favorites_for_template(&id)?;
     state.reload()?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -278,9 +277,8 @@ pub async fn get_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<TemplateDetail>, AppError> {
-    let variables = state.store().all_variables().await?;
+    let variables = state.store().all_variables()?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
-        .await
         .map_err(|e| AppError::internal(e.to_string()))?;
     let now = chrono::Local::now();
     let dt_resolver = crate::datetime_fmt::DateTimeResolver {
@@ -343,15 +341,16 @@ pub async fn thumbnail(
         .get(&id)
         .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
-        .await
         .map_err(|e| AppError::internal(e.to_string()))?;
     let now = chrono::Local::now();
     let dt = crate::datetime_fmt::DateTimeResolver {
         formats: &dt_formats,
         now,
     };
-    let variables = state.store().all_variables().await?;
+    let variables = state.store().all_variables()?;
     let data = template.placeholder_data(now);
+    // Typst compilation/rasterization run inline on this request's thread, assuming small
+    // local operator workloads without latency isolation for concurrent requests.
     let png = crate::render::render_thumbnail_png(template, &data, &variables, &dt)?;
 
     // #129: key the ETag on the rendered bytes, not the template YAML. The image depends on the
@@ -390,7 +389,7 @@ pub async fn list_favorites(
     State(state): State<Arc<AppState>>,
     axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    let ids = state.store().list_favorites(&principal.actor_id()).await?;
+    let ids = state.store().list_favorites(&principal.actor_id())?;
     let registry = state.templates.load_full();
     Ok(Json(
         ids.into_iter()
@@ -415,8 +414,7 @@ pub async fn add_favorite(
     }
     state
         .store()
-        .add_favorite(&principal.actor_id(), &template_id)
-        .await?;
+        .add_favorite(&principal.actor_id(), &template_id)?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -431,8 +429,7 @@ pub async fn remove_favorite(
     let _guard = state.write_lock.lock().await;
     state
         .store()
-        .remove_favorite(&principal.actor_id(), &template_id)
-        .await?;
+        .remove_favorite(&principal.actor_id(), &template_id)?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
@@ -442,10 +439,7 @@ pub async fn recent_templates(
     State(state): State<Arc<AppState>>,
     axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    let ids = state
-        .store()
-        .recent_templates(&principal.actor_id())
-        .await?;
+    let ids = state.store().recent_templates(&principal.actor_id())?;
     let registry = state.templates.load_full();
     Ok(Json(
         ids.into_iter()

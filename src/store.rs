@@ -3,7 +3,7 @@ use rusqlite::Connection as SqlConnection;
 use rusqlite::OptionalExtension;
 use rusqlite_migration::{Migrations, M};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[derive(Debug, Clone)]
 pub struct User {
@@ -31,8 +31,8 @@ pub enum StoreError {
 }
 
 /// App-state persistence (printers, settings, a minimal job log). The only SQL touchpoint in the app;
-/// methods are async-shaped so the backing store can later move to an async driver (e.g. sqlx) without
-/// changing call sites.
+/// SQLite operations and mutex acquisition block the calling thread. This inline execution assumes
+/// small local operator workloads and provides no latency isolation for concurrent requests.
 pub struct Store {
     conn: Mutex<SqlConnection>,
 }
@@ -162,6 +162,10 @@ fn migrations() -> Migrations<'static> {
 }
 
 impl Store {
+    fn connection(&self) -> MutexGuard<'_, SqlConnection> {
+        self.conn.lock().expect("store lock")
+    }
+
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let mut conn = SqlConnection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -181,8 +185,8 @@ impl Store {
         })
     }
 
-    pub async fn list_printers(&self) -> Result<Vec<Printer>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn list_printers(&self) -> Result<Vec<Printer>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare(&format!("{SELECT_PRINTER} ORDER BY id"))?;
         let rows = stmt.query_map([], row_to_printer)?;
         Ok(rows
@@ -192,14 +196,14 @@ impl Store {
             .collect())
     }
 
-    pub async fn get_printer(&self, id: &str) -> Result<Option<Printer>, StoreError> {
+    pub fn get_printer(&self, id: &str) -> Result<Option<Printer>, StoreError> {
         Ok(self
             .get_printer_record(id)?
             .map(|(id, name, connection)| Printer::new(id, name, connection)))
     }
 
     /// The stored connection, password included, for the driver and the `PUT` keep rule.
-    pub async fn get_printer_connection(
+    pub fn get_printer_connection(
         &self,
         id: &str,
     ) -> Result<Option<PrinterConnection>, StoreError> {
@@ -209,7 +213,7 @@ impl Store {
     }
 
     fn get_printer_record(&self, id: &str) -> Result<Option<PrinterRecord>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         conn.query_row(
             &format!("{SELECT_PRINTER} WHERE id = ?1"),
             [id],
@@ -219,13 +223,13 @@ impl Store {
         .map_err(Into::into)
     }
 
-    pub async fn insert_printer(
+    pub fn insert_printer(
         &self,
         id: &str,
         name: &str,
         connection: &PrinterConnection,
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         let render = connection.render.as_ref();
         conn.execute(
             "INSERT INTO printers (id, name, uri, username, password, ca_cert, insecure, color_mode, resolution)
@@ -246,13 +250,13 @@ impl Store {
     }
 
     /// Replace every stored field of printer `id`. Returns `false` if there is no such printer.
-    pub async fn replace_printer(
+    pub fn replace_printer(
         &self,
         id: &str,
         name: &str,
         connection: &PrinterConnection,
     ) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         let render = connection.render.as_ref();
         let n = conn.execute(
             "UPDATE printers SET name = ?2, uri = ?3, username = ?4, password = ?5, ca_cert = ?6,
@@ -277,8 +281,8 @@ impl Store {
     /// that printer. There is deliberately no plain `delete_printer`: a delete that does not clear
     /// the setting would leave a default naming a printer that no longer exists, and `GET
     /// /api/settings` takes no lock, so a second statement is a window a reader can land in.
-    pub async fn delete_printer_and_default(&self, id: &str) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().expect("store lock");
+    pub fn delete_printer_and_default(&self, id: &str) -> Result<bool, StoreError> {
+        let mut conn = self.connection();
         let tx = conn.transaction()?;
         let existed = tx.execute("DELETE FROM printers WHERE id = ?1", [id])? > 0;
         if existed {
@@ -291,8 +295,8 @@ impl Store {
         Ok(existed)
     }
 
-    pub async fn get_variable(&self, key: &str) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn get_variable(&self, key: &str) -> Result<Option<String>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare("SELECT value FROM variables WHERE key = ?1")?;
         let mut rows = stmt.query_map([key], |row| row.get::<_, String>(0))?;
         match rows.next() {
@@ -301,8 +305,8 @@ impl Store {
         }
     }
 
-    pub async fn set_variable(&self, key: &str, value: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn set_variable(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        let conn = self.connection();
         conn.execute(
             "INSERT INTO variables (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = ?2",
@@ -311,10 +315,8 @@ impl Store {
         Ok(())
     }
 
-    pub async fn all_variables(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn all_variables(&self) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare("SELECT key, value FROM variables ORDER BY key")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -327,8 +329,8 @@ impl Store {
         Ok(out)
     }
 
-    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?1")?;
         let mut rows = stmt.query_map([key], |row| row.get::<_, String>(0))?;
         match rows.next() {
@@ -337,8 +339,8 @@ impl Store {
         }
     }
 
-    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        let conn = self.connection();
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = ?2",
@@ -347,15 +349,13 @@ impl Store {
         Ok(())
     }
 
-    pub async fn delete_setting(&self, key: &str) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn delete_setting(&self, key: &str) -> Result<bool, StoreError> {
+        let conn = self.connection();
         Ok(conn.execute("DELETE FROM app_settings WHERE key = ?1", [key])? > 0)
     }
 
-    pub async fn all_settings(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn all_settings(&self) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare("SELECT key, value FROM app_settings ORDER BY key")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -368,7 +368,7 @@ impl Store {
         Ok(out)
     }
 
-    pub async fn record_job(
+    pub fn record_job(
         &self,
         template: &str,
         printer: Option<&str>,
@@ -376,7 +376,7 @@ impl Store {
         error: Option<&str>,
         user_id: &str,
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         conn.execute(
             "INSERT INTO jobs (template, printer, status, error, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![template, printer, status, error, user_id],
@@ -385,8 +385,8 @@ impl Store {
     }
 
     /// Every recorded job, newest first, with its actor's current username when one exists.
-    pub async fn list_jobs(&self) -> Result<Vec<JobRecord>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn list_jobs(&self) -> Result<Vec<JobRecord>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare(
             "SELECT j.id,
                     strftime('%Y-%m-%dT%H:%M:%SZ', j.ts),
@@ -417,15 +417,15 @@ impl Store {
 
     /// Each logged job's status, oldest first.
     #[cfg(test)]
-    pub async fn job_statuses(&self) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn job_statuses(&self) -> Result<Vec<String>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare("SELECT status FROM jobs ORDER BY id")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    pub async fn list_favorites(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn list_favorites(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare(
             "SELECT template_id FROM favorites WHERE user_id = ?1 ORDER BY created_at, template_id",
         )?;
@@ -437,8 +437,8 @@ impl Store {
         Ok(out)
     }
 
-    pub async fn add_favorite(&self, user_id: &str, template_id: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn add_favorite(&self, user_id: &str, template_id: &str) -> Result<(), StoreError> {
+        let conn = self.connection();
         conn.execute(
             "INSERT OR IGNORE INTO favorites (user_id, template_id) VALUES (?1, ?2)",
             rusqlite::params![user_id, template_id],
@@ -446,12 +446,8 @@ impl Store {
         Ok(())
     }
 
-    pub async fn remove_favorite(
-        &self,
-        user_id: &str,
-        template_id: &str,
-    ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn remove_favorite(&self, user_id: &str, template_id: &str) -> Result<(), StoreError> {
+        let conn = self.connection();
         conn.execute(
             "DELETE FROM favorites WHERE user_id = ?1 AND template_id = ?2",
             rusqlite::params![user_id, template_id],
@@ -462,11 +458,8 @@ impl Store {
     /// Drop every user's favorite row for `template_id`. Called when the template is deleted so a
     /// later template reusing the id does not inherit favorites pointing at the old one. Not scoped
     /// to one actor: the delete invalidates the row for everybody, not just the caller (#140).
-    pub async fn remove_favorites_for_template(
-        &self,
-        template_id: &str,
-    ) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn remove_favorites_for_template(&self, template_id: &str) -> Result<usize, StoreError> {
+        let conn = self.connection();
         let removed = conn.execute(
             "DELETE FROM favorites WHERE template_id = ?1",
             rusqlite::params![template_id],
@@ -475,8 +468,8 @@ impl Store {
     }
 
     /// The 6 most recently printed distinct templates for this user (deterministic: MAX(id) tiebreak).
-    pub async fn recent_templates(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn recent_templates(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare(
             "SELECT template FROM jobs WHERE user_id = ?1
              GROUP BY template ORDER BY MAX(ts) DESC, MAX(id) DESC LIMIT 6",
@@ -489,18 +482,14 @@ impl Store {
         Ok(out)
     }
 
-    pub async fn count_users(&self) -> Result<i64, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn count_users(&self) -> Result<i64, StoreError> {
+        let conn = self.connection();
         Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
     }
 
-    pub async fn create_user(
-        &self,
-        username: &str,
-        password_hash: &str,
-    ) -> Result<User, StoreError> {
+    pub fn create_user(&self, username: &str, password_hash: &str) -> Result<User, StoreError> {
         let id = crate::auth::random_secret();
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         conn.execute(
             "INSERT INTO users (id, username, password_hash) VALUES (?1, ?2, ?3)",
             rusqlite::params![id, username, password_hash],
@@ -512,8 +501,8 @@ impl Store {
         })
     }
 
-    pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn get_user_by_username(&self, username: &str) -> Result<Option<User>, StoreError> {
+        let conn = self.connection();
         conn.query_row(
             "SELECT id, username, password_hash FROM users WHERE username = ?1",
             [username],
@@ -529,8 +518,8 @@ impl Store {
         .map_err(Into::into)
     }
 
-    pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn get_user_by_id(&self, id: &str) -> Result<Option<User>, StoreError> {
+        let conn = self.connection();
         conn.query_row(
             "SELECT id, username, password_hash FROM users WHERE id = ?1",
             [id],
@@ -546,8 +535,8 @@ impl Store {
         .map_err(Into::into)
     }
 
-    pub async fn list_users(&self) -> Result<Vec<User>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn list_users(&self) -> Result<Vec<User>, StoreError> {
+        let conn = self.connection();
         let mut stmt =
             conn.prepare("SELECT id, username, password_hash FROM users ORDER BY username")?;
         let rows = stmt.query_map([], |r| {
@@ -560,13 +549,13 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub async fn delete_user(&self, id: &str) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn delete_user(&self, id: &str) -> Result<bool, StoreError> {
+        let conn = self.connection();
         Ok(conn.execute("DELETE FROM users WHERE id = ?1", [id])? > 0)
     }
 
-    pub async fn set_user_password(&self, id: &str, password_hash: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn set_user_password(&self, id: &str, password_hash: &str) -> Result<(), StoreError> {
+        let conn = self.connection();
         conn.execute(
             "UPDATE users SET password_hash = ?1 WHERE id = ?2",
             rusqlite::params![password_hash, id],
@@ -575,13 +564,13 @@ impl Store {
     }
 
     // Sessions
-    pub async fn create_session(
+    pub fn create_session(
         &self,
         id_hash: &str,
         user_id: &str,
         ttl_modifier: &str,
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         conn.execute(
             "INSERT INTO sessions (id, user_id, expires_at) VALUES (?1, ?2, datetime('now', ?3))",
             rusqlite::params![id_hash, user_id, ttl_modifier],
@@ -591,8 +580,8 @@ impl Store {
 
     /// Look up a live (non-expired) session and its user. Slides expiry + last_seen, but only when
     /// last_seen is older than 1 hour (throttle), to avoid a write per request.
-    pub async fn lookup_session(&self, id_hash: &str) -> Result<Option<User>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn lookup_session(&self, id_hash: &str) -> Result<Option<User>, StoreError> {
+        let conn = self.connection();
         let user = conn
             .query_row(
                 "SELECT u.id, u.username, u.password_hash
@@ -618,18 +607,18 @@ impl Store {
         Ok(user)
     }
 
-    pub async fn delete_session(&self, id_hash: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn delete_session(&self, id_hash: &str) -> Result<(), StoreError> {
+        let conn = self.connection();
         conn.execute("DELETE FROM sessions WHERE id = ?1", [id_hash])?;
         Ok(())
     }
 
-    pub async fn delete_user_sessions_except(
+    pub fn delete_user_sessions_except(
         &self,
         user_id: &str,
         keep_id_hash: &str,
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         conn.execute(
             "DELETE FROM sessions WHERE user_id = ?1 AND id <> ?2",
             rusqlite::params![user_id, keep_id_hash],
@@ -638,14 +627,14 @@ impl Store {
     }
 
     // Tokens
-    pub async fn create_token(
+    pub fn create_token(
         &self,
         owner: &str,
         name: &str,
         token_hash: &str,
     ) -> Result<ApiToken, StoreError> {
         let id = crate::auth::random_secret();
-        let conn = self.conn.lock().expect("store lock");
+        let conn = self.connection();
         conn.execute(
             "INSERT INTO api_tokens (id, owner, name, token_hash) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![id, owner, name, token_hash],
@@ -666,8 +655,8 @@ impl Store {
     }
 
     /// Look up a token by its hash and return its owner; on hit, throttled-update last_used_at.
-    pub async fn lookup_token(&self, token_hash: &str) -> Result<Option<User>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn lookup_token(&self, token_hash: &str) -> Result<Option<User>, StoreError> {
+        let conn = self.connection();
         let found = conn
             .query_row(
                 "SELECT t.id, u.id, u.username, u.password_hash
@@ -697,8 +686,8 @@ impl Store {
         Ok(Some(owner))
     }
 
-    pub async fn list_tokens(&self, owner: &str) -> Result<Vec<ApiToken>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn list_tokens(&self, owner: &str) -> Result<Vec<ApiToken>, StoreError> {
+        let conn = self.connection();
         let mut stmt = conn.prepare(
             "SELECT id, name, last_used_at, created_at FROM api_tokens WHERE owner = ?1
              ORDER BY created_at",
@@ -714,8 +703,8 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub async fn delete_token(&self, owner: &str, id: &str) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
+    pub fn delete_token(&self, owner: &str, id: &str) -> Result<bool, StoreError> {
+        let conn = self.connection();
         Ok(conn.execute(
             "DELETE FROM api_tokens WHERE id = ?1 AND owner = ?2",
             rusqlite::params![id, owner],
@@ -768,159 +757,139 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn printer_crud_roundtrip() {
+    #[test]
+    fn printer_crud_roundtrip() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.list_printers().await.unwrap().is_empty());
+        assert!(store.list_printers().unwrap().is_empty());
 
         store
             .insert_printer("p1", "P1", &connection("ipp://x", Some("s")))
-            .await
             .unwrap();
 
-        let got = store.get_printer("p1").await.unwrap().unwrap();
+        let got = store.get_printer("p1").unwrap().unwrap();
         assert_eq!((got.name.as_str(), got.uri.as_str()), ("P1", "ipp://x"));
         assert_eq!(got.username.as_deref(), Some("u"));
         assert!(got.insecure);
         assert_eq!(got.render.and_then(|r| r.resolution), Some(300));
-        let stored = store.get_printer_connection("p1").await.unwrap().unwrap();
+        let stored = store.get_printer_connection("p1").unwrap().unwrap();
         assert_eq!(stored.password.as_deref(), Some("s"));
-        assert_eq!(store.list_printers().await.unwrap().len(), 1);
+        assert_eq!(store.list_printers().unwrap().len(), 1);
 
         assert!(store
             .replace_printer("p1", "P1b", &connection("ipp://y", None))
-            .await
             .unwrap());
-        let got = store.get_printer_connection("p1").await.unwrap().unwrap();
+        let got = store.get_printer_connection("p1").unwrap().unwrap();
         assert_eq!((got.uri.as_str(), got.password), ("ipp://y", None));
-        assert_eq!(store.get_printer("p1").await.unwrap().unwrap().name, "P1b");
+        assert_eq!(store.get_printer("p1").unwrap().unwrap().name, "P1b");
         assert!(!store
             .replace_printer("ghost", "G", &connection("ipp://y", None))
-            .await
             .unwrap());
 
-        assert!(store.delete_printer_and_default("p1").await.unwrap());
-        assert!(store.get_printer("p1").await.unwrap().is_none());
-        assert!(!store.delete_printer_and_default("p1").await.unwrap());
+        assert!(store.delete_printer_and_default("p1").unwrap());
+        assert!(store.get_printer("p1").unwrap().is_none());
+        assert!(!store.delete_printer_and_default("p1").unwrap());
     }
 
-    #[tokio::test]
-    async fn variables_and_jobs() {
+    #[test]
+    fn variables_and_jobs() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.get_variable("k").await.unwrap().is_none());
-        store.set_variable("k", "v").await.unwrap();
-        assert_eq!(store.get_variable("k").await.unwrap().as_deref(), Some("v"));
-        store.set_variable("k", "v2").await.unwrap();
-        assert_eq!(
-            store.get_variable("k").await.unwrap().as_deref(),
-            Some("v2")
-        );
+        assert!(store.get_variable("k").unwrap().is_none());
+        store.set_variable("k", "v").unwrap();
+        assert_eq!(store.get_variable("k").unwrap().as_deref(), Some("v"));
+        store.set_variable("k", "v2").unwrap();
+        assert_eq!(store.get_variable("k").unwrap().as_deref(), Some("v2"));
 
-        let all = store.all_variables().await.unwrap();
+        let all = store.all_variables().unwrap();
         assert_eq!(all.get("k").map(String::as_str), Some("v2"));
 
         store
             .record_job("tpl", Some("p1"), "ok", None, "u1")
-            .await
             .unwrap();
         store
             .record_job("tpl", None, "failed", Some("boom"), "u1")
-            .await
             .unwrap();
     }
 
-    #[tokio::test]
-    async fn favorites_add_idempotent_list_and_remove() {
+    #[test]
+    fn favorites_add_idempotent_list_and_remove() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.list_favorites("u1").await.unwrap().is_empty());
-        store.add_favorite("u1", "tpl_a").await.unwrap();
-        store.add_favorite("u1", "tpl_a").await.unwrap(); // idempotent
-        store.add_favorite("u1", "tpl_b").await.unwrap();
+        assert!(store.list_favorites("u1").unwrap().is_empty());
+        store.add_favorite("u1", "tpl_a").unwrap();
+        store.add_favorite("u1", "tpl_a").unwrap(); // idempotent
+        store.add_favorite("u1", "tpl_b").unwrap();
         // per-user isolation
-        store.add_favorite("u2", "tpl_c").await.unwrap();
+        store.add_favorite("u2", "tpl_c").unwrap();
         assert_eq!(
-            store.list_favorites("u1").await.unwrap(),
+            store.list_favorites("u1").unwrap(),
             vec!["tpl_a".to_string(), "tpl_b".to_string()]
         );
         assert_eq!(
-            store.list_favorites("u2").await.unwrap(),
+            store.list_favorites("u2").unwrap(),
             vec!["tpl_c".to_string()]
         );
-        store.remove_favorite("u1", "tpl_a").await.unwrap();
-        store.remove_favorite("u1", "tpl_a").await.unwrap(); // idempotent
+        store.remove_favorite("u1", "tpl_a").unwrap();
+        store.remove_favorite("u1", "tpl_a").unwrap(); // idempotent
         assert_eq!(
-            store.list_favorites("u1").await.unwrap(),
+            store.list_favorites("u1").unwrap(),
             vec!["tpl_b".to_string()]
         );
     }
 
-    #[tokio::test]
-    async fn remove_favorites_for_template_drops_every_users_row() {
+    #[test]
+    fn remove_favorites_for_template_drops_every_users_row() {
         let store = Store::open_in_memory().unwrap();
-        store.add_favorite("u1", "t1").await.unwrap();
-        store.add_favorite("u2", "t1").await.unwrap();
-        store.add_favorite("u1", "t2").await.unwrap();
+        store.add_favorite("u1", "t1").unwrap();
+        store.add_favorite("u2", "t1").unwrap();
+        store.add_favorite("u1", "t2").unwrap();
 
         // Favorites are keyed by actor, so deleting the template must clear it for everyone.
-        assert_eq!(store.remove_favorites_for_template("t1").await.unwrap(), 2);
-        assert_eq!(
-            store.list_favorites("u1").await.unwrap(),
-            vec!["t2".to_string()]
-        );
-        assert!(store.list_favorites("u2").await.unwrap().is_empty());
-        assert_eq!(store.remove_favorites_for_template("t1").await.unwrap(), 0);
+        assert_eq!(store.remove_favorites_for_template("t1").unwrap(), 2);
+        assert_eq!(store.list_favorites("u1").unwrap(), vec!["t2".to_string()]);
+        assert!(store.list_favorites("u2").unwrap().is_empty());
+        assert_eq!(store.remove_favorites_for_template("t1").unwrap(), 0);
     }
 
-    #[tokio::test]
-    async fn recent_templates_distinct_ordered_and_per_user() {
+    #[test]
+    fn recent_templates_distinct_ordered_and_per_user() {
         let store = Store::open_in_memory().unwrap();
         // Same ts for a and b; MAX(id) tiebreak makes b (inserted later) rank first.
-        store.record_job("a", None, "ok", None, "u1").await.unwrap();
-        store.record_job("a", None, "ok", None, "u1").await.unwrap();
-        store.record_job("b", None, "ok", None, "u1").await.unwrap();
-        store.record_job("c", None, "ok", None, "u2").await.unwrap();
-        let recents = store.recent_templates("u1").await.unwrap();
+        store.record_job("a", None, "ok", None, "u1").unwrap();
+        store.record_job("a", None, "ok", None, "u1").unwrap();
+        store.record_job("b", None, "ok", None, "u1").unwrap();
+        store.record_job("c", None, "ok", None, "u2").unwrap();
+        let recents = store.recent_templates("u1").unwrap();
         assert_eq!(recents, vec!["b".to_string(), "a".to_string()]);
-        assert_eq!(
-            store.recent_templates("u2").await.unwrap(),
-            vec!["c".to_string()]
-        );
-        assert!(store.recent_templates("nobody").await.unwrap().is_empty());
+        assert_eq!(store.recent_templates("u2").unwrap(), vec!["c".to_string()]);
+        assert!(store.recent_templates("nobody").unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn list_jobs_returns_every_actor_newest_first() {
+    #[test]
+    fn list_jobs_returns_every_actor_newest_first() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.list_jobs().await.unwrap().is_empty());
+        assert!(store.list_jobs().unwrap().is_empty());
 
-        let alice = store.create_user("alice", "hash").await.unwrap();
-        let bob = store.create_user("bob", "hash").await.unwrap();
+        let alice = store.create_user("alice", "hash").unwrap();
+        let bob = store.create_user("bob", "hash").unwrap();
         let long_error = "printer rejected job: paper jam on tray 2\nsecond line of detail";
         store
             .record_job("ok_tpl", Some("p1"), "ok", None, &alice.id)
-            .await
             .unwrap();
         store
             .record_job("failed_tpl", None, "failed", Some(long_error), &bob.id)
-            .await
             .unwrap();
         store
             .record_job("local_tpl", None, "ok", None, "local")
-            .await
             .unwrap();
         store
             .record_job("ghost_tpl", None, "ok", None, "deleted-user")
-            .await
             .unwrap();
         // Force one recorded second so the id is the only remaining ordering key.
         store
-            .conn
-            .lock()
-            .expect("store lock")
+            .connection()
             .execute("UPDATE jobs SET ts = '2024-01-02 03:04:05'", [])
             .unwrap();
 
-        let jobs = store.list_jobs().await.unwrap();
+        let jobs = store.list_jobs().unwrap();
         assert_eq!(
             jobs.iter()
                 .map(|j| j.template_id.as_str())
@@ -946,36 +915,35 @@ mod tests {
         assert_eq!(jobs[3].actor_username.as_deref(), Some("alice"));
     }
 
-    #[tokio::test]
-    async fn app_settings_roundtrip() {
+    #[test]
+    fn app_settings_roundtrip() {
         let store = Store::open_in_memory().unwrap();
         // absent key reads as None
-        assert_eq!(store.get_setting("datetime_formats").await.unwrap(), None);
+        assert_eq!(store.get_setting("datetime_formats").unwrap(), None);
         // set then get
-        store.set_setting("datetime_formats", "{}").await.unwrap();
+        store.set_setting("datetime_formats", "{}").unwrap();
         assert_eq!(
-            store.get_setting("datetime_formats").await.unwrap(),
+            store.get_setting("datetime_formats").unwrap(),
             Some("{}".to_string())
         );
         // upsert overwrites
         store
             .set_setting("datetime_formats", "{\"d\":\"%d\"}")
-            .await
             .unwrap();
         assert_eq!(
-            store.get_setting("datetime_formats").await.unwrap(),
+            store.get_setting("datetime_formats").unwrap(),
             Some("{\"d\":\"%d\"}".to_string())
         );
         // all_settings lists the override row
-        let all = store.all_settings().await.unwrap();
+        let all = store.all_settings().unwrap();
         assert_eq!(
             all.get("datetime_formats"),
             Some(&"{\"d\":\"%d\"}".to_string())
         );
         // delete returns true when a row existed, false when it did not
-        assert!(store.delete_setting("datetime_formats").await.unwrap());
-        assert!(!store.delete_setting("datetime_formats").await.unwrap());
-        assert_eq!(store.get_setting("datetime_formats").await.unwrap(), None);
+        assert!(store.delete_setting("datetime_formats").unwrap());
+        assert!(!store.delete_setting("datetime_formats").unwrap());
+        assert_eq!(store.get_setting("datetime_formats").unwrap(), None);
     }
 }
 
@@ -1272,71 +1240,63 @@ mod auth_tests {
         Store::open_in_memory().unwrap()
     }
 
-    #[tokio::test]
-    async fn user_lifecycle_and_count() {
+    #[test]
+    fn user_lifecycle_and_count() {
         let s = store();
-        assert_eq!(s.count_users().await.unwrap(), 0);
-        let u = s.create_user("alice", "phc-hash").await.unwrap();
+        assert_eq!(s.count_users().unwrap(), 0);
+        let u = s.create_user("alice", "phc-hash").unwrap();
         assert_eq!(u.username, "alice");
-        assert_eq!(s.count_users().await.unwrap(), 1);
-        assert!(s.get_user_by_username("alice").await.unwrap().is_some());
-        assert!(s.create_user("alice", "h").await.is_err()); // unique username
-        assert_eq!(s.list_users().await.unwrap().len(), 1);
+        assert_eq!(s.count_users().unwrap(), 1);
+        assert!(s.get_user_by_username("alice").unwrap().is_some());
+        assert!(s.create_user("alice", "h").is_err()); // unique username
+        assert_eq!(s.list_users().unwrap().len(), 1);
     }
 
-    #[tokio::test]
-    async fn session_create_lookup_delete_and_user_cascade() {
+    #[test]
+    fn session_create_lookup_delete_and_user_cascade() {
         let s = store();
-        let u = s.create_user("bob", "h").await.unwrap();
+        let u = s.create_user("bob", "h").unwrap();
         let raw = "raw-session-value";
         s.create_session(&crate::auth::sha256_hex(raw), &u.id, "+30 days")
-            .await
             .unwrap();
-        let found = s
-            .lookup_session(&crate::auth::sha256_hex(raw))
-            .await
-            .unwrap();
+        let found = s.lookup_session(&crate::auth::sha256_hex(raw)).unwrap();
         assert_eq!(found.unwrap().username, "bob");
         // delete cascades when the user is removed
-        s.delete_user(&u.id).await.unwrap();
+        s.delete_user(&u.id).unwrap();
         assert!(s
             .lookup_session(&crate::auth::sha256_hex(raw))
-            .await
             .unwrap()
             .is_none());
     }
 
-    #[tokio::test]
-    async fn expired_session_not_returned() {
+    #[test]
+    fn expired_session_not_returned() {
         let s = store();
-        let u = s.create_user("carol", "h").await.unwrap();
-        s.create_session("h1", &u.id, "-1 minute").await.unwrap();
-        assert!(s.lookup_session("h1").await.unwrap().is_none());
+        let u = s.create_user("carol", "h").unwrap();
+        s.create_session("h1", &u.id, "-1 minute").unwrap();
+        assert!(s.lookup_session("h1").unwrap().is_none());
     }
 
-    #[tokio::test]
-    async fn token_create_lookup_revoke() {
+    #[test]
+    fn token_create_lookup_revoke() {
         let s = store();
-        let owner = s.create_user("dora", "h").await.unwrap();
+        let owner = s.create_user("dora", "h").unwrap();
         let t = s
             .create_token(&owner.id, "ci", &crate::auth::sha256_hex("secretval"))
-            .await
             .unwrap();
         assert_eq!(t.name, "ci");
         assert_eq!(
             s.lookup_token(&crate::auth::sha256_hex("secretval"))
-                .await
                 .unwrap()
                 .map(|u| u.id),
             Some(owner.id.clone())
         );
-        assert_eq!(s.list_tokens(&owner.id).await.unwrap().len(), 1);
-        assert!(s.list_tokens("someone-else").await.unwrap().is_empty());
-        assert!(!s.delete_token("someone-else", &t.id).await.unwrap());
-        assert!(s.delete_token(&owner.id, &t.id).await.unwrap());
+        assert_eq!(s.list_tokens(&owner.id).unwrap().len(), 1);
+        assert!(s.list_tokens("someone-else").unwrap().is_empty());
+        assert!(!s.delete_token("someone-else", &t.id).unwrap());
+        assert!(s.delete_token(&owner.id, &t.id).unwrap());
         assert!(s
             .lookup_token(&crate::auth::sha256_hex("secretval"))
-            .await
             .unwrap()
             .is_none());
     }

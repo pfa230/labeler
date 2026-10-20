@@ -64,7 +64,7 @@ fn validate_printer(id: &str, name: &str, connection: &PrinterConnection) -> Res
 pub async fn list_printers(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Printer>>, AppError> {
-    Ok(Json(state.store().list_printers().await?))
+    Ok(Json(state.store().list_printers()?))
 }
 
 #[utoipa::path(
@@ -85,7 +85,7 @@ pub async fn create_printer(
     let connection = body.connection();
     validate_printer(&body.id, &body.name, &connection)?;
     let _guard = state.write_lock.lock().await;
-    if state.store().get_printer(&body.id).await?.is_some() {
+    if state.store().get_printer(&body.id)?.is_some() {
         return Err(AppError::conflict(format!(
             "A printer with id '{}' already exists",
             body.id
@@ -93,8 +93,7 @@ pub async fn create_printer(
     }
     state
         .store()
-        .insert_printer(&body.id, &body.name, &connection)
-        .await?;
+        .insert_printer(&body.id, &body.name, &connection)?;
     let printer = Printer::new(body.id, body.name, connection);
     Ok((axum::http::StatusCode::CREATED, Json(printer)).into_response())
 }
@@ -115,8 +114,7 @@ pub async fn get_printer(
 ) -> Result<Json<Printer>, AppError> {
     let printer = state
         .store()
-        .get_printer(&id)
-        .await?
+        .get_printer(&id)?
         .ok_or_else(|| AppError::not_found(NotFoundKind::Printer, id))?;
     Ok(Json(printer))
 }
@@ -141,7 +139,7 @@ pub async fn replace_printer(
     let mut connection = body.connection();
     validate_printer(&id, &body.name, &connection)?;
     let _guard = state.write_lock.lock().await;
-    let Some(existing) = state.store().get_printer_connection(&id).await? else {
+    let Some(existing) = state.store().get_printer_connection(&id)? else {
         return Err(AppError::not_found(NotFoundKind::Printer, id));
     };
     connection.password = match connection.password {
@@ -151,8 +149,7 @@ pub async fn replace_printer(
     };
     state
         .store()
-        .replace_printer(&id, &body.name, &connection)
-        .await?;
+        .replace_printer(&id, &body.name, &connection)?;
     Ok(Json(Printer::new(id, body.name, connection)).into_response())
 }
 
@@ -171,7 +168,7 @@ pub async fn delete_printer(
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let _guard = state.write_lock.lock().await;
-    if state.store().delete_printer_and_default(&id).await? {
+    if state.store().delete_printer_and_default(&id)? {
         Ok(axum::http::StatusCode::NO_CONTENT.into_response())
     } else {
         Err(AppError::not_found(NotFoundKind::Printer, id))
@@ -254,7 +251,7 @@ pub async fn probe_stored_printer(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<ProbeResponse>, AppError> {
-    let Some(connection) = state.store().get_printer_connection(&id).await? else {
+    let Some(connection) = state.store().get_printer_connection(&id)? else {
         return Err(AppError::not_found(NotFoundKind::Printer, id));
     };
     probe_connection(&connection).await
@@ -292,7 +289,7 @@ pub async fn cut_printer(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<CutResponse>, AppError> {
-    let Some(connection) = state.store().get_printer_connection(&id).await? else {
+    let Some(connection) = state.store().get_printer_connection(&id)? else {
         return Err(AppError::not_found(NotFoundKind::Printer, id));
     };
     let driver = crate::driver::driver_for(&connection)

@@ -71,6 +71,8 @@ enum BatchTarget<'a> {
 
 /// Shared by `/render` and `/print`: decides the request-level faults, then renders every label
 /// before anything is returned or sent (rendering, "All-or-nothing validation").
+/// Typst compilation/rasterization run inline on the calling thread, assuming small local
+/// operator workloads without latency isolation; only printer I/O yields.
 async fn run_batch(
     state: &Arc<AppState>,
     template: &TemplateDefinition,
@@ -95,9 +97,8 @@ async fn run_batch(
         ));
     }
     let start_slot = start_slot.unwrap_or(0);
-    let variables = state.store().all_variables().await?;
+    let variables = state.store().all_variables()?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
-        .await
         .map_err(|e| AppError::internal(e.to_string()))?;
     let dt = crate::datetime_fmt::DateTimeResolver {
         formats: &dt_formats,
@@ -138,8 +139,7 @@ async fn run_batch(
         } => {
             let connection = state
                 .store()
-                .get_printer_connection(printer_id)
-                .await?
+                .get_printer_connection(printer_id)?
                 .ok_or_else(|| {
                     AppError::not_found(NotFoundKind::Printer, printer_id.to_string())
                 })?;
@@ -215,17 +215,23 @@ async fn run_batch(
                     .await
                 {
                     Ok(()) => {
-                        let _ = state
-                            .store()
-                            .record_job(&template.id, Some(printer_id), "ok", None, actor)
-                            .await;
+                        let _ = state.store().record_job(
+                            &template.id,
+                            Some(printer_id),
+                            "ok",
+                            None,
+                            actor,
+                        );
                     }
                     Err(err) => {
                         let msg = err.to_string();
-                        let _ = state
-                            .store()
-                            .record_job(&template.id, Some(printer_id), "failed", Some(&msg), actor)
-                            .await;
+                        let _ = state.store().record_job(
+                            &template.id,
+                            Some(printer_id),
+                            "failed",
+                            Some(&msg),
+                            actor,
+                        );
                         for &i in &unit.indices {
                             failed.push(BatchRowError {
                                 index: i,
@@ -386,9 +392,8 @@ pub async fn render_label(
         resolution_dpi,
     };
 
-    let variables = state.store().all_variables().await?;
+    let variables = state.store().all_variables()?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
-        .await
         .map_err(|e| AppError::internal(e.to_string()))?;
     let dt = crate::datetime_fmt::DateTimeResolver {
         formats: &dt_formats,
@@ -421,6 +426,8 @@ pub async fn render_label(
     let env = resolve_environment(template, &variables, &dt)?;
     crate::render::validate_label_data_keys(template, &req.data)?;
 
+    // Typst compilation/rasterization run inline on this request's thread, assuming small
+    // local operator workloads without latency isolation for concurrent requests.
     let (bytes, content_type) = match format {
         RenderFormat::Png => (
             render_single_label_image(template, &req.data, &env, img_opts)?,
@@ -445,5 +452,5 @@ pub async fn render_label(
 pub async fn list_jobs(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<JobRecord>>, AppError> {
-    Ok(Json(state.store().list_jobs().await?))
+    Ok(Json(state.store().list_jobs()?))
 }

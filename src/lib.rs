@@ -113,25 +113,12 @@ mod http_tests {
     const TEST_TOKEN: &str = "test-token-secret";
 
     fn seed_token(store: &Store) {
-        // The builders run inside the test's tokio runtime, so drive the async seed on a separate OS
-        // thread with its own runtime (block_on from within a runtime would panic).
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .build()
-                    .expect("seed runtime");
-                rt.block_on(async {
-                    let owner = store
-                        .create_user("test", "unused-hash")
-                        .await
-                        .expect("seed token owner");
-                    store
-                        .create_token(&owner.id, "test", &super::auth::sha256_hex(TEST_TOKEN))
-                        .await
-                        .expect("seed token");
-                });
-            });
-        });
+        let owner = store
+            .create_user("test", "unused-hash")
+            .expect("seed token owner");
+        store
+            .create_token(&owner.id, "test", &super::auth::sha256_hex(TEST_TOKEN))
+            .expect("seed token");
     }
 
     /// Inject the bearer header into every request the harness sends, so protected routes authenticate.
@@ -5214,7 +5201,6 @@ layout:
         let stored = state
             .store()
             .get_printer_connection("persist")
-            .await
             .expect("store read")
             .expect("printer exists");
         assert_eq!(
@@ -5236,7 +5222,6 @@ layout:
         let stored = state
             .store()
             .get_printer_connection("persist")
-            .await
             .expect("store read")
             .expect("printer exists");
         assert_eq!(
@@ -5554,7 +5539,7 @@ layout:
         request["printer"] = json!("lp");
         let (status, body) = post_batch(&app, "/api/print", request).await;
         let log = std::mem::take(&mut *log.lock().unwrap());
-        let statuses = state.store().job_statuses().await.unwrap();
+        let statuses = state.store().job_statuses().unwrap();
         (status, body, log, statuses)
     }
 
@@ -7045,7 +7030,7 @@ layout:
         let store = Store::open_in_memory().expect("store");
         let state = Arc::new(AppState::new(templates, templates_dir, store));
         let cookie_app = app(state.clone());
-        let user = state.store().create_user("admin", "hash").await.unwrap();
+        let user = state.store().create_user("admin", "hash").unwrap();
         let session_secret = "test-session-secret-for-csrf";
         state
             .store()
@@ -7054,7 +7039,6 @@ layout:
                 &user.id,
                 "+30 days",
             )
-            .await
             .unwrap();
         let req = Request::builder()
             .method("PUT")
@@ -10367,17 +10351,14 @@ mod auth_http_tests {
         state
             .store()
             .record_job("ok_tpl", Some("p1"), "ok", None, &a_id)
-            .await
             .unwrap();
         state
             .store()
             .record_job("failed_tpl", None, "failed", Some(long_error), &b_id)
-            .await
             .unwrap();
         state
             .store()
             .record_job("local_tpl", None, "ok", None, "local")
-            .await
             .unwrap();
 
         // Either actor sees both users' jobs and the local one.
@@ -10437,7 +10418,6 @@ mod auth_http_tests {
             state
                 .store()
                 .record_job(id, None, "ok", None, "local")
-                .await
                 .unwrap();
         }
         let newest_first: Vec<String> = ids.iter().rev().take(6).cloned().collect();
@@ -10879,7 +10859,6 @@ layout:
         state
             .store()
             .set_variable("bad_date", "2026-02-28")
-            .await
             .unwrap();
         let req_supplied = req_post_json(
             "/api/render/label",
@@ -10900,11 +10879,7 @@ layout:
 
         // Path 2: Exact same value reached through the tokened default -> 422 TemplateInvalid /
         // reference_unresolved naming the parameter, whatever the label carries
-        state
-            .store()
-            .set_variable("bad_date", invalid_val)
-            .await
-            .unwrap();
+        state.store().set_variable("bad_date", invalid_val).unwrap();
         let req_default = req_post_json(
             "/api/render/label",
             &serde_json::json!({
@@ -11670,17 +11645,13 @@ layout:
         assert_eq!(body["error"]["details"]["field"], "vars.site");
 
         // (guard) 2. site=staging -> container inactive.
-        state.store().set_variable("site", "staging").await.unwrap();
+        state.store().set_variable("site", "staging").unwrap();
         let res = app.clone().oneshot(render()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let staging = body_bytes(res).await;
 
         // 3. site=production -> container active: the gate opened, so the label differs.
-        state
-            .store()
-            .set_variable("site", "production")
-            .await
-            .unwrap();
+        state.store().set_variable("site", "production").unwrap();
         let res = app.clone().oneshot(render()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_ne!(body_bytes(res).await, staging);
@@ -11709,7 +11680,6 @@ layout:
         state
             .store()
             .set_setting("datetime_formats", r#"{"custom_fmt":"%Y/%m/%d"}"#)
-            .await
             .unwrap();
 
         let res = app
@@ -11761,11 +11731,7 @@ layout:
     async fn issue_262_store_failure_returns_500_and_leaves_no_file() {
         let (app, state) = test_app_with_custom_templates(vec![]);
         // Corrupt datetime_formats so resolve_datetime_formats fails -> 500
-        state
-            .store()
-            .set_setting("datetime_formats", "{")
-            .await
-            .unwrap();
+        state.store().set_setting("datetime_formats", "{").unwrap();
         let yaml = r#"
 name: Should Not Be Written
 unit: mm
@@ -11788,11 +11754,7 @@ layout:
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         // No file should have been written. GET would also 500 while setting is corrupt,
         // so clear the corrupt setting first, then verify the template was never created.
-        state
-            .store()
-            .delete_setting("datetime_formats")
-            .await
-            .unwrap();
+        state.store().delete_setting("datetime_formats").unwrap();
         let get = app
             .clone()
             .oneshot(req_get("/api/templates/should_not_exist"))
@@ -12684,7 +12646,6 @@ mod parameters_http_tests {
                 state
                     .store()
                     .set_setting(crate::settings::DATETIME_FORMATS, "{}")
-                    .await
                     .unwrap();
             }
             let (status, body) = render(&app, id, "{}").await;
@@ -12699,7 +12660,7 @@ mod parameters_http_tests {
         let params = "  - name: size\n    type: enum\n    values: [small, large]\n    default: \"{vars.size}\"\n";
         let yaml = single(params, &text("{size}"));
         let (app, state, _dir) = app_with(&[("sized", &yaml)]);
-        state.store().set_variable("size", "medium").await.unwrap();
+        state.store().set_variable("size", "medium").unwrap();
         let mut misses = Misses::default();
         for data in ["{}", r#"{"size": "small"}"#] {
             let (status, body) = render(&app, "sized", data).await;
@@ -13008,7 +12969,6 @@ mod parameters_http_tests {
         state
             .store()
             .set_variable("base", "https://ex.co/")
-            .await
             .unwrap();
         let (status, detail) = get_json(&app, "/api/templates/published").await;
         assert_eq!(status, StatusCode::OK, "{detail}");
@@ -13080,8 +13040,8 @@ mod parameters_http_tests {
             &text("fixed"),
         );
         let (app, state, _dir) = app_with(&[("first", &first), ("second", &second)]);
-        state.store().set_variable("first", "one").await.unwrap();
-        state.store().set_variable("second", "two").await.unwrap();
+        state.store().set_variable("first", "one").unwrap();
+        state.store().set_variable("second", "two").unwrap();
         let (status, list) = get_json(&app, "/api/templates").await;
         assert_eq!(status, StatusCode::OK, "{list}");
         for (id, value) in [("first", "one"), ("second", "two")] {

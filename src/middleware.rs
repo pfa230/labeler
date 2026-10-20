@@ -211,11 +211,7 @@ pub async fn require_auth(
         .and_then(|v| v.to_str().ok())
     {
         if let Some(secret) = auth.strip_prefix("Bearer ") {
-            match state
-                .store()
-                .lookup_token(&crate::auth::sha256_hex(secret))
-                .await
-            {
+            match state.store().lookup_token(&crate::auth::sha256_hex(secret)) {
                 Ok(Some(owner)) => {
                     return run_with(req, next, Principal::from_user(owner, true)).await
                 }
@@ -234,7 +230,6 @@ pub async fn require_auth(
         match state
             .store()
             .lookup_session(&crate::auth::sha256_hex(cookie.value()))
-            .await
         {
             Ok(Some(user)) => return run_with(req, next, Principal::from_user(user, false)).await,
             Ok(None) => return AppError::unauthorized().into_response(),
@@ -270,20 +265,13 @@ pub fn clear_cookie() -> axum_extra::extract::cookie::Cookie<'static> {
 
 /// Optional auth resolver for `/auth/me` (which is middleware-exempt and must not reject when missing):
 /// try bearer token then session cookie; return the principal if valid, else None.
-pub async fn resolve_optional(
-    state: &AppState,
-    headers: &axum::http::HeaderMap,
-) -> Option<Principal> {
+pub fn resolve_optional(state: &AppState, headers: &axum::http::HeaderMap) -> Option<Principal> {
     if let Some(secret) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|a| a.strip_prefix("Bearer "))
     {
-        if let Ok(Some(owner)) = state
-            .store()
-            .lookup_token(&crate::auth::sha256_hex(secret))
-            .await
-        {
+        if let Ok(Some(owner)) = state.store().lookup_token(&crate::auth::sha256_hex(secret)) {
             return Some(Principal::from_user(owner, true));
         }
         return None;
@@ -293,7 +281,6 @@ pub async fn resolve_optional(
     match state
         .store()
         .lookup_session(&crate::auth::sha256_hex(cookie.value()))
-        .await
     {
         Ok(Some(user)) => Some(Principal::from_user(user, false)),
         _ => None,
