@@ -857,6 +857,7 @@ pub enum LayoutItem {
         padding: Padding,
         flow: Option<Flow>,
         repeat: Option<String>,
+        trim_marker: Option<String>,
         items: Vec<LayoutItem>,
     },
 }
@@ -988,6 +989,19 @@ pub struct BatchSummary {
     pub sent: usize,
     pub failed: Vec<BatchRowError>,
     pub jobs: usize,
+}
+
+/// A recorded print job as the API returns it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct JobRecord {
+    pub id: i64,
+    pub timestamp: String,
+    pub template_id: String,
+    pub printer_id: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+    pub actor_id: String,
+    pub actor_username: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]

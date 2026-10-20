@@ -1,6 +1,6 @@
 //! Unified batch rendering. Renders a list of resolved labels into either a download blob
 //! (ZIP for single templates, PDF for sheet) or a set of print artifacts. Pure/sync; the async print
-//! dispatch lives in `api::run_batch`, behind `/print`.
+//! dispatch lives in `api::rendering::run_batch`, behind `/print`.
 
 use std::io::Write as _;
 use std::num::NonZeroU32;

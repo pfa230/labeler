@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "./toast";
 import { Shell } from "./Shell";
+import { App } from "./App";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -47,23 +48,55 @@ describe("Shell", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the three nav sections in order", () => {
+  it("renders the four nav sections in order", () => {
     renderShell();
     const nav = screen.getByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
     expect(links.map((l) => l.textContent?.trim())).toEqual([
       "Labels",
       "Import",
+      "Print history",
       "Settings",
     ]);
     expect(links.map((l) => l.getAttribute("href"))).toEqual([
       "/",
       "/import",
+      "/print-history",
       "/settings",
     ]);
 
     expect(screen.queryByRole("link", { name: "Templates" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Print" })).not.toBeInTheDocument();
+  });
+
+  it("navigates to the print history route from primary navigation", async () => {
+    window.history.pushState({}, "", "/");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.startsWith("/api/auth/me"))
+          return json({ authed: true, needsSetup: false, noAuth: false, me: { id: "u1", username: "alice" } });
+        if (url.startsWith("/api/templates")) return json({ templates: [] });
+        if (url.startsWith("/api/favorites")) return json([]);
+        if (url.startsWith("/api/recent-templates")) return json([]);
+        if (url.startsWith("/api/jobs")) return json([]);
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <App />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    fireEvent.click(within(nav).getByRole("link", { name: "Print history" }));
+    expect(await screen.findByRole("heading", { level: 1, name: /print history/i })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/print-history");
   });
 
   it("shows the current username and logs out via POST", async () => {

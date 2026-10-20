@@ -1,11 +1,28 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, getJson, sendJson, del, putVoid } from "./client";
-import type { TemplateListResponse, TemplateDetail, Printer, PrinterConnection, PrinterUpdate, ProbeResult } from "./types";
+import type { TemplateListResponse, TemplateDetail, Printer, PrinterConnection, PrinterUpdate, ProbeResult, JobRecord } from "./types";
 
 export function useTemplates() {
   return useQuery({
     queryKey: ["templates"],
     queryFn: () => getJson<TemplateListResponse>("/templates"),
+  });
+}
+
+export function useJobs() {
+  return useQuery({ queryKey: ["jobs"], queryFn: () => getJson<JobRecord[]>("/jobs") });
+}
+
+export interface ReloadResult {
+  count: number;
+  broken_count: number;
+}
+
+export function useReloadTemplates() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => sendJson<ReloadResult>("POST", "/template-registry/reload", undefined),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
   });
 }
 

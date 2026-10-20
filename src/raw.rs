@@ -402,6 +402,8 @@ pub struct ContainerRaw {
     pub flow: Option<FlowRaw>,
     #[serde(default)]
     pub repeat: Option<String>,
+    #[serde(default)]
+    pub trim_marker: Option<String>,
     pub items: Vec<LayoutItemRaw>,
 }
 

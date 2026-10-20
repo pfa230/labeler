@@ -5,9 +5,9 @@ import { useToast } from "../../app/toast-context";
 const SUGGESTED_KEYS = ["qr_base_url"]; // not auto-seeded by the store; shown so the user can fill them
 const KEY_RE = /^[A-Za-z0-9_.-]+$/; // mirrors the server's accepted variable-key charset
 
-const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
+const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
-const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
+const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
 
 function VariableRow({ variableKey, value, suggested }: { variableKey: string; value: string; suggested: boolean }) {
   const [draft, setDraft] = useState(value);

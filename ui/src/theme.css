@@ -1,6 +1,29 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* Tailwind 4 changed defaults the UI was relying on. These restore the v3 values recorded from the
+   built stylesheet before the upgrade, without touching the app palette below. */
+@theme {
+  /* v3 painted a colour-less ring-1/ring-2 with blue-500 at 50% (#3b82f680); v4 defaults to currentColor. */
+  --default-ring-color: #3b82f680;
+}
+@layer base {
+  input::placeholder, textarea::placeholder {
+    color: #9ca3af;
+  }
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  /* v4 preflight also resets ::file-selector-button (border/radius/background/margin/padding), which
+     flattens the file inputs and shortens them by 6px. v3 left the native control alone; revert the
+     properties v4 added so the chooser looks and lays out as before. */
+  ::file-selector-button {
+    border: revert;
+    border-radius: revert;
+    background-color: revert;
+    margin: revert;
+    padding: revert;
+  }
+}
 
 :root {
   --paper: #faf8f3; --surface: #ffffff; --ink: #1c1a17; --muted: #6f6a60; --faint: #a39e92;

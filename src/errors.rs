@@ -223,6 +223,23 @@ impl AppError {
         )
     }
 
+    pub fn text_character_unmapped(field: impl Into<String>, character: char) -> Self {
+        let field = field.into();
+        let mut extra = serde_json::Map::new();
+        extra.insert("field".to_string(), Value::from(field.clone()));
+        extra.insert("character".to_string(), Value::from(character.to_string()));
+        Self::reasoned(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            CODE_UNSUPPORTED_LAYOUT,
+            Reason::TextCharacterUnmapped,
+            format!(
+                "at {field}: text contains U+{:04X}, which the measurement font does not map",
+                u32::from(character)
+            ),
+            Some(extra),
+        )
+    }
+
     pub fn field_value_not_scalar(field: impl Into<String>) -> Self {
         let f = field.into();
         let mut extra = serde_json::Map::new();

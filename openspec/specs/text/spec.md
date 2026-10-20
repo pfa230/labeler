@@ -39,12 +39,18 @@ A `text` item SHALL accept the keys below in addition to placement and `when` (o
 
 ### Requirement: Fonts
 
-Text SHALL be measured and rendered in Inter, loaded from `InterVariable.ttf` in `LABELER_FONTS_DIR` (default `fonts/`); host system fonts SHALL never be used. The font file MUST carry the `wght` and `opsz` variation axes. Every measurement and render of an item SHALL use the instance at the item's weight (`wght`) and the candidate font size (`opsz`). A font file that cannot be read, cannot be parsed, or lacks either axis SHALL fail the render with `500 Internal`. A character Inter does not map SHALL be fitted and rendered, drawn by Typst from a fallback face, and lies outside the ink guarantee of "Measured block and ink reservation".
+Text SHALL be measured and rendered in Inter, loaded from `InterVariable.ttf` in `LABELER_FONTS_DIR` (default `fonts/`); host system fonts SHALL never be used. The font file MUST carry the `wght` and `opsz` variation axes. Every measurement and render of an item SHALL use the instance at the item's weight (`wght`) and the candidate font size (`opsz`). A font file that cannot be read, cannot be parsed, or lacks either axis SHALL fail the render with `500 Internal`. A text value containing a drawable character Inter does not map SHALL fail before fitting with `422 UnsupportedLayoutItem` reason `text_character_unmapped` (`errors`). Line breaks, tabs and Unicode default-ignorable characters SHALL NOT require a drawable glyph.
 
 #### Scenario: A font without an opsz axis fails loudly
 
 - **WHEN** `LABELER_FONTS_DIR` holds an `InterVariable.ttf` with no `opsz` axis and a text item is rendered
 - **THEN** the render fails with `500 Internal`
+
+#### Scenario: Unmapped text is refused instead of shortened
+
+- **WHEN** an active text item's resolved value contains `中`, which Inter does not map, under either overflow policy
+- **THEN** rendering fails with `text_character_unmapped`, including when fitting would otherwise omit that character
+- **AND** the same item with supported text renders normally when it fits
 
 ### Requirement: Font weight resolution
 
@@ -57,7 +63,7 @@ A literal `font_weight` SHALL be the weight. A reference SHALL be resolved per r
 
 ### Requirement: Line breaking
 
-A value's lines SHALL be its segments at `\n`, after `\r\n` is normalised to `\n`; a lone `\r` is not a break. Every line SHALL be laid out and emitted with its own line box, including blank first, last and interior lines; an empty value is one blank line.
+A value's lines SHALL be its segments at `\n`, after `\r\n` and lone `\r` are normalised to `\n` before measurement. Every line SHALL be laid out and emitted with its own line box, including blank first, last and interior lines; an empty value is one blank line.
 
 With `wrap: false` each line SHALL be emitted as written, spaces preserved and never broken further. With `wrap: true` each line SHALL be broken at whitespace to the box width at the candidate size, never inside a word: a word wider than the box stays whole on its own line and is resolved by auto-shrink and then `overflow`. Wrapping SHALL collapse each whitespace run to one space and trim leading and trailing whitespace; a whitespace-only line becomes a blank line box.
 
@@ -68,8 +74,8 @@ With `wrap: false` each line SHALL be emitted as written, spaces preserved and n
 
 #### Scenario: CRLF costs nothing
 
-- **WHEN** an item renders `"abc\r\nabc"`
-- **THEN** it lays out exactly as `"abc\nabc"`, in line count, chosen size and width
+- **WHEN** an item on a dynamic-width single label renders `"abc\rabc"` or `"abc\r\nabc"`
+- **THEN** it lays out and renders exactly as `"abc\nabc"`, including line count, chosen size and auto-length label width
 
 #### Scenario: A leading blank line is a line
 

@@ -18,7 +18,7 @@ export function ThemeToggle() {
       type="button"
       onClick={toggle}
       aria-label="Toggle theme"
-      className="rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+      className="rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2"
       style={{
         background: "var(--surface)",
         color: "var(--ink)",

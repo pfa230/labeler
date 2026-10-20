@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
+import { UnsavedYamlGuard } from "../app/UnsavedYamlGuard";
 import { useToast } from "../app/toast-context";
 import type { Dimension, TemplateFormat } from "../api/types";
 import { FormatBadge } from "../components/FormatBadge";
@@ -21,7 +22,7 @@ function formatDimensions(format: TemplateFormat, unit: string): string {
 function Chip({ children }: { children: React.ReactNode }) {
   return (
     <code
-      className="rounded border px-1.5 py-0.5 text-xs"
+      className="rounded-sm border px-1.5 py-0.5 text-xs"
       style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
     >
       {children}
@@ -43,6 +44,7 @@ function RawYamlSection({ id }: { id: string }) {
   const { push } = useToast();
 
   return (
+    <UnsavedYamlGuard dirty={() => draft !== null && draft !== baseline}>
       <details
         className="rounded-lg border p-4"
         style={{ background: "var(--surface)", borderColor: "var(--border)" }}
@@ -87,7 +89,7 @@ function RawYamlSection({ id }: { id: string }) {
               spellCheck={false}
               rows={20}
               aria-label="Template YAML"
-              className="mt-3 w-full rounded-md border p-3 font-mono text-sm focus-visible:outline-none focus-visible:ring-2"
+              className="mt-3 w-full rounded-md border p-3 font-mono text-sm focus-visible:outline-hidden focus-visible:ring-2"
               style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
             />
             {saveError && <p style={{ color: "var(--bad)" }}>{saveError}</p>}
@@ -163,6 +165,7 @@ function RawYamlSection({ id }: { id: string }) {
           </>
         )}
       </details>
+    </UnsavedYamlGuard>
   );
 }
 

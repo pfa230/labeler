@@ -13,9 +13,9 @@ import type { Printer, ProbeResult, RenderProfile } from "../../api/types";
 
 const ID_RE = /^[A-Za-z0-9_-]+$/; // mirrors the server's accepted printer-id charset
 const DEFAULT_PRINTER_KEY = "default_printer_id";
-const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
+const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
-const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
+const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
 
 type ColorModeChoice = "auto" | NonNullable<RenderProfile["color_mode"]>;
 

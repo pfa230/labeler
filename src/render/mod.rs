@@ -1037,11 +1037,30 @@ struct TextRenderArgs<'a> {
     pub text_fit: &'a helpers::TextFit,
 }
 
+struct FlowDrawArgs<'a> {
+    pub frame: (f32, f32),
+    pub geometry_values: &'a HashMap<String, f32>,
+    pub path_prefix: &'a str,
+}
+
 pub(crate) struct ExpandedItem<'a> {
     pub orig_idx: usize,
     pub elem_idx: Option<usize>,
     pub item: &'a LayoutItem,
     pub data: Option<HashMap<String, JsonValue>>,
+}
+
+/// A flow arrangement plus, when a `trim_marker` was selected, the synthetic instance that ends it.
+/// `prefix_len` counts the expanded children drawn before the marker.
+struct FlowArrangement<'b> {
+    result: crate::resolver::FlowResult,
+    marker: Option<MarkerInstance<'b>>,
+}
+
+struct MarkerInstance<'b> {
+    prefix_len: usize,
+    expanded: ExpandedItem<'b>,
+    measured: Measured,
 }
 
 impl<'a> RenderContext<'a> {
@@ -1257,86 +1276,13 @@ impl<'a> RenderContext<'a> {
                 None => format!("{path_prefix}[{}]", exp.orig_idx),
             };
 
-            let node = match exp.item.placement() {
-                // A `line` has endpoints rather than a box: nothing to size, nothing to measure.
-                None => Measured {
-                    intrinsic: [None, None],
-                    text: None,
-                    children: vec![],
-                },
-                Some(placement) => {
-                    // The rules that do not depend on a measurement hold before one is taken, so a
-                    // box a request has already invalidated is refused as such rather than as
-                    // whatever its content then fails to do inside it.
-                    let (measure_box, spec_0, spec_1) = if placement.at.is_none() {
-                        let (w, h) = crate::resolver::resolve_packed(
-                            placement,
-                            frame,
-                            geometry_values,
-                            [None, None],
-                        )
-                        .map_err(|violation| violation_error(violation, &path))?;
-                        let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
-                        let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
-                        ((w, h), spec_0, spec_1)
-                    } else {
-                        crate::resolver::precheck(placement, Some(frame), geometry_values)
-                            .map_err(|violation| violation_error(violation, &path))?;
-
-                        let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
-                        let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
-                        let measure_box = (
-                            crate::resolver::resolve_unmeasured(&spec_0, frame.0, placement.max_w),
-                            crate::resolver::resolve_unmeasured(&spec_1, frame.1, placement.max_h),
-                        );
-                        (measure_box, spec_0, spec_1)
-                    };
-
-                    // A container's children are measured against the frame it gives them, which
-                    // is its own unmeasured box less rotation and padding.
-                    let (children, child_frame) = match exp.item {
-                        LayoutItem::Container {
-                            placement,
-                            padding,
-                            items: child_items,
-                            ..
-                        } => {
-                            let geometry = crate::resolver::container_geometry(
-                                placement,
-                                padding,
-                                frame,
-                                axes_resolved,
-                                geometry_values,
-                            );
-                            let (children, _) = item_ctx.measure_items(
-                                child_items,
-                                geometry.inner,
-                                geometry.child_axes_resolved,
-                                geometry_values,
-                                &format!("{path}.items"),
-                            )?;
-                            (children, geometry.inner)
-                        }
-                        _ => (vec![], measure_box),
-                    };
-
-                    let (intrinsic, text) = item_ctx.intrinsic(IntrinsicInput {
-                        item: exp.item,
-                        measure_box,
-                        demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
-                        children: &children,
-                        child_frame,
-                        geometry_values,
-                        path: &path,
-                    })?;
-
-                    Measured {
-                        intrinsic,
-                        text,
-                        children,
-                    }
-                }
-            };
+            let node = item_ctx.measure_item_instance(
+                exp.item,
+                frame,
+                axes_resolved,
+                geometry_values,
+                &path,
+            )?;
 
             max_req_w = max_req_w.max(item_ctx.item_axis_requirement(
                 exp.item,
@@ -1349,6 +1295,99 @@ impl<'a> RenderContext<'a> {
         }
 
         Ok((measured_nodes, max_req_w))
+    }
+
+    /// Measure a single already-expanded item as one instance, recursing into a container's
+    /// children. A repeat on `item` is not expanded here: the caller has already chosen the
+    /// instance, as the marker does.
+    fn measure_item_instance(
+        &self,
+        item: &LayoutItem,
+        frame: (f32, f32),
+        axes_resolved: [bool; 2],
+        geometry_values: &HashMap<String, f32>,
+        path: &str,
+    ) -> Result<Measured, AppError> {
+        match item.placement() {
+            // A `line` has endpoints rather than a box: nothing to size, nothing to measure.
+            None => Ok(Measured {
+                intrinsic: [None, None],
+                text: None,
+                children: vec![],
+            }),
+            Some(placement) => {
+                // The rules that do not depend on a measurement hold before one is taken, so a
+                // box a request has already invalidated is refused as such rather than as
+                // whatever its content then fails to do inside it.
+                let (measure_box, spec_0, spec_1) = if placement.at.is_none() {
+                    let (w, h) = crate::resolver::resolve_packed(
+                        placement,
+                        frame,
+                        geometry_values,
+                        [None, None],
+                    )
+                    .map_err(|violation| violation_error(violation, path))?;
+                    let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
+                    let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
+                    ((w, h), spec_0, spec_1)
+                } else {
+                    crate::resolver::precheck(placement, Some(frame), geometry_values)
+                        .map_err(|violation| violation_error(violation, path))?;
+
+                    let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
+                    let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
+                    let measure_box = (
+                        crate::resolver::resolve_unmeasured(&spec_0, frame.0, placement.max_w),
+                        crate::resolver::resolve_unmeasured(&spec_1, frame.1, placement.max_h),
+                    );
+                    (measure_box, spec_0, spec_1)
+                };
+
+                // A container's children are measured against the frame it gives them, which
+                // is its own unmeasured box less rotation and padding.
+                let (children, child_frame) = match item {
+                    LayoutItem::Container {
+                        placement,
+                        padding,
+                        items: child_items,
+                        ..
+                    } => {
+                        let geometry = crate::resolver::container_geometry(
+                            placement,
+                            padding,
+                            frame,
+                            axes_resolved,
+                            geometry_values,
+                        );
+                        let (children, _) = self.measure_items(
+                            child_items,
+                            geometry.inner,
+                            geometry.child_axes_resolved,
+                            geometry_values,
+                            &format!("{path}.items"),
+                        )?;
+                        (children, geometry.inner)
+                    }
+                    _ => (vec![], measure_box),
+                };
+
+                let (intrinsic, text) = self.intrinsic(IntrinsicInput {
+                    item,
+                    measure_box,
+                    demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
+                    children: &children,
+                    child_frame,
+                    geometry_values,
+                    path,
+                })?;
+
+                Ok(Measured {
+                    intrinsic,
+                    text,
+                    children,
+                })
+            }
+        }
     }
 
     /// What an item requires of its frame on `axis`. A `line` claims its endpoints; everything else
@@ -1382,6 +1421,166 @@ impl<'a> RenderContext<'a> {
                 None => 0.0,
             },
         }
+    }
+
+    /// The flow input one expanded child contributes: its packed box and its requirement on each
+    /// axis, in the child's own data scope.
+    fn flow_child_input(
+        &self,
+        exp: &ExpandedItem<'_>,
+        measured: &Measured,
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        children_prefix: &str,
+    ) -> Result<crate::resolver::FlowChildInput, AppError> {
+        let child_ctx = match &exp.data {
+            Some(d) => self.with_data(d),
+            None => self.with_data(self.data),
+        };
+        let child_path = match exp.elem_idx {
+            Some(e_idx) => format!("{children_prefix}[{}]#{e_idx}", exp.orig_idx),
+            None => format!("{children_prefix}[{}]", exp.orig_idx),
+        };
+        let (req_0, req_1) = (
+            child_ctx.item_axis_requirement(exp.item, 0, frame, geometry_values, measured),
+            child_ctx.item_axis_requirement(exp.item, 1, frame, geometry_values, measured),
+        );
+        let resolved_box = match exp.item.placement() {
+            Some(p) => {
+                crate::resolver::resolve_packed(p, frame, geometry_values, measured.intrinsic)
+                    .map_err(|v| violation_error(v, &child_path))?
+            }
+            None => (0.0, 0.0),
+        };
+        Ok(crate::resolver::FlowChildInput {
+            resolved_box,
+            requirement: (req_0, req_1),
+        })
+    }
+
+    /// Arrange a flow container's children. When `overflow: trim` discards the first instance of a
+    /// repeat that declares a `trim_marker`, the marker is measured in that repeat's scope and the
+    /// longest prefix of the repeat's drawn instances that leaves room for it is kept.
+    fn arrange_flow_children<'b>(
+        &self,
+        expanded: &[ExpandedItem<'b>],
+        measured: &[Measured],
+        flow: &crate::models::Flow,
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        children_prefix: &str,
+    ) -> Result<FlowArrangement<'b>, AppError> {
+        let mut inputs = Vec::with_capacity(expanded.len());
+        for (exp, node) in expanded.iter().zip(measured) {
+            inputs.push(self.flow_child_input(
+                exp,
+                node,
+                frame,
+                geometry_values,
+                children_prefix,
+            )?);
+        }
+
+        let base =
+            crate::resolver::arrange_flow(frame, flow, &inputs).map_err(|(act_idx, v)| {
+                let exp = &expanded[act_idx];
+                let child_path = match exp.elem_idx {
+                    Some(e_idx) => format!("{children_prefix}[{}]#{e_idx}", exp.orig_idx),
+                    None => format!("{children_prefix}[{}]", exp.orig_idx),
+                };
+                violation_error(v, &child_path)
+            })?;
+
+        let cut = base.rects.len();
+        if !matches!(flow.overflow, crate::models::FlowOverflow::Trim) || cut == expanded.len() {
+            return Ok(FlowArrangement {
+                result: base,
+                marker: None,
+            });
+        }
+        let LayoutItem::Container {
+            repeat: Some(rep_name),
+            trim_marker: Some(marker),
+            ..
+        } = expanded[cut].item
+        else {
+            return Ok(FlowArrangement {
+                result: base,
+                marker: None,
+            });
+        };
+
+        let (rep_name, marker) = (rep_name.clone(), marker.clone());
+        let orig_idx = expanded[cut].orig_idx;
+        let mut group_start = cut;
+        while group_start > 0
+            && expanded[group_start - 1].orig_idx == orig_idx
+            && expanded[group_start - 1].elem_idx.is_some()
+        {
+            group_start -= 1;
+        }
+
+        let item = expanded[cut].item;
+        let container_path = format!("{children_prefix}[{orig_idx}]");
+        let mut marker_data = self.data.clone();
+        marker_data.insert(rep_name, JsonValue::String(marker));
+        let marker_expanded = ExpandedItem {
+            orig_idx,
+            elem_idx: None,
+            item,
+            data: Some(marker_data),
+        };
+        let marker_ctx = self.with_data(marker_expanded.data.as_ref().expect("marker data is set"));
+        let marker_measured = marker_ctx.measure_item_instance(
+            item,
+            frame,
+            [true, true],
+            geometry_values,
+            &container_path,
+        )?;
+        let marker_input = marker_ctx.flow_child_input(
+            &marker_expanded,
+            &marker_measured,
+            frame,
+            geometry_values,
+            &container_path,
+        )?;
+
+        let mut selected = None;
+        for kept in (0..=cut - group_start).rev() {
+            let mut candidate = inputs[..group_start + kept].to_vec();
+            candidate.push(marker_input);
+            let mut resolved =
+                crate::resolver::arrange_flow(frame, flow, &candidate).map_err(|_| {
+                    AppError::unsupported_layout_item(
+                        Reason::ItemOutOfFrame,
+                        format!("at {container_path}: item resolves outside frame bounds"),
+                    )
+                })?;
+            if resolved.rects.len() == candidate.len() {
+                let prefix_len = group_start + kept;
+                // The drawn prefix keeps the placements it already had, so adopting the marker
+                // does not move earlier siblings; only the marker is newly placed.
+                resolved.rects[..prefix_len].copy_from_slice(&base.rects[..prefix_len]);
+                selected = Some((resolved, prefix_len));
+                break;
+            }
+        }
+
+        let (result, prefix_len) = selected.ok_or_else(|| {
+            AppError::unsupported_layout_item(
+                Reason::ItemOutOfFrame,
+                format!("at {container_path}: item resolves outside frame bounds"),
+            )
+        })?;
+        Ok(FlowArrangement {
+            result,
+            marker: Some(MarkerInstance {
+                prefix_len,
+                expanded: marker_expanded,
+                measured: marker_measured,
+            }),
+        })
     }
 
     /// The one place item type is visible in sizing: the intrinsic extent an item's own content
@@ -1484,61 +1683,16 @@ impl<'a> RenderContext<'a> {
 
                 let author = match flow {
                     Some(flow) => {
-                        let mut flow_inputs = Vec::with_capacity(expanded_children.len());
-                        for (exp, measured) in expanded_children.iter().zip(children.iter()) {
-                            let item_ctx = match &exp.data {
-                                Some(d) => self.with_data(d),
-                                None => self.with_data(self.data),
-                            };
-                            let (req_0, req_1) = (
-                                item_ctx.item_axis_requirement(
-                                    exp.item,
-                                    0,
-                                    child_frame,
-                                    geometry_values,
-                                    measured,
-                                ),
-                                item_ctx.item_axis_requirement(
-                                    exp.item,
-                                    1,
-                                    child_frame,
-                                    geometry_values,
-                                    measured,
-                                ),
-                            );
-                            let child_path = match exp.elem_idx {
-                                Some(e_idx) => format!("{path}.items[{}]#{e_idx}", exp.orig_idx),
-                                None => format!("{path}.items[{}]", exp.orig_idx),
-                            };
-                            let resolved_box = if let Some(p) = exp.item.placement() {
-                                crate::resolver::resolve_packed(
-                                    p,
-                                    child_frame,
-                                    geometry_values,
-                                    measured.intrinsic,
-                                )
-                                .map_err(|v| violation_error(v, &child_path))?
-                            } else {
-                                (0.0, 0.0)
-                            };
-                            flow_inputs.push(crate::resolver::FlowChildInput {
-                                resolved_box,
-                                requirement: (req_0, req_1),
-                            });
-                        }
-                        let flow_res =
-                            crate::resolver::arrange_flow(child_frame, flow, &flow_inputs)
-                                .map_err(|(act_idx, v)| {
-                                    let exp = &expanded_children[act_idx];
-                                    let child_path = match exp.elem_idx {
-                                        Some(e_idx) => {
-                                            format!("{path}.items[{}]#{e_idx}", exp.orig_idx)
-                                        }
-                                        None => format!("{path}.items[{}]", exp.orig_idx),
-                                    };
-                                    violation_error(v, &child_path)
-                                })?;
-                        flow_res.assembled
+                        self.arrange_flow_children(
+                            &expanded_children,
+                            children,
+                            flow,
+                            child_frame,
+                            geometry_values,
+                            &format!("{path}.items"),
+                        )?
+                        .result
+                        .assembled
                     }
                     None => {
                         let mut author = (0.0_f32, 0.0_f32);
@@ -1598,90 +1752,49 @@ impl<'a> RenderContext<'a> {
 
         match flow {
             Some(flow) => {
-                let mut flow_inputs = Vec::with_capacity(expanded.len());
-                for (measured_node, exp) in measured.iter().zip(&expanded) {
-                    let item_ctx = match &exp.data {
-                        Some(d) => self.with_data(d),
-                        None => self.with_data(self.data),
-                    };
-                    let (req_0, req_1) = (
-                        item_ctx.item_axis_requirement(
-                            exp.item,
-                            0,
-                            frame,
-                            geometry_values,
-                            measured_node,
-                        ),
-                        item_ctx.item_axis_requirement(
-                            exp.item,
-                            1,
-                            frame,
-                            geometry_values,
-                            measured_node,
-                        ),
-                    );
-                    let child_path = match exp.elem_idx {
-                        Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
-                        None => format!("{path_prefix}[{}]", exp.orig_idx),
-                    };
-                    let resolved_box = if let Some(p) = exp.item.placement() {
-                        crate::resolver::resolve_packed(
-                            p,
-                            frame,
-                            geometry_values,
-                            measured_node.intrinsic,
-                        )
-                        .map_err(|v| violation_error(v, &child_path))?
-                    } else {
-                        (0.0, 0.0)
-                    };
-                    flow_inputs.push(crate::resolver::FlowChildInput {
-                        resolved_box,
-                        requirement: (req_0, req_1),
-                    });
-                }
-                let flow_res = crate::resolver::arrange_flow(frame, flow, &flow_inputs).map_err(
-                    |(act_idx, v)| {
-                        let exp = &expanded[act_idx];
-                        let child_path = match exp.elem_idx {
-                            Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
-                            None => format!("{path_prefix}[{}]", exp.orig_idx),
-                        };
-                        violation_error(v, &child_path)
-                    },
+                let arrangement = self.arrange_flow_children(
+                    &expanded,
+                    measured,
+                    flow,
+                    frame,
+                    geometry_values,
+                    path_prefix,
                 )?;
-
-                for (placed, (measured_node, exp)) in flow_res
-                    .rects
-                    .into_iter()
-                    .zip(measured.iter().zip(&expanded))
-                {
-                    let item_ctx = match &exp.data {
-                        Some(d) => self.with_data(d),
-                        None => self.with_data(self.data),
-                    };
-                    let path = match exp.elem_idx {
-                        Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
-                        None => format!("{path_prefix}[{}]", exp.orig_idx),
-                    };
-                    let pbox = PlacedBox {
-                        x: placed.x,
-                        y: placed.y,
-                        w: placed.w,
-                        h: placed.h,
-                        frame,
-                    };
-                    item_ctx.render_single_item(
-                        &mut out,
-                        SingleItemRenderArgs {
-                            item: exp.item,
-                            measured_node,
-                            pbox,
-                            frame,
-                            geometry_values,
-                            path: &path,
-                        },
-                    )?;
+                let draw_args = FlowDrawArgs {
+                    frame,
+                    geometry_values,
+                    path_prefix,
+                };
+                match &arrangement.marker {
+                    Some(marker) => {
+                        for i in 0..marker.prefix_len {
+                            self.render_flow_child(
+                                &mut out,
+                                arrangement.result.rects[i],
+                                &expanded[i],
+                                &measured[i],
+                                &draw_args,
+                            )?;
+                        }
+                        self.render_flow_child(
+                            &mut out,
+                            arrangement.result.rects[marker.prefix_len],
+                            &marker.expanded,
+                            &marker.measured,
+                            &draw_args,
+                        )?;
+                    }
+                    None => {
+                        for (i, placed) in arrangement.result.rects.iter().enumerate() {
+                            self.render_flow_child(
+                                &mut out,
+                                *placed,
+                                &expanded[i],
+                                &measured[i],
+                                &draw_args,
+                            )?;
+                        }
+                    }
                 }
             }
             None => {
@@ -1725,6 +1838,43 @@ impl<'a> RenderContext<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// Draw one arranged flow child at its placed box.
+    fn render_flow_child(
+        &self,
+        out: &mut String,
+        placed: crate::resolver::Placed,
+        exp: &ExpandedItem<'_>,
+        measured_node: &Measured,
+        args: &FlowDrawArgs<'_>,
+    ) -> Result<(), AppError> {
+        let item_ctx = match &exp.data {
+            Some(d) => self.with_data(d),
+            None => self.with_data(self.data),
+        };
+        let path = match exp.elem_idx {
+            Some(e_idx) => format!("{}[{}]#{e_idx}", args.path_prefix, exp.orig_idx),
+            None => format!("{}[{}]", args.path_prefix, exp.orig_idx),
+        };
+        let pbox = PlacedBox {
+            x: placed.x,
+            y: placed.y,
+            w: placed.w,
+            h: placed.h,
+            frame: args.frame,
+        };
+        item_ctx.render_single_item(
+            out,
+            SingleItemRenderArgs {
+                item: exp.item,
+                measured_node,
+                pbox,
+                frame: args.frame,
+                geometry_values: args.geometry_values,
+                path: &path,
+            },
+        )
     }
 
     fn render_single_item(
@@ -2505,6 +2655,7 @@ mod tests {
             },
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![child],
         };
         let source = render_test_items(&[container], (80.0, 40.0)).expect("render");
@@ -2749,6 +2900,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![auto_text.clone()],
         };
 
@@ -2839,6 +2991,7 @@ layout:
             },
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![text],
         };
         let outer = LayoutItem::Container {
@@ -2854,6 +3007,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![inner],
         };
 
@@ -2944,6 +3098,7 @@ layout:
             padding: crate::models::Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items,
         }
     }
@@ -3004,6 +3159,7 @@ layout:
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![LayoutItem::Container {
                     placement: Placement {
                         at: Some(Position([-30.0, 0.0])),
@@ -3023,6 +3179,7 @@ layout:
                     padding: crate::models::Padding::ZERO,
                     flow: None,
                     repeat: None,
+                    trim_marker: None,
                     items: vec![],
                 }],
             }
@@ -3332,6 +3489,7 @@ layout:
             },
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![LayoutItem::Container {
                 placement: Placement {
                     at: Some(Position([-0.0, 0.0])),
@@ -3354,6 +3512,7 @@ layout:
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![],
             }],
         };
@@ -3716,6 +3875,7 @@ layout:
             },
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42")],
         };
         let (wrapped, pushed) = measured_extent_of(container, 80.0);
@@ -3849,6 +4009,7 @@ layout:
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
             }]),
         };
@@ -3905,6 +4066,7 @@ layout:
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![],
             }]),
         };
@@ -3938,6 +4100,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src = render_test_items(&[container], (80.0, 40.0)).expect("render r0 container");
@@ -3983,6 +4146,7 @@ layout:
                 padding: Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items,
             }]),
         }
@@ -4137,6 +4301,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![LayoutItem::Text {
                 value: "inner".to_string(),
                 placement: Placement::sized(
@@ -4177,6 +4342,7 @@ layout:
             },
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![inner],
         };
         let template = TemplateContent {
@@ -4312,6 +4478,31 @@ layout:
             2,
             "a two-line value with wrap: false must still render both lines"
         );
+    }
+
+    /// #259: a lone CR and a CRLF are line terminators, so an auto-length tape renders `abc\rabc`
+    /// and `abc\r\nabc` to the same pixels and image size as `abc\nabc`. Without normalisation the
+    /// `\r` measures as a glyph and both the fitted width and the drawn pixels differ.
+    #[test]
+    fn carriage_return_tape_matches_lf() {
+        let lf = render_tape(&autolength_tape(
+            "abc\nabc",
+            false,
+            VerticalAlign::Center,
+            12.0,
+        ));
+        let lf_img = image::load_from_memory(&lf).expect("decode").to_luma8();
+        for cr_text in ["abc\rabc", "abc\r\nabc"] {
+            let cr = render_tape(&autolength_tape(
+                cr_text,
+                false,
+                VerticalAlign::Center,
+                12.0,
+            ));
+            let cr_img = image::load_from_memory(&cr).expect("decode").to_luma8();
+            assert_eq!(cr_img.dimensions(), lf_img.dimensions(), "{cr_text:?}");
+            assert_eq!(cr_img.as_raw(), lf_img.as_raw(), "{cr_text:?}");
+        }
     }
 
     /// First and last image rows carrying ink, plus the image height.
@@ -4815,6 +5006,7 @@ layout:
                     padding: Padding::ZERO,
                     flow: None,
                     repeat: None,
+                    trim_marker: None,
                     items: Vec::new(),
                 },
             ]),
@@ -6741,18 +6933,44 @@ layout:
         }
 
         #[test]
-        fn a_character_the_font_does_not_map_is_outside_the_guarantee() {
-            let t = label("H\u{4E2D}", "top", "20", "content", "    overflow: fail\n");
-            crate::render::render_single_label(&t, &HashMap::new(), &no_settings(), &no_datetime())
-                .expect("an unmapped character is fitted and rendered, not refused");
-            // Inter's .notdef inks from −416 to 1856 units [fontTools].
-            let notdef_a = (1856.0 - 1490.0) / 2048.0 * 20.0;
-            let notdef_d = 416.0 / 2048.0 * 20.0;
-            let h = item_box(&compiled(&t).expect("compile").source, "#text(\"").2;
-            assert!(
-                (h - (CAP_20 + notdef_a + notdef_d)).abs() < 0.01,
-                "resolves {h} pt"
+        fn unmapped_text_is_refused_before_shortening() {
+            let assert_unmapped = |t: &TemplateContent, character: &str| {
+                let err = crate::render::render_single_label(
+                    t,
+                    &HashMap::new(),
+                    &no_settings(),
+                    &no_datetime(),
+                )
+                .expect_err("unmapped text must be refused");
+                assert_eq!(err.status().as_u16(), 422);
+                assert_eq!(err.code(), "UnsupportedLayoutItem");
+                assert_eq!(err.reason(), Some("text_character_unmapped"));
+                let details = err.details().expect("details");
+                assert_eq!(details["field"], "layout[0]");
+                assert_eq!(details["character"], character);
+            };
+
+            // `fail` would otherwise fit and draw Inter's `.notdef`.
+            assert_unmapped(
+                &label("H\u{4E2D}", "top", "20", "content", "    overflow: fail\n"),
+                "\u{4E2D}",
             );
+
+            // Ellipsis would shorten this value and pop the unsupported character away.
+            let long = format!("{}\u{4E2D}", "W".repeat(40));
+            assert_unmapped(
+                &label(&long, "top", "20", "content", "    overflow: ellipsis\n"),
+                "\u{4E2D}",
+            );
+
+            let supported = label("ok\nnext\ttab\u{200B}", "top", "20", "content", "");
+            crate::render::render_single_label(
+                &supported,
+                &HashMap::new(),
+                &no_settings(),
+                &no_datetime(),
+            )
+            .expect("line breaks, tabs and default ignorables need no glyph");
         }
 
         /// *A centred item with headroom is unaffected*: its box fits both the font bands and the
@@ -7423,6 +7641,7 @@ layout:
                     padding: crate::models::Padding::ZERO,
                     flow: None,
                     repeat: None,
+                    trim_marker: None,
                     items: vec![LayoutItem::Line {
                         at: Position([0.0, 6.0]),
                         to: Position([20.0, 6.0]),
@@ -9097,6 +9316,7 @@ layout:
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 repeat: None,
+                trim_marker: None,
                 items: vec![],
                 when: None,
             }],
@@ -9128,6 +9348,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src = render_test_items(&[stroke_only], (20.0, 10.0)).expect("render stroke only");
@@ -9150,6 +9371,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src = render_test_items(&[bg_only], (20.0, 10.0)).expect("render bg only");
@@ -9175,6 +9397,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src = render_test_items(&[both], (20.0, 10.0)).expect("render both");
@@ -9201,6 +9424,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src =
@@ -9224,6 +9448,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src = render_test_items(&[rounded_fill_no_stroke], (20.0, 10.0))
@@ -9247,6 +9472,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src = render_test_items(&[neither], (20.0, 10.0)).expect("render neither");
@@ -9291,6 +9517,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![LayoutItem::Text {
                 value: "child_text".to_string(),
                 placement: Placement::sized(
@@ -9332,6 +9559,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src = render_test_items(&[rect_item], (20.0, 10.0)).expect("render rect");
@@ -9355,6 +9583,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src_ellipse = render_test_items(&[ellipse_item], (30.0, 20.0)).expect("render ellipse");
@@ -9382,6 +9611,7 @@ layout:
             padding: Padding::ZERO,
             flow: None,
             repeat: None,
+            trim_marker: None,
             items: vec![],
         };
         let src_strokeless_el = render_test_items(&[strokeless_ellipse], (30.0, 20.0))
@@ -11633,6 +11863,175 @@ layout:
         assert!(
             !src.contains("Tag:\u{a0}C") && !src.contains("Tag: C"),
             "Tag C must be trimmed"
+        );
+    }
+
+    #[test]
+    fn repeating_container_trim_marker_distinguishes_overflow_from_an_exact_fit() {
+        let rep_yaml = r#"
+name: RepTrimMarker
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 10 }
+params:
+  - name: tags
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 10]
+    flow: { direction: row, overflow: trim }
+    items:
+      - type: container
+        repeat: tags
+        trim_marker: "..."
+        size: [20, 10]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "Tag: {tags}"
+            size: [20, 5]
+            font_size: 6
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+            defaults: Default::default(),
+        };
+        let render = |tags: &[&str]| {
+            let data = HashMap::from([("tags".to_string(), serde_json::json!(tags))]);
+            let resolved = super::resolve_parameters(
+                &template,
+                &data,
+                &crate::render::resolve_environment(&template, &settings, &datetime)
+                    .unwrap()
+                    .defaults,
+            )
+            .unwrap();
+            let images = std::cell::RefCell::new(super::ImageCollector::default());
+            let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
+            let (meas, _) = ctx
+                .measure_items(items, (60.0, 10.0), [true, true], &HashMap::new(), "layout")
+                .unwrap();
+            ctx.render_items(items, &meas, (60.0, 10.0), &HashMap::new(), None, "layout")
+                .unwrap()
+        };
+
+        let overflow = render(&["A", "B", "C", "D"]);
+        assert!(overflow.contains("Tag:\u{a0}A") || overflow.contains("Tag: A"));
+        assert!(overflow.contains("Tag:\u{a0}B") || overflow.contains("Tag: B"));
+        assert!(
+            overflow.contains("Tag:\u{a0}...") || overflow.contains("Tag: ..."),
+            "the trimmed list must end with the marker"
+        );
+        assert!(
+            !overflow.contains("Tag:\u{a0}C") && !overflow.contains("Tag: C"),
+            "a trailing instance must give up its place to the marker"
+        );
+        assert!(
+            !overflow.contains("Tag:\u{a0}D") && !overflow.contains("Tag: D"),
+            "the discarded instance must not be drawn"
+        );
+
+        let exact = render(&["A", "B", "C"]);
+        assert!(exact.contains("Tag:\u{a0}A") || exact.contains("Tag: A"));
+        assert!(exact.contains("Tag:\u{a0}B") || exact.contains("Tag: B"));
+        assert!(
+            exact.contains("Tag:\u{a0}C") || exact.contains("Tag: C"),
+            "an exactly fitting list keeps every entry"
+        );
+        assert!(
+            !exact.contains("Tag:\u{a0}...") && !exact.contains("Tag: ..."),
+            "an exactly fitting list shows no marker"
+        );
+    }
+
+    /// Adopting a repeat's marker must not move earlier siblings. The empty text between the fixed
+    /// box and the repeat is zero-width, so its place is the one the next occupying child takes;
+    /// dropping a repeat instance to fit the marker must leave that place as the normal
+    /// arrangement had it.
+    #[test]
+    fn repeating_container_trim_marker_keeps_earlier_siblings_in_place() {
+        let rep_yaml = r#"
+name: RepTrimWrap
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+params:
+  - name: tags
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [20, 10]
+    flow: { direction: row, wrap: true, gap: 2, overflow: trim }
+    items:
+      - type: container
+        size: [12, 1]
+        items: []
+      - type: text
+        value: ""
+        size: [content, content]
+        font_size: 6
+      - type: container
+        repeat: tags
+        trim_marker: "OMITTED"
+        size: [content, content]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "{tags}"
+            size: [content, content]
+            font_size: 6
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+            defaults: Default::default(),
+        };
+        let tag = |c: char| format!("{c}\n").repeat(15);
+        let data = HashMap::from([(
+            "tags".to_string(),
+            serde_json::json!([tag('A'), tag('B'), tag('C')]),
+        )]);
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(items, (20.0, 10.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        let src = ctx
+            .render_items(items, &meas, (20.0, 10.0), &HashMap::new(), None, "layout")
+            .unwrap();
+
+        assert!(
+            src.contains("OMITTED"),
+            "the marker ends the trimmed repeat"
+        );
+        let zero = src
+            .find("#box(width: 0mm")
+            .expect("the zero-width sibling is drawn");
+        let dx_at = src[..zero].rfind("dx: ").expect("dx precedes the box");
+        let dx = &src[dx_at + 4..];
+        let dx = &dx[..dx.find("mm").expect("dx is a length")];
+        assert_eq!(
+            dx, "14",
+            "the earlier sibling keeps the place the normal arrangement gave it"
         );
     }
 

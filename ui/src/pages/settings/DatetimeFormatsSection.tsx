@@ -2,9 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { useSettings, useUpdateSetting, useResetSetting, previewDatetimeFormat } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 
-const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
+const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
-const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
+const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
 
 const KEY = "datetime_formats";
 const DEBOUNCE_MS = 400;

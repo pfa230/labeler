@@ -239,12 +239,12 @@ The print form's Copies control SHALL offer one stepper: a decrease button and a
 
 ### Requirement: Primary navigation
 
-Primary navigation SHALL list Labels (`/`), Import (`/import`) and Settings (`/settings`), in that order.
+Primary navigation SHALL list Labels (`/`), Import (`/import`), Print history (`/print-history`) and Settings (`/settings`), in that order.
 
 #### Scenario: Navigation sections
 
 - **WHEN** the operator opens the application shell
-- **THEN** primary navigation contains exactly Labels, Import and Settings, in that order
+- **THEN** primary navigation contains exactly Labels, Import, Print history and Settings, in that order
 
 ### Requirement: Print form Cut button
 
@@ -293,3 +293,88 @@ The print form SHALL show a textual error identifying the violated bound beside 
 
 - **WHEN** the operator clears an out-of-range numeric field, whether or not it has a default, and no other field is out of range
 - **THEN** its bound error disappears and otherwise available actions submit with that field omitted
+
+### Requirement: Refused template entries on Labels
+
+When the template listing reports refused entries (`templates`), Labels SHALL show their count above the printable grid without expansion and offer each reported path and full refusal message in an expandable section, independently of search and category filters.
+
+For an unfiltered listing with no printable templates but refused entries present, Labels SHALL identify that no templates are printable instead of saying no templates are installed.
+
+Labels SHALL offer Reload templates to reload the registry (`templates`) and then refresh the printable list and refusal diagnostics. A failed reload SHALL show its error and retain the displayed registry results.
+
+#### Scenario: Printable templates and refused entries coexist
+
+- **WHEN** the listing contains a printable template and refused entries `bad.yaml` and `notes.txt`
+- **THEN** Labels shows a count of 2 before expansion and the printable template remains available
+- **AND** expanding the refused section shows both paths with their respective full errors
+- **AND** narrowing search or category leaves that count and those diagnostics available
+
+#### Scenario: Every entry is refused
+
+- **WHEN** the unfiltered listing contains no printable template and at least one refused entry
+- **THEN** Labels identifies that no templates are printable and exposes the refused entries, without showing "No templates yet"
+
+#### Scenario: Repair on disk reaches Labels
+
+- **WHEN** an operator fixes a refused template on disk and activates Reload templates
+- **THEN** the registry is reloaded before the list is refreshed, without a service restart
+- **AND** the repaired template becomes printable and its refusal disappears
+
+#### Scenario: Reload fails
+
+- **WHEN** Reload templates fails
+- **THEN** Labels shows the failure message and retains the previously displayed templates and refusals
+
+### Requirement: Unsaved YAML navigation
+
+Template detail and New template SHALL treat YAML as unsaved when its current text differs from its saved baseline: the source at entry to an existing template's edit, or empty text for a new template. A successful save SHALL establish the submitted YAML as saved; a failed save SHALL leave the unsaved draft protected.
+
+In-app navigation leaving an editor with unsaved YAML, including sidebar navigation and browser Back, SHALL offer Discard and Keep editing. Keep editing SHALL cancel that navigation and retain the current draft and page; Discard SHALL proceed to the requested destination. Unchanged or successfully saved YAML SHALL NOT trigger confirmation.
+
+Reload, document navigation and page close with unsaved YAML SHALL request the browser's native beforeunload confirmation; without unsaved YAML they SHALL NOT request it.
+
+#### Scenario: Keep a draft after sidebar navigation
+
+- **WHEN** the operator changes existing template YAML, selects a sidebar destination and chooses Keep editing
+- **THEN** the current page and edited text remain
+- **AND** repeating the navigation and choosing Discard reaches the requested destination
+
+#### Scenario: Back protects a new draft
+
+- **WHEN** the operator enters YAML in New template and presses browser Back
+- **THEN** Keep editing retains that new draft and Discard permits the Back navigation
+
+#### Scenario: Save or revert removes the warning
+
+- **WHEN** the operator restores an edit to its baseline, or successfully saves its current YAML, then navigates
+- **THEN** navigation proceeds without a dirty-YAML confirmation
+- **AND** a successful New template create reaches its created detail page without such a confirmation
+
+#### Scenario: A failed save remains dirty
+
+- **WHEN** saving changed YAML fails and the operator tries to leave
+- **THEN** the draft remains protected by confirmation
+
+#### Scenario: Native reload confirmation
+
+- **WHEN** the operator interacts with a YAML editor, changes its text and requests a reload in a browser that presents beforeunload confirmations
+- **THEN** dismissing the native confirmation keeps the page and draft
+- **AND** accepting it permits the reload
+
+### Requirement: Print history screen
+
+The Print history page SHALL show the job history (`printing`), with each job's time, template id, printer id, actor and textual send outcome. It SHALL show the actor's username when available, otherwise the recorded actor id, and label an empty actor id as unknown. A failed job's complete error text SHALL be inspectable on the page. `ok` SHALL be described as sent to the printer.
+
+The page SHALL show loading while its first read is pending, an empty-history message for a successful empty response, and the service's message with a Retry action when the read fails.
+
+#### Scenario: An operator traces a failure
+
+- **WHEN** the operator opens Print history containing successful and failed jobs from different actors
+- **THEN** each job shows its time, template, printer, actor and send outcome, newest first
+- **AND** the failed job's full error can be read without leaving the page
+
+#### Scenario: Empty and failed reads differ
+
+- **WHEN** the initial history read is pending, then succeeds empty, or instead fails
+- **THEN** the page respectively shows loading, an empty-history message, or the service's error and Retry
+- **AND** Retry performs another history read

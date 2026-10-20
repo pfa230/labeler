@@ -50,12 +50,22 @@ const templates: Array<{
   },
 ];
 
-function jsonResponse(body: unknown) {
+function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+type Broken = { path: string; error: string };
 
 // Route the fetch mock by URL: /api/templates returns the template list, while /api/favorites and
 // /api/recent-templates default to [] (so their rows stay hidden). Favorites is a mutable closure so a
@@ -68,10 +78,16 @@ function stubFetch(opts?: {
   sources?: Record<string, string>;
   putFails?: (id: string) => boolean;
   holdPut?: Promise<void>;
+  broken?: Broken[];
+  listGate?: Promise<void>;
+  reloadGate?: Promise<void>;
+  reloadResult?: { templates?: typeof templates; broken?: Broken[] };
+  reloadError?: { status: number; body: unknown };
 }) {
   let favorites = [...(opts?.favorites ?? [])];
   const recent = [...(opts?.recent ?? [])];
-  const currentTemplates = [...(opts?.templates ?? (opts?.empty ? [] : templates))];
+  let currentTemplates = [...(opts?.templates ?? (opts?.empty ? [] : templates))];
+  let currentBroken = [...(opts?.broken ?? [])];
   const sources = { ...(opts?.sources ?? {}) };
   const calls: { method: string; url: string }[] = [];
   const writes: { id: string; body: string }[] = [];
@@ -114,7 +130,26 @@ function stubFetch(opts?: {
     }
     if (url === "/api/favorites") return jsonResponse(favorites);
     if (url === "/api/recent-templates") return jsonResponse(recent);
-    return jsonResponse({ templates: currentTemplates });
+    if (url === "/api/template-registry/reload") {
+      if (opts?.reloadGate) await opts.reloadGate;
+      if (opts?.reloadError) return jsonResponse(opts.reloadError.body, opts.reloadError.status);
+      if (opts?.reloadResult) {
+        if (opts.reloadResult.templates) currentTemplates = [...opts.reloadResult.templates];
+        if (opts.reloadResult.broken) currentBroken = [...opts.reloadResult.broken];
+      }
+      return jsonResponse({ count: currentTemplates.length, broken_count: currentBroken.length });
+    }
+    if (url === "/api/templates") {
+      if (opts?.listGate) await opts.listGate;
+      return jsonResponse({
+        templates: currentTemplates,
+        ...(currentBroken.length ? { broken: currentBroken } : {}),
+      });
+    }
+    return jsonResponse({
+      templates: currentTemplates,
+      ...(currentBroken.length ? { broken: currentBroken } : {}),
+    });
   });
   vi.stubGlobal("fetch", fetchMock);
   return { calls, writes };
@@ -622,5 +657,138 @@ describe("Templates list", () => {
     expect((await screen.findAllByText("server said no")).length).toBeGreaterThan(0);
     expect(screen.queryByText("Saved pallet")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Category 1")).toHaveValue("Warehouse");
+  });
+});
+
+describe("Templates refused entries", () => {
+  const refusedTpl = (id: string, name: string, categories: string[] = []) => ({
+    id,
+    name,
+    description: "",
+    unit: "mm",
+    dpi: 300,
+    format: { type: "single" as const, width: 50, height: 25 },
+    categories,
+  });
+
+  it("shows the refused count while collapsed, full errors when expanded, and keeps both under filters", async () => {
+    stubFetch({
+      templates: [refusedTpl("pallet", "Pallet", ["Shipping"])],
+      broken: [
+        { path: "bad.yaml", error: "bad.yaml: unknown field `ink`" },
+        { path: "notes.txt", error: "notes.txt: not a template file" },
+      ],
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+    expect(screen.getByText("Refused entries (2)")).toBeInTheDocument();
+    expect(screen.getByText("bad.yaml: unknown field `ink`")).not.toBeVisible();
+
+    fireEvent.click(screen.getByText("Refused entries (2)"));
+    expect(await screen.findByText("bad.yaml: unknown field `ink`")).toBeVisible();
+    expect(screen.getByText("bad.yaml")).toBeVisible();
+    expect(screen.getByText("notes.txt")).toBeVisible();
+    expect(screen.getByText("notes.txt: not a template file")).toBeVisible();
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "zzz-no-match" } });
+    expect(screen.getByText("No templates match.")).toBeInTheDocument();
+    expect(screen.getByText("Refused entries (2)")).toBeInTheDocument();
+    expect(screen.getByText("notes.txt: not a template file")).toBeInTheDocument();
+  });
+
+  it("distinguishes an all-refused registry from an empty installation", async () => {
+    stubFetch({ empty: true, broken: [{ path: "broken.yaml", error: "broken.yaml: bad layout" }] });
+    renderPage();
+    expect(await screen.findByText("Refused entries (1)")).toBeInTheDocument();
+    expect(screen.getByText("No printable templates.")).toBeInTheDocument();
+    expect(screen.getByText("broken.yaml: bad layout")).not.toBeVisible();
+    expect(screen.queryByText(/no templates yet/i)).toBeNull();
+
+    fireEvent.click(screen.getByText("Refused entries (1)"));
+    expect(await screen.findByText("broken.yaml: bad layout")).toBeVisible();
+  });
+
+  it("offers Reload templates even when nothing is refused", async () => {
+    stubFetch();
+    renderPage();
+    await screen.findByText("Brother 24mm");
+    expect(await screen.findByRole("button", { name: "Reload templates" })).toBeInTheDocument();
+    expect(screen.queryByText(/refused entries/i)).toBeNull();
+  });
+
+  it("awaits the registry reload before refreshing, turning a repaired refusal printable", async () => {
+    const listGate = deferred<void>();
+    const gate = deferred<void>();
+    const { calls } = stubFetch({
+      empty: true,
+      broken: [{ path: "bad.yaml", error: "bad.yaml: bad layout" }],
+      listGate: listGate.promise,
+      reloadGate: gate.promise,
+      reloadResult: { templates: [refusedTpl("fixed", "Fixed")], broken: [] },
+    });
+    renderPage();
+    const reload = await screen.findByRole("button", { name: "Reload templates" });
+    // While the initial listing is still in flight, activating reload would let that stale response
+    // land after the reload POST and be reused by invalidateQueries instead of a fresh GET.
+    expect(reload).toBeDisabled();
+    listGate.resolve();
+    await screen.findByText("Refused entries (1)");
+    expect(reload).toBeEnabled();
+    const listGets = () => calls.filter((c) => c.method === "GET" && c.url === "/api/templates").length;
+    const baseline = listGets();
+
+    fireEvent.click(reload);
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === "POST" && c.url === "/api/template-registry/reload"),
+      ).toBe(true),
+    );
+    // The POST is still gated, so no list refresh may have started.
+    expect(listGets()).toBe(baseline);
+    expect(reload).toBeDisabled();
+
+    gate.resolve();
+    expect(await screen.findByText("Fixed")).toBeInTheDocument();
+    expect(screen.queryByText(/refused entries/i)).toBeNull();
+    expect(screen.queryByText("No printable templates.")).toBeNull();
+    expect(listGets()).toBeGreaterThan(baseline);
+  });
+
+  it("keeps refusals that survive a successful reload", async () => {
+    stubFetch({
+      templates: [refusedTpl("good", "Good")],
+      broken: [{ path: "bad.yaml", error: "bad.yaml: bad layout" }],
+      reloadResult: {
+        templates: [refusedTpl("good", "Good")],
+        broken: [{ path: "notes.txt", error: "notes.txt: not a template file" }],
+      },
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText("Refused entries (1)"));
+    expect(await screen.findByText("bad.yaml: bad layout")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload templates" }));
+    expect(await screen.findByText("notes.txt: not a template file")).toBeVisible();
+    expect(screen.queryByText("bad.yaml: bad layout")).toBeNull();
+    expect(screen.getByText("Refused entries (1)")).toBeInTheDocument();
+  });
+
+  it("reports a failed reload and keeps the displayed templates and refusals", async () => {
+    stubFetch({
+      templates: [refusedTpl("good", "Good")],
+      broken: [{ path: "bad.yaml", error: "bad.yaml: bad layout" }],
+      reloadError: {
+        status: 500,
+        body: { error: { code: "Internal", message: "registry read failed" } },
+      },
+    });
+    renderPage();
+    await screen.findByText("Good");
+    expect(screen.getByText("Refused entries (1)")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload templates" }));
+    expect(await screen.findByText("registry read failed")).toBeInTheDocument();
+    expect(screen.getByText("Good")).toBeInTheDocument();
+    expect(screen.getByText("Refused entries (1)")).toBeInTheDocument();
   });
 });

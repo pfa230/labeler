@@ -5,6 +5,7 @@ import {
   fetchTemplateSource,
   useFavorites,
   useRecentTemplates,
+  useReloadTemplates,
   useReplaceTemplate,
   useSetFavorite,
   useTemplates,
@@ -61,7 +62,7 @@ function TemplateCard({
       <Link
         to={`/templates/${encodeURIComponent(template.id)}`}
         aria-label={`Print ${template.name}`}
-        className="flex flex-col gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2"
+        className="flex flex-col gap-3 rounded-md focus-visible:outline-hidden focus-visible:ring-2"
       >
         <TemplateThumbnail id={template.id} name={template.name} />
         <h2 className="font-semibold" style={{ color: "var(--ink)" }}>
@@ -71,7 +72,7 @@ function TemplateCard({
       <div className="mt-auto flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <code
-            className="truncate rounded px-1.5 py-0.5 text-xs"
+            className="truncate rounded-sm px-1.5 py-0.5 text-xs"
             style={{ background: "var(--paper)", color: "var(--muted)" }}
           >
             {template.id}
@@ -92,7 +93,7 @@ function TemplateCard({
             onClick={onToggleFavorite}
             aria-label={favorite ? `unfavorite ${template.name}` : `favorite ${template.name}`}
             aria-pressed={favorite}
-            className="flex h-11 w-11 items-center justify-center rounded-md border text-lg focus-visible:outline-none focus-visible:ring-2"
+            className="flex h-11 w-11 items-center justify-center rounded-md border text-lg focus-visible:outline-hidden focus-visible:ring-2"
             style={{
               background: "var(--surface)",
               borderColor: "var(--border)",
@@ -247,11 +248,22 @@ export function Templates() {
   const favs = useFavorites();
   const recents = useRecentTemplates();
   const setFav = useSetFavorite();
+  const reload = useReloadTemplates();
   const { push } = useToast();
   const qc = useQueryClient();
   const [query, setQuery] = useState("");
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>(ALL_FILTER);
   const [editor, setEditor] = useState<{ id: string; source: string } | null>(null);
+
+  const broken = data?.broken ?? [];
+
+  const onReload = async () => {
+    try {
+      await reload.mutateAsync();
+    } catch (err) {
+      push({ kind: "error", message: err instanceof Error ? err.message : "Reload failed" });
+    }
+  };
 
   useEffect(() => {
     if (isError) {
@@ -355,16 +367,25 @@ export function Templates() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">Labels</h1>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onReload}
+            disabled={reload.isPending || isLoading}
+            className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
+            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+          >
+            Reload templates
+          </button>
           <Link
             to="/templates/catalog"
-            className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+            className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-hidden focus-visible:ring-2"
             style={{ borderColor: "var(--border)", color: "var(--ink)" }}
           >
             Browse catalog
           </Link>
           <Link
             to="/templates/new"
-            className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+            className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-hidden focus-visible:ring-2"
             style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
           >
             New template
@@ -377,7 +398,7 @@ export function Templates() {
           type="button"
           onClick={() => setSelectedFilter(ALL_FILTER)}
           aria-pressed={selectedFilter.kind === "all"}
-          className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
+          className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2"
           style={{
             background: selectedFilter.kind === "all" ? "var(--accent)" : "var(--surface)",
             color: selectedFilter.kind === "all" ? "var(--accent-ink)" : "var(--ink)",
@@ -393,7 +414,7 @@ export function Templates() {
             type="button"
             onClick={() => setSelectedFilter({ kind: "category", name: c })}
             aria-pressed={sameFilter(selectedFilter, { kind: "category", name: c })}
-            className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
+            className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2"
             style={{
               background: sameFilter(selectedFilter, { kind: "category", name: c })
                 ? "var(--accent)"
@@ -415,7 +436,7 @@ export function Templates() {
             type="button"
             onClick={() => setSelectedFilter({ kind: "uncategorized" })}
             aria-pressed={selectedFilter.kind === "uncategorized"}
-            className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
+            className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2"
             style={{
               background: selectedFilter.kind === "uncategorized" ? "var(--accent)" : "var(--surface)",
               color: selectedFilter.kind === "uncategorized" ? "var(--accent-ink)" : "var(--ink)",
@@ -434,7 +455,7 @@ export function Templates() {
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search templates…"
         aria-label="Search templates"
-        className="w-full max-w-sm rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+        className="w-full max-w-sm rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2"
         style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
       />
 
@@ -458,7 +479,32 @@ export function Templates() {
         <p style={{ color: "var(--muted)" }}>No templates match.</p>
       )}
       {data && (data.templates ?? []).length === 0 && !query && selectedFilter.kind === "all" && (
-        <EmptyTemplates />
+        broken.length === 0 ? <EmptyTemplates /> : (
+          <p style={{ color: "var(--muted)" }}>No printable templates.</p>
+        )
+      )}
+
+      {data && broken.length > 0 && (
+        <details
+          className="rounded-lg border p-4"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+        >
+          <summary className="cursor-pointer text-sm font-medium" style={{ color: "var(--ink)" }}>
+            Refused entries ({broken.length})
+          </summary>
+          <ul className="mt-3 flex flex-col gap-3">
+            {broken.map((b) => (
+              <li key={b.path}>
+                <code className="text-xs" style={{ color: "var(--ink)" }}>
+                  {b.path}
+                </code>
+                <p className="text-sm" style={{ color: "var(--bad)" }}>
+                  {b.error}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {!isFiltered && favTemplates.length > 0 && (
         <section aria-label="Favorites" className="flex flex-col gap-2">

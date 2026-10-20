@@ -39,6 +39,7 @@ reasons! {
     EdgeRectInverted => "edge_rect_inverted",
     SizeInvalid => "size_invalid",
     TextDoesNotFit => "text_does_not_fit",
+    TextCharacterUnmapped => "text_character_unmapped",
     ImageFormatUnsupported => "image_format_unsupported",
     ImageDataInvalid => "image_data_invalid",
     ImageAssetMissing => "image_asset_missing",
