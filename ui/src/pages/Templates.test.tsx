@@ -625,6 +625,50 @@ describe("Templates list", () => {
     expect(screen.getByText("Pallet")).toBeInTheDocument();
   });
 
+  it("returns a removed filter to All when concurrent saves each keep the choice", async () => {
+    // Two Shipping templates saved to Warehouse while both PUTs are in flight: each sees the other
+    // still Shipping in the snapshot captured at Save time. Only the refreshed summaries reveal that
+    // Shipping is gone, so the filter must be reconciled against them.
+    let release!: () => void;
+    const holdPut = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { writes } = stubFetch({
+      templates: [tpl("alpha", "Alpha", ["Shipping"]), tpl("beta", "Beta", ["Shipping"])],
+      sources: {
+        alpha: "id: alpha\ncategories: [Shipping]\nname: x\n",
+        beta: "id: beta\ncategories: [Shipping]\nname: x\n",
+      },
+      holdPut,
+    });
+    renderPage();
+    await screen.findByText("Alpha");
+    fireEvent.click(filterButton("Shipping"));
+
+    fireEvent.click(editButton("Alpha"));
+    await screen.findByText("Edit categories for alpha");
+    fireEvent.change(screen.getByLabelText("Category 1"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    fireEvent.click(editButton("Beta"));
+    await screen.findByText("Edit categories for beta");
+    fireEvent.change(screen.getByLabelText("Category 1"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(writes).toHaveLength(2));
+    release();
+
+    await waitFor(() => {
+      const toolbar = screen.getByRole("toolbar", { name: "Category filter" });
+      expect(within(toolbar).queryByRole("button", { name: "Shipping" })).not.toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "Warehouse" })).toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "All" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+  });
+
   it("keeps a reopened editor's draft when an earlier save settles", async () => {
     let release!: () => void;
     const holdPut = new Promise<void>((resolve) => {

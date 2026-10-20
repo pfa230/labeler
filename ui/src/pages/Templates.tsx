@@ -117,7 +117,7 @@ function CategoryEditor({
   id: string;
   source: string;
   onClose: () => void;
-  onSaved: (categories: string[]) => void;
+  onSaved: () => void;
 }) {
   const parsed = useMemo(() => readCategories(source), [source]);
   const [entries, setEntries] = useState<string[]>(() => (parsed.ok ? parsed.categories : []));
@@ -167,7 +167,7 @@ function CategoryEditor({
     try {
       await save.mutateAsync({ id, yaml: result.source });
       push({ kind: "ok", message: `Saved ${id}` });
-      onSaved(entries);
+      onSaved();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Save failed";
       setSaveError(message);
@@ -284,19 +284,28 @@ export function Templates() {
     return { categories: Array.from(set).sort(compareCodePoints), hasUncategorized: uncategorized };
   }, [data]);
 
+  // A save refetches the summaries asynchronously. Derive the active filter from the refreshed
+  // summaries rather than the snapshot captured when Save was clicked, so a choice whose last listing
+  // template disappeared falls back to All even when concurrent saves each saw the other still there.
+  const activeFilter = useMemo<CategoryFilter>(() => {
+    if (selectedFilter.kind === "category" && !categories.includes(selectedFilter.name)) return ALL_FILTER;
+    if (selectedFilter.kind === "uncategorized" && !hasUncategorized) return ALL_FILTER;
+    return selectedFilter;
+  }, [selectedFilter, categories, hasUncategorized]);
+
   const filtered = useMemo(() => {
     let list = data?.templates ?? [];
-    if (selectedFilter.kind === "uncategorized") {
+    if (activeFilter.kind === "uncategorized") {
       list = list.filter((t) => t.categories.length === 0);
-    } else if (selectedFilter.kind === "category") {
-      list = list.filter((t) => t.categories.includes(selectedFilter.name));
+    } else if (activeFilter.kind === "category") {
+      list = list.filter((t) => t.categories.includes(activeFilter.name));
     }
     const needle = query.trim().toLowerCase();
     if (!needle) return list;
     return list.filter(
       (t) => t.id.toLowerCase().includes(needle) || t.name.toLowerCase().includes(needle),
     );
-  }, [data, selectedFilter, query]);
+  }, [data, activeFilter, query]);
 
   const favoriteIds = favs.data ?? [];
   const isFavorite = (id: string) => favoriteIds.includes(id);
@@ -317,27 +326,10 @@ export function Templates() {
     }
   };
 
-  const handleSaved = (edited: { id: string; source: string }, categories: string[]) => {
+  const handleSaved = (edited: { id: string; source: string }) => {
     // A save that settles after Cancel must close only the editor instance it belongs to; a later
     // editor for the same template is a different object and must stay open with its own draft.
     setEditor((current) => (current === edited ? null : current));
-    const id = edited.id;
-    // The summaries refetch asynchronously; decide against the categories this save wrote.
-    setSelectedFilter((current) => {
-      if (current.kind === "category") {
-        const exists = (data?.templates ?? []).some((t) =>
-          (t.id === id ? categories : t.categories).includes(current.name),
-        );
-        return exists ? current : ALL_FILTER;
-      }
-      if (current.kind === "uncategorized") {
-        const exists = (data?.templates ?? []).some(
-          (t) => (t.id === id ? categories : t.categories).length === 0,
-        );
-        return exists ? current : ALL_FILTER;
-      }
-      return current;
-    });
   };
 
   const byId = useMemo(() => {
@@ -347,7 +339,7 @@ export function Templates() {
   }, [data]);
 
   const searching = query.trim() !== "";
-  const isFiltered = searching || selectedFilter.kind !== "all";
+  const isFiltered = searching || activeFilter.kind !== "all";
   const favTemplates = favoriteIds.map((id) => byId.get(id)).filter((t): t is TemplateSummary => !!t);
   const recentTemplates = (recents.data ?? [])
     .filter((id) => !favoriteIds.includes(id))
@@ -399,13 +391,13 @@ export function Templates() {
         <button
           type="button"
           onClick={() => setSelectedFilter(ALL_FILTER)}
-          aria-pressed={selectedFilter.kind === "all"}
+          aria-pressed={activeFilter.kind === "all"}
           className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2"
           style={{
-            background: selectedFilter.kind === "all" ? "var(--accent)" : "var(--surface)",
-            color: selectedFilter.kind === "all" ? "var(--accent-ink)" : "var(--ink)",
+            background: activeFilter.kind === "all" ? "var(--accent)" : "var(--surface)",
+            color: activeFilter.kind === "all" ? "var(--accent-ink)" : "var(--ink)",
             border: "1px solid",
-            borderColor: selectedFilter.kind === "all" ? "var(--accent)" : "var(--border)",
+            borderColor: activeFilter.kind === "all" ? "var(--accent)" : "var(--border)",
           }}
         >
           All
@@ -415,17 +407,17 @@ export function Templates() {
             key={c}
             type="button"
             onClick={() => setSelectedFilter({ kind: "category", name: c })}
-            aria-pressed={sameFilter(selectedFilter, { kind: "category", name: c })}
+            aria-pressed={sameFilter(activeFilter, { kind: "category", name: c })}
             className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2"
             style={{
-              background: sameFilter(selectedFilter, { kind: "category", name: c })
+              background: sameFilter(activeFilter, { kind: "category", name: c })
                 ? "var(--accent)"
                 : "var(--surface)",
-              color: sameFilter(selectedFilter, { kind: "category", name: c })
+              color: sameFilter(activeFilter, { kind: "category", name: c })
                 ? "var(--accent-ink)"
                 : "var(--ink)",
               border: "1px solid",
-              borderColor: sameFilter(selectedFilter, { kind: "category", name: c })
+              borderColor: sameFilter(activeFilter, { kind: "category", name: c })
                 ? "var(--accent)"
                 : "var(--border)",
             }}
@@ -437,13 +429,13 @@ export function Templates() {
           <button
             type="button"
             onClick={() => setSelectedFilter({ kind: "uncategorized" })}
-            aria-pressed={selectedFilter.kind === "uncategorized"}
+            aria-pressed={activeFilter.kind === "uncategorized"}
             className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2"
             style={{
-              background: selectedFilter.kind === "uncategorized" ? "var(--accent)" : "var(--surface)",
-              color: selectedFilter.kind === "uncategorized" ? "var(--accent-ink)" : "var(--ink)",
+              background: activeFilter.kind === "uncategorized" ? "var(--accent)" : "var(--surface)",
+              color: activeFilter.kind === "uncategorized" ? "var(--accent-ink)" : "var(--ink)",
               border: "1px solid",
-              borderColor: selectedFilter.kind === "uncategorized" ? "var(--accent)" : "var(--border)",
+              borderColor: activeFilter.kind === "uncategorized" ? "var(--accent)" : "var(--border)",
             }}
           >
             Uncategorized
@@ -467,7 +459,7 @@ export function Templates() {
           id={editor.id}
           source={editor.source}
           onClose={() => setEditor(null)}
-          onSaved={(categories) => handleSaved(editor, categories)}
+          onSaved={() => handleSaved(editor)}
         />
       )}
 
@@ -477,10 +469,10 @@ export function Templates() {
           {error instanceof Error ? error.message : "Failed to load templates"}
         </p>
       )}
-      {data && filtered.length === 0 && (query || selectedFilter.kind !== "all") && (
+      {data && filtered.length === 0 && (query || activeFilter.kind !== "all") && (
         <p style={{ color: "var(--muted)" }}>No templates match.</p>
       )}
-      {data && (data.templates ?? []).length === 0 && !query && selectedFilter.kind === "all" && (
+      {data && (data.templates ?? []).length === 0 && !query && activeFilter.kind === "all" && (
         broken.length === 0 ? <EmptyTemplates /> : (
           <p style={{ color: "var(--muted)" }}>No printable templates.</p>
         )
