@@ -8,17 +8,20 @@
 // a one-line change here.
 export const CATALOG_BASE = "https://raw.githubusercontent.com/pfa230/labeler/main/catalog";
 
-export interface CatalogEntry {
+type CatalogFormat =
+  | { format: "single"; position_count?: never }
+  | { format: "sheet"; position_count: number };
+
+export type CatalogEntry = CatalogFormat & {
   id: string;
   name: string;
   description?: string | null;
   path: string;
   category: string;
   vendor?: string | null;
-  format: string;
   media_width_mm?: number | null;
   fields: string[];
-}
+};
 
 export async function fetchCatalog(): Promise<CatalogEntry[]> {
   const res = await fetch(`${CATALOG_BASE}/index.json`);

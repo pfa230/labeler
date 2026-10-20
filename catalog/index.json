@@ -10,6 +10,7 @@
     "media_width_mm": null,
     "name": "Avery 5163 2\" x 4\" Shipping Label",
     "path": "sheet/avery/avery5163.yaml",
+    "position_count": 10,
     "vendor": "avery"
   },
   {

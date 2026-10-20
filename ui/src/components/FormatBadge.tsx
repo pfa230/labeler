@@ -37,7 +37,11 @@ function FormatIcon({ type }: { type: TemplateFormat["type"] }) {
   );
 }
 
-export function FormatBadge({ format }: { format: TemplateFormat }) {
+// The badge needs only the type and, for a sheet, its position count — never the geometry. A
+// sheet's count is required: without it the label could not be drawn, so the type says so.
+export type FormatBadgeFormat = { type: "single" } | { type: "sheet"; count: number };
+
+export function FormatBadge({ format }: { format: FormatBadgeFormat }) {
   const { fg, fill } = TOKENS[format.type];
   return (
     <span
@@ -48,7 +52,7 @@ export function FormatBadge({ format }: { format: TemplateFormat }) {
       <FormatIcon type={format.type} />
       {/* One text node, so the whole label is one getByText target and what a screen reader
           conveys is exactly the string a sighted user reads. */}
-      <span>{format.type === "sheet" ? `sheet · ${format.positions.length}` : "single"}</span>
+      <span>{format.type === "sheet" ? `sheet · ${format.count}` : "single"}</span>
     </span>
   );
 }

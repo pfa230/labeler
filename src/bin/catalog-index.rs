@@ -54,6 +54,14 @@ fn media_width(t: &TemplateDefinition) -> Option<f32> {
     }
 }
 
+/// The validated sheet's position count; `None` for singles, which publish no count.
+fn position_count(t: &TemplateDefinition) -> Option<usize> {
+    match &t.format {
+        TemplateFormat::Single { .. } => None,
+        TemplateFormat::Sheet { positions, .. } => Some(positions.len()),
+    }
+}
+
 /// The index entries for every template under `root`, in ascending path order.
 fn build_index(root: &Path) -> Vec<serde_json::Value> {
     let mut files = Vec::new();
@@ -80,7 +88,7 @@ fn build_index(root: &Path) -> Vec<serde_json::Value> {
             ),
         };
         let template = load(path);
-        entries.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "id": template.id,
             "name": template.name,
             "description": template.description,
@@ -90,7 +98,11 @@ fn build_index(root: &Path) -> Vec<serde_json::Value> {
             "format": format_kind(&template),
             "media_width_mm": media_width(&template),
             "fields": template.params.keys().collect::<Vec<_>>(),
-        }));
+        });
+        if let Some(position_count) = position_count(&template) {
+            entry["position_count"] = serde_json::json!(position_count);
+        }
+        entries.push(entry);
     }
     entries
 }
@@ -173,6 +185,49 @@ layout:
             serde_json::json!(["zeta", "alpha", "mid"])
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sheet_entries_carry_the_validated_position_count() {
+        let template = r#"name: Sheet
+unit: mm
+dpi: 300
+format:
+  type: sheet
+  paper_width: 210.0
+  paper_height: 297.0
+  label_width: 50.0
+  label_height: 25.0
+  positions:
+    - [0.0, 0.0]
+    - [50.0, 0.0]
+    - [100.0, 0.0]
+    - [150.0, 0.0]
+    - [0.0, 25.0]
+    - [50.0, 25.0]
+    - [100.0, 25.0]
+    - [150.0, 25.0]
+    - [0.0, 50.0]
+    - [50.0, 50.0]
+layout: []
+"#;
+        let root = catalog_with("position_count", &[("sheet/ten.yaml", template)]);
+
+        let entries = build_index(&root);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["position_count"], serde_json::json!(10));
+        // A single publishes no count: an always-present null (or a geometry object) would
+        // satisfy the sheet assertion above while breaking the index contract.
+        std::fs::remove_dir_all(&root).ok();
+
+        let single_root = catalog_with(
+            "position_count_single",
+            &[("tape/x.yaml", MINIMAL_TEMPLATE)],
+        );
+        let single_entries = build_index(&single_root);
+        assert!(single_entries[0].get("position_count").is_none());
+        std::fs::remove_dir_all(&single_root).ok();
     }
 
     #[test]

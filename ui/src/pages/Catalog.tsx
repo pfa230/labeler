@@ -5,6 +5,7 @@ import { fetchCatalog, fetchCatalogYaml, type CatalogEntry } from "../api/catalo
 import { ApiError } from "../api/client";
 import { useCreateTemplate, useReplaceTemplate, useTemplates } from "../api/queries";
 import { useToast } from "../app/toast-context";
+import { FormatBadge } from "../components/FormatBadge";
 
 const buttonBase =
   "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
@@ -53,7 +54,15 @@ function CatalogCard({
       <dl className="text-xs" style={{ color: "var(--muted)" }}>
         <div className="flex gap-2">
           <dt>format</dt>
-          <dd style={{ color: "var(--ink)" }}>{entry.format}</dd>
+          <dd>
+            <FormatBadge
+              format={
+                entry.format === "sheet"
+                  ? { type: "sheet", count: entry.position_count }
+                  : { type: "single" }
+              }
+            />
+          </dd>
           {entry.media_width_mm != null && (
             <>
               <dt>media</dt>

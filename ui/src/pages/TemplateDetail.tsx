@@ -260,7 +260,13 @@ export function TemplateDetail() {
               <div className="flex justify-between gap-2">
                 <dt style={{ color: "var(--muted)" }}>Format</dt>
                 <dd>
-                  <FormatBadge format={detail.format} />
+                  <FormatBadge
+                    format={
+                      detail.format.type === "sheet"
+                        ? { type: "sheet", count: detail.format.positions.length }
+                        : { type: "single" }
+                    }
+                  />
                 </dd>
               </div>
               <div className="flex justify-between gap-2">

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { Catalog } from "./Catalog";
 import { CATALOG_BASE } from "../api/catalog";
-import { noBadgeStyling } from "../setupTests";
+import { SHEET_ICON, SINGLE_ICON, iconGeometry } from "../setupTests";
 
 const index = [
   {
@@ -27,6 +27,7 @@ const index = [
     category: "sheet",
     vendor: "avery",
     format: "sheet",
+    position_count: 10,
     media_width_mm: null,
     fields: ["message"],
   },
@@ -121,20 +122,32 @@ describe("Catalog", () => {
     expect(screen.getByLabelText("sheet · avery")).toBeInTheDocument();
   });
 
-  // #201 gave installed templates a format badge and deliberately left the catalog alone: a catalog
-  // entry is not installed yet and CatalogEntry.format is a bare string with no positions, so a badge
-  // here could carry an icon and a colour but never the count that makes the badge worth having.
-  it("states a catalog entry's format as plain prose, with no badge", async () => {
+  // #211: Catalog now shows the same badge as the installed grid and detail pages, with the sheet
+  // count from the index. Text alone would pass for a plain string or a different label, and a
+  // Catalog that kept printing `entry.format` as prose would leave no `[data-format]` at all.
+  it("states each entry's format with the shared badge and its sheet count", async () => {
     vi.stubGlobal("fetch", stubFetch());
     renderCatalog();
     await screen.findByText("Avery 5163");
-    const format = screen.getByText("sheet", { selector: "dd" });
-    expect(format.textContent).toBe("sheet");
-    expect(format).not.toHaveAttribute("data-format");
-    expect(format.querySelector("svg")).toBeNull();
-    expect(format.querySelector("[data-format]")).toBeNull();
-    expect(noBadgeStyling(format)).toBe(true);
-    expect(document.querySelector("[data-format]")).toBeNull();
+
+    const sheetBadge = document.querySelector<HTMLElement>('[data-format="sheet"]')!;
+    expect(sheetBadge.textContent).toBe("sheet · 10");
+    expect(sheetBadge.style.color).toBe("var(--info)");
+    expect(sheetBadge.style.background).toBe("var(--info-soft)");
+    expect(sheetBadge.style.borderColor).toBe("var(--info)");
+    expect(iconGeometry(sheetBadge)).toEqual(SHEET_ICON);
+
+    const singleBadge = document.querySelector<HTMLElement>('[data-format="single"]')!;
+    expect(singleBadge.textContent).toBe("single");
+    expect(singleBadge.style.color).toBe("var(--accent)");
+    expect(singleBadge.style.background).toBe("var(--accent-soft)");
+    expect(singleBadge.style.borderColor).toBe("var(--accent)");
+    expect(iconGeometry(singleBadge)).toEqual(SINGLE_ICON);
+
+    // One badge per card, inside the format row — not a leftover plain string beside it.
+    expect(document.querySelectorAll("[data-format]")).toHaveLength(2);
+    const formatRow = sheetBadge.closest("dd")!;
+    expect(formatRow).toBe(sheetBadge.parentElement);
   });
 
   it("marks an entry that is already installed", async () => {

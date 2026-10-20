@@ -57,7 +57,13 @@ function TemplateCard({
       style={{ background: "var(--surface)", borderColor: "var(--border)" }}
     >
       <div className="flex items-center">
-        <FormatBadge format={template.format} />
+        <FormatBadge
+          format={
+            template.format.type === "sheet"
+              ? { type: "sheet", count: template.format.positions.length }
+              : { type: "single" }
+          }
+        />
       </div>
       <Link
         to={`/templates/${encodeURIComponent(template.id)}`}

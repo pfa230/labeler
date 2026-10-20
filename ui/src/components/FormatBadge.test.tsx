@@ -1,23 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
-import { FormatBadge } from "./FormatBadge";
-import type { TemplateFormat } from "../api/types";
+import { FormatBadge, type FormatBadgeFormat } from "./FormatBadge";
 import { SHEET_ICON, SINGLE_ICON, iconGeometry } from "../setupTests";
 
-const SINGLE: TemplateFormat = { type: "single", width: 80, height: 24 };
+const SINGLE: FormatBadgeFormat = { type: "single" };
 
-function sheet(positions: number): TemplateFormat {
-  return {
-    type: "sheet",
-    paper_width: 210,
-    paper_height: 297,
-    label_width: 25,
-    label_height: 25,
-    positions: Array.from({ length: positions }, (_, i) => [i, 0] as [number, number]),
-  };
+function sheet(count: number): FormatBadgeFormat {
+  return { type: "sheet", count };
 }
 
-function badge(format: TemplateFormat): HTMLElement {
+function badge(format: FormatBadgeFormat): HTMLElement {
   const { container } = render(<FormatBadge format={format} />);
   return container.querySelector<HTMLElement>(`[data-format="${format.type}"]`)!;
 }
