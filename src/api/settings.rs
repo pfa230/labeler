@@ -3,10 +3,9 @@
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    routing::{get, post, put},
-    Router,
 };
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     errors::{AppError, NotFoundKind},
@@ -17,13 +16,13 @@ use crate::{
 
 use super::AppState;
 
-pub(super) fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/variables", get(get_variables))
-        .route("/variables/{key}", put(put_variable))
-        .route("/settings", get(get_settings))
-        .route("/settings/{key}", put(put_setting).delete(delete_setting))
-        .route("/datetime-formats/preview", post(preview_datetime_format))
+pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
+        .routes(routes!(get_variables))
+        .routes(routes!(put_variable))
+        .routes(routes!(get_settings))
+        .routes(routes!(put_setting, delete_setting))
+        .routes(routes!(preview_datetime_format))
 }
 
 #[utoipa::path(

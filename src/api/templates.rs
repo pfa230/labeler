@@ -3,13 +3,12 @@
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    routing::{get, post, put},
-    Router,
 };
 use rustix::fd::AsFd;
 use sha2::Digest;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     errors::{AppError, NotFoundKind},
@@ -23,25 +22,21 @@ use crate::{
 
 use super::AppState;
 
-pub(super) fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/templates", get(list_templates))
-        .route("/template-registry/reload", post(reload_templates))
-        .route(
-            "/templates/{id}",
-            get(get_template)
-                .post(create_template)
-                .put(replace_template)
-                .delete(delete_template),
-        )
-        .route("/templates/{id}/source", get(template_source))
-        .route("/templates/{id}/thumbnail", get(thumbnail))
-        .route("/favorites", get(list_favorites))
-        .route(
-            "/favorites/{template_id}",
-            put(add_favorite).delete(remove_favorite),
-        )
-        .route("/recent-templates", get(recent_templates))
+pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_templates))
+        .routes(routes!(reload_templates))
+        .routes(routes!(
+            get_template,
+            create_template,
+            replace_template,
+            delete_template
+        ))
+        .routes(routes!(template_source))
+        .routes(routes!(thumbnail))
+        .routes(routes!(list_favorites))
+        .routes(routes!(add_favorite, remove_favorite))
+        .routes(routes!(recent_templates))
 }
 
 #[utoipa::path(

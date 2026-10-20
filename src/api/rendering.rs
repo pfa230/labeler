@@ -3,10 +3,9 @@
 use axum::{
     extract::{Query, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
-    Router,
 };
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     errors::{AppError, NotFoundKind},
@@ -34,12 +33,12 @@ pub(crate) struct RenderQuery {
     resolution: Option<String>,
 }
 
-pub(super) fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/render/label", post(render_label))
-        .route("/render", post(render_labels))
-        .route("/print", post(print_labels))
-        .route("/jobs", get(list_jobs))
+pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
+        .routes(routes!(render_label))
+        .routes(routes!(render_labels))
+        .routes(routes!(print_labels))
+        .routes(routes!(list_jobs))
 }
 
 fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {

@@ -1,7 +1,6 @@
 use utoipa::OpenApi;
 
 use crate::{
-    api,
     api::{
         auth::{
             AuthStatus, Credentials, OkResponse, PasswordChange, TokenCreate, TokenCreated,
@@ -23,50 +22,6 @@ use crate::{
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(
-        api::health,
-        api::templates::list_templates,
-        api::templates::reload_templates,
-        api::templates::get_template,
-        api::templates::template_source,
-        api::templates::thumbnail,
-        api::templates::create_template,
-        api::templates::replace_template,
-        api::templates::delete_template,
-        api::printers::list_printers,
-        api::printers::create_printer,
-        api::printers::get_printer,
-        api::printers::replace_printer,
-        api::printers::delete_printer,
-        api::printers::probe_printer,
-        api::printers::probe_stored_printer,
-        api::printers::cut_printer,
-        api::settings::get_variables,
-        api::settings::put_variable,
-        api::settings::get_settings,
-        api::settings::put_setting,
-        api::settings::delete_setting,
-        api::settings::preview_datetime_format,
-        api::rendering::render_label,
-        api::rendering::render_labels,
-        api::rendering::print_labels,
-        api::rendering::list_jobs,
-        api::templates::list_favorites,
-        api::templates::add_favorite,
-        api::templates::remove_favorite,
-        api::templates::recent_templates,
-        api::auth::setup,
-        api::auth::login,
-        api::auth::logout,
-        api::auth::me,
-        api::auth::change_password,
-        api::auth::list_users,
-        api::auth::create_user_h,
-        api::auth::delete_user_h,
-        api::auth::list_tokens,
-        api::auth::create_token_h,
-        api::auth::delete_token_h
-    ),
     servers((url = "/api")),
     components(
         schemas(
@@ -122,4 +77,8 @@ use crate::{
         (name = "printing", description = "Print dispatch and recorded jobs")
     )
 )]
-pub struct ApiDoc;
+pub(crate) struct ApiMetadata;
+
+pub fn document() -> utoipa::openapi::OpenApi {
+    crate::api::documented_router().into_openapi()
+}

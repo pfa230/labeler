@@ -19,13 +19,14 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::{catch_panic::CatchPanicLayer, trace::TraceLayer};
 use utoipa::OpenApi;
+use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     errors::{AppError, NotFoundKind},
     extract::Json,
     models::HealthResponse,
-    openapi::ApiDoc,
+    openapi::ApiMetadata,
     store::Store,
     templates::{TemplateRegistry, TemplateRegistryError},
 };
@@ -147,19 +148,27 @@ impl AppState {
     }
 }
 
-fn api_router() -> Router<Arc<AppState>> {
-    let router = Router::new()
-        .route("/health", get(health))
+pub(crate) fn documented_router() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::with_openapi(ApiMetadata::openapi())
+        .routes(routes!(health))
         .merge(templates::router())
         .merge(printers::router())
         .merge(settings::router())
         .merge(rendering::router())
         .merge(auth::router())
+}
+
+fn api_router() -> Router<Arc<AppState>> {
+    let (router, document) = documented_router().split_for_parts();
+    let router = router
         // Serve the OpenAPI doc from an explicit route so it resolves at /api/openapi.json under the
         // `/api` nest (SwaggerUi's own `.url()` serving route gets double-prefixed when nested).
-        .route("/openapi.json", get(openapi_json))
+        .route(
+            "/openapi.json",
+            get(openapi_json).with_state(document.clone()),
+        )
         // SwaggerUi serves the UI at /api/docs/ (trailing slash).
-        .merge(SwaggerUi::new("/docs").url("/api/openapi.json", ApiDoc::openapi()));
+        .merge(SwaggerUi::new("/docs").url("/api/openapi.json", document));
 
     #[cfg(test)]
     let router = router.route("/test/panic/{shape}", get(test_api_panic_h));
@@ -185,8 +194,8 @@ async fn test_outside_panic_h() -> Response {
     panic!("distinctive outside api panic");
 }
 
-async fn openapi_json() -> Response {
-    Json(ApiDoc::openapi()).into_response()
+async fn openapi_json(State(document): State<utoipa::openapi::OpenApi>) -> Response {
+    Json(document).into_response()
 }
 
 fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> Response {
@@ -243,6 +252,7 @@ async fn fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> R
 #[utoipa::path(
     get,
     path = "/health",
+    tag = "api",
     responses(
         (status = 200, description = "Service is healthy", body = HealthResponse)
     )

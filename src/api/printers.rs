@@ -3,10 +3,9 @@
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    routing::{get, post},
-    Router,
 };
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     errors::{AppError, NotFoundKind},
@@ -17,16 +16,13 @@ use crate::{
 
 use super::AppState;
 
-pub(super) fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/printers", get(list_printers).post(create_printer))
-        .route("/printers/probe", post(probe_printer))
-        .route("/printers/{id}/probe", post(probe_stored_printer))
-        .route("/printers/{id}/cut", post(cut_printer))
-        .route(
-            "/printers/{id}",
-            get(get_printer).put(replace_printer).delete(delete_printer),
-        )
+pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_printers, create_printer))
+        .routes(routes!(probe_printer))
+        .routes(routes!(probe_stored_printer))
+        .routes(routes!(cut_printer))
+        .routes(routes!(get_printer, replace_printer, delete_printer))
 }
 
 /// The printer id rule (printing, "Printer fields"): non-empty, letters, digits, `'-'` or `'_'`.

@@ -26,6 +26,6 @@ None. This refactor preserves the HTTP surface and published operations; `skip_s
 
 ## Impact
 
-Touches `src/api.rs`, `src/openapi.rs`, OpenAPI tests in `src/lib.rs`, and the Cargo manifest and lockfile. Adds `utoipa-axum` 0.3, compatible with the existing Axum 0.8 and Utoipa 6.
+Touches `src/api.rs`, the five resource router builders in `src/api/{auth,printers,rendering,settings,templates}.rs`, `src/openapi.rs`, OpenAPI tests in `src/lib.rs`, and the Cargo manifest and lockfile. Adds `utoipa-axum` 0.3, compatible with the existing Axum 0.8 and Utoipa 6.
 
 Non-goals: route reorganization, endpoint changes, new public documentation operations and a custom registration macro. Implementation follows the ordinary refactor workflow.

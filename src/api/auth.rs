@@ -3,11 +3,10 @@
 use axum::{
     extract::{FromRequestParts, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
-    Router,
 };
 use axum_extra::extract::cookie::CookieJar;
 use std::sync::Arc;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     errors::{AppError, NotFoundKind},
@@ -18,17 +17,17 @@ use crate::{
 
 use super::AppState;
 
-pub(super) fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/auth/setup", post(setup))
-        .route("/auth/login", post(login))
-        .route("/auth/logout", post(logout))
-        .route("/auth/me", get(me))
-        .route("/auth/password", post(change_password))
-        .route("/users", get(list_users).post(create_user_h))
-        .route("/users/{id}", axum::routing::delete(delete_user_h))
-        .route("/tokens", get(list_tokens).post(create_token_h))
-        .route("/tokens/{id}", axum::routing::delete(delete_token_h))
+pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
+        .routes(routes!(setup))
+        .routes(routes!(login))
+        .routes(routes!(logout))
+        .routes(routes!(me))
+        .routes(routes!(change_password))
+        .routes(routes!(list_users, create_user_h))
+        .routes(routes!(delete_user_h))
+        .routes(routes!(list_tokens, create_token_h))
+        .routes(routes!(delete_token_h))
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]

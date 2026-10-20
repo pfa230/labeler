@@ -214,9 +214,10 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn health_returns_ok() {
+    async fn health_and_served_document_share_registration() {
         let app = build_app();
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/api/health")
@@ -228,6 +229,20 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
         assert_eq!(body["status"], "ok");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("document request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = json_response(response).await;
+        assert!(document["paths"]["/health"]["get"].is_object());
+        assert_eq!(document["servers"][0]["url"], "/api");
     }
 
     #[tokio::test]
@@ -4917,8 +4932,7 @@ layout:
 
     #[test]
     fn openapi_schema_contains_param_types() {
-        use utoipa::OpenApi;
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let schemas = doc.components.as_ref().unwrap().schemas.clone();
         assert!(
             schemas.contains_key("ParamSpec"),
@@ -4950,8 +4964,7 @@ layout:
     /// published any more.
     #[test]
     fn openapi_omits_the_connection_surface() {
-        use utoipa::OpenApi;
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let paths: Vec<&String> = doc.paths.paths.keys().collect();
         assert!(
             paths.iter().all(|p| !p.contains("/connections")),
@@ -4994,8 +5007,7 @@ layout:
     /// published operation, so the literal template id is served by the generic CRUD path.
     #[test]
     fn openapi_publishes_registry_reload_apart_from_template_crud() {
-        use utoipa::OpenApi;
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let paths = &doc.paths.paths;
         assert!(
             paths
@@ -5023,8 +5035,7 @@ layout:
 
     #[test]
     fn openapi_batch_requests_are_strict() {
-        use utoipa::OpenApi;
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let schemas = doc.components.as_ref().unwrap().schemas.clone();
         let names = |v: &Value| -> std::collections::BTreeSet<String> {
             match v {
@@ -5077,8 +5088,7 @@ layout:
 
     #[test]
     fn openapi_label_copies_is_an_optional_integer_of_at_least_one() {
-        use utoipa::OpenApi;
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let schemas = doc.components.as_ref().unwrap().schemas.clone();
         let schema = serde_json::to_value(&schemas["LabelInput"]).unwrap();
         let copies = &schema["properties"]["copies"];
@@ -5099,8 +5109,7 @@ layout:
     /// schemas must not offer it, and the response omits unset fields rather than writing `null`.
     #[test]
     fn openapi_printer_schemas_are_not_nullable() {
-        use utoipa::OpenApi;
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let schemas = doc.components.as_ref().unwrap().schemas.clone();
         for name in [
             "Printer",
@@ -5116,8 +5125,7 @@ layout:
 
     #[test]
     fn openapi_render_label_request_is_strict() {
-        use utoipa::OpenApi;
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let schemas = doc.components.as_ref().unwrap().schemas.clone();
         assert!(
             schemas.contains_key("RenderLabelRequest"),
@@ -6753,16 +6761,13 @@ layout:
     ///
     /// `all_fourteen_json_endpoints_reject_malformed_body_identically` enumerates today's endpoints,
     /// so a handler added tomorrow against `axum::Json` is invisible to it. This one derives its list
-    /// from `ApiDoc::openapi()` instead, so the next endpoint is covered on the day it is
-    /// documented with a JSON request body. Dropping the `request_body` attribute does not hide an
+    /// from the document collected alongside runtime routes, so the next endpoint is covered when
+    /// registered with a JSON request body. Dropping the `request_body` attribute does not hide an
     /// operation: utoipa's `axum_extras` infers the body from a handler argument typed `Json`, `Form`
     /// or `Bytes`, matched on the type's last path segment, so `crate::extract::Json` fires it and
-    /// renaming that extractor would silently stop it. What stays invisible is a route missing from
-    /// `openapi.rs` altogether, which is #229. Defence in depth, not a guarantee (#230).
+    /// renaming that extractor would silently stop it. Defence in depth, not a guarantee (#230).
     #[tokio::test]
     async fn every_documented_json_body_endpoint_returns_the_error_envelope() {
-        use utoipa::OpenApi;
-
         fn is_json(content_type: &str) -> bool {
             let base = content_type[..content_type.find(';').unwrap_or(content_type.len())]
                 .trim()
@@ -6790,7 +6795,7 @@ layout:
             out
         }
 
-        let doc = crate::openapi::ApiDoc::openapi();
+        let doc = crate::openapi::document();
         let mut endpoints: Vec<(&'static str, String)> = Vec::new();
         for (path, item) in &doc.paths.paths {
             let operations = [
