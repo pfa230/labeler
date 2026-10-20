@@ -9578,6 +9578,13 @@ mod auth_http_tests {
         app(Arc::new(AppState::new(templates, templates_dir, store)))
     }
 
+    fn test_app_with_state() -> (axum::Router, Arc<AppState>) {
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
+        let store = Store::open_in_memory().expect("store");
+        let state = Arc::new(AppState::new(templates, templates_dir, store));
+        (app(state.clone()), state)
+    }
+
     fn test_app_no_auth() -> axum::Router {
         let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
@@ -10337,6 +10344,75 @@ mod auth_http_tests {
             .await
             .unwrap();
         assert_eq!(body_json(res).await, serde_json::json!(["brother_24mm_qr"]));
+    }
+
+    /// printing spec, "Job history".
+    #[tokio::test]
+    async fn job_history_lists_every_actor() {
+        let (app, state) = test_app_with_state();
+        let cookie_a = setup_login_cookie(&app).await;
+        let a_id = my_id(&app, &cookie_a).await;
+        let cookie_b = login_second_user(&app, &cookie_a, "bob").await;
+        let b_id = my_id(&app, &cookie_b).await;
+
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/jobs", &cookie_a))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await, serde_json::json!([]));
+
+        let long_error = "printer rejected job: paper jam on tray 2\nsecond line of detail";
+        state
+            .store()
+            .record_job("ok_tpl", Some("p1"), "ok", None, &a_id)
+            .await
+            .unwrap();
+        state
+            .store()
+            .record_job("failed_tpl", None, "failed", Some(long_error), &b_id)
+            .await
+            .unwrap();
+        state
+            .store()
+            .record_job("local_tpl", None, "ok", None, "local")
+            .await
+            .unwrap();
+
+        // Either actor sees both users' jobs and the local one.
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/jobs", &cookie_b))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        let jobs = body.as_array().unwrap();
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(
+            jobs.iter()
+                .map(|j| j["template_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["local_tpl", "failed_tpl", "ok_tpl"]
+        );
+        assert_eq!(jobs[0]["actor_id"], "local");
+        assert_eq!(jobs[0]["actor_username"], serde_json::Value::Null);
+        assert_eq!(jobs[0]["printer_id"], serde_json::Value::Null);
+        assert_eq!(jobs[0]["status"], "ok");
+        assert_eq!(jobs[0]["error"], serde_json::Value::Null);
+        assert_eq!(jobs[1]["actor_id"], b_id);
+        assert_eq!(jobs[1]["actor_username"], "bob");
+        assert_eq!(jobs[1]["status"], "failed");
+        assert_eq!(jobs[1]["error"], long_error);
+        assert_eq!(jobs[2]["actor_id"], a_id);
+        assert_eq!(jobs[2]["actor_username"], "a");
+        assert_eq!(jobs[2]["printer_id"], "p1");
+        for job in jobs {
+            let ts = job["timestamp"].as_str().unwrap();
+            let parsed = chrono::DateTime::parse_from_rfc3339(ts).expect("RFC 3339 timestamp");
+            assert_eq!(parsed.offset().local_minus_utc(), 0, "{ts}");
+        }
     }
 
     /// settings spec, "Six most recent".

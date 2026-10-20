@@ -990,6 +990,19 @@ pub struct BatchSummary {
     pub jobs: usize,
 }
 
+/// A recorded print job as the API returns it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct JobRecord {
+    pub id: i64,
+    pub timestamp: String,
+    pub template_id: String,
+    pub printer_id: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+    pub actor_id: String,
+    pub actor_username: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LabelInput {

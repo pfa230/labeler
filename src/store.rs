@@ -1,4 +1,4 @@
-use crate::models::{Printer, PrinterConnection, RenderProfile};
+use crate::models::{JobRecord, Printer, PrinterConnection, RenderProfile};
 use rusqlite::Connection as SqlConnection;
 use rusqlite::OptionalExtension;
 use rusqlite_migration::{Migrations, M};
@@ -382,6 +382,37 @@ impl Store {
             rusqlite::params![template, printer, status, error, user_id],
         )?;
         Ok(())
+    }
+
+    /// Every recorded job, newest first, with its actor's current username when one exists.
+    pub async fn list_jobs(&self) -> Result<Vec<JobRecord>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare(
+            "SELECT j.id,
+                    strftime('%Y-%m-%dT%H:%M:%SZ', j.ts),
+                    j.template,
+                    j.printer,
+                    j.status,
+                    j.error,
+                    j.user_id,
+                    u.username
+             FROM jobs j
+             LEFT JOIN users u ON u.id = j.user_id
+             ORDER BY j.ts DESC, j.id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(JobRecord {
+                id: r.get(0)?,
+                timestamp: r.get(1)?,
+                template_id: r.get(2)?,
+                printer_id: r.get(3)?,
+                status: r.get(4)?,
+                error: r.get(5)?,
+                actor_id: r.get(6)?,
+                actor_username: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Each logged job's status, oldest first.
@@ -855,6 +886,64 @@ mod tests {
             vec!["c".to_string()]
         );
         assert!(store.recent_templates("nobody").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_jobs_returns_every_actor_newest_first() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.list_jobs().await.unwrap().is_empty());
+
+        let alice = store.create_user("alice", "hash").await.unwrap();
+        let bob = store.create_user("bob", "hash").await.unwrap();
+        let long_error = "printer rejected job: paper jam on tray 2\nsecond line of detail";
+        store
+            .record_job("ok_tpl", Some("p1"), "ok", None, &alice.id)
+            .await
+            .unwrap();
+        store
+            .record_job("failed_tpl", None, "failed", Some(long_error), &bob.id)
+            .await
+            .unwrap();
+        store
+            .record_job("local_tpl", None, "ok", None, "local")
+            .await
+            .unwrap();
+        store
+            .record_job("ghost_tpl", None, "ok", None, "deleted-user")
+            .await
+            .unwrap();
+        // Force one recorded second so the id is the only remaining ordering key.
+        store
+            .conn
+            .lock()
+            .expect("store lock")
+            .execute("UPDATE jobs SET ts = '2024-01-02 03:04:05'", [])
+            .unwrap();
+
+        let jobs = store.list_jobs().await.unwrap();
+        assert_eq!(
+            jobs.iter()
+                .map(|j| j.template_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ghost_tpl", "local_tpl", "failed_tpl", "ok_tpl"]
+        );
+        assert!(jobs.iter().all(|j| j.timestamp == "2024-01-02T03:04:05Z"));
+        assert_eq!(
+            (jobs[0].actor_id.as_str(), jobs[0].actor_username.clone()),
+            ("deleted-user", None)
+        );
+        assert_eq!(
+            (jobs[1].actor_id.as_str(), jobs[1].actor_username.clone()),
+            ("local", None)
+        );
+        assert_eq!(
+            (jobs[2].printer_id.clone(), jobs[2].status.as_str()),
+            (None, "failed")
+        );
+        assert_eq!(jobs[2].error.as_deref(), Some(long_error));
+        assert_eq!(jobs[2].actor_username.as_deref(), Some("bob"));
+        assert_eq!(jobs[3].printer_id.as_deref(), Some("p1"));
+        assert_eq!(jobs[3].actor_username.as_deref(), Some("alice"));
     }
 
     #[tokio::test]

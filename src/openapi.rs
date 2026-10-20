@@ -8,11 +8,11 @@ use crate::{
         SettingValue, TokenCreate, TokenCreated, TokenSummary, UserSummary,
     },
     models::{
-        BatchRowError, BatchSummary, ErrorBody, ErrorResponse, HealthResponse, LabelInput,
-        NewPrinter, ParamControl, ParamEntry, ParamSpec, ParamType, ParamValue, PrintRequest,
-        Printer, PrinterConnection, PrinterUpdate, ReloadResponse, RenderLabelRequest,
-        RenderProfile, RenderRequest, SheetPosition, TemplateDetail, TemplateFormat, TemplateList,
-        TemplateSummary, VariableValue,
+        BatchRowError, BatchSummary, ErrorBody, ErrorResponse, HealthResponse, JobRecord,
+        LabelInput, NewPrinter, ParamControl, ParamEntry, ParamSpec, ParamType, ParamValue,
+        PrintRequest, Printer, PrinterConnection, PrinterUpdate, ReloadResponse,
+        RenderLabelRequest, RenderProfile, RenderRequest, SheetPosition, TemplateDetail,
+        TemplateFormat, TemplateList, TemplateSummary, VariableValue,
     },
 };
 
@@ -49,6 +49,7 @@ use crate::{
         api::add_favorite,
         api::remove_favorite,
         api::recent_templates,
+        api::list_jobs,
         api::setup,
         api::login,
         api::logout,
@@ -94,6 +95,7 @@ use crate::{
             PrintRequest,
             BatchSummary,
             BatchRowError,
+            JobRecord,
             LabelInput,
             ErrorResponse,
             ErrorBody,
@@ -111,7 +113,8 @@ use crate::{
         (name = "labeler", description = "Label rendering service"),
         (name = "auth", description = "Authentication, users, and API tokens"),
         (name = "settings", description = "Typed application configuration"),
-        (name = "favorites", description = "Per-user favorites and recent templates")
+        (name = "favorites", description = "Per-user favorites and recent templates"),
+        (name = "printing", description = "Print dispatch and recorded jobs")
     )
 )]
 pub struct ApiDoc;

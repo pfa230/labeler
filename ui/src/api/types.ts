@@ -65,6 +65,17 @@ export interface TemplateDetail {
 }
 
 export interface PrintSummary { total: number; sent: number; failed: { index: number; error: string }[]; jobs: number }
+
+export interface JobRecord {
+  id: number;
+  timestamp: string;
+  template_id: string;
+  printer_id: string | null;
+  status: "ok" | "failed";
+  error: string | null;
+  actor_id: string;
+  actor_username: string | null;
+}
 export interface RenderProfile { color_mode?: "color" | "bilevel"; resolution?: number }
 
 export interface Printer {

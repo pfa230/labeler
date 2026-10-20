@@ -26,9 +26,9 @@ use crate::{
     extract::{Json, Path},
     fs_safe::{self, PublishResult},
     models::{
-        BatchRowError, BatchSummary, ErrorResponse, HealthResponse, NewPrinter, PrintRequest,
-        Printer, PrinterConnection, PrinterUpdate, ReloadResponse, RenderLabelRequest,
-        RenderRequest, TemplateDetail, TemplateList, VariableValue,
+        BatchRowError, BatchSummary, ErrorResponse, HealthResponse, JobRecord, NewPrinter,
+        PrintRequest, Printer, PrinterConnection, PrinterUpdate, ReloadResponse,
+        RenderLabelRequest, RenderRequest, TemplateDetail, TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -196,6 +196,7 @@ fn api_router() -> Router<Arc<AppState>> {
             put(add_favorite).delete(remove_favorite),
         )
         .route("/recent-templates", get(recent_templates))
+        .route("/jobs", get(list_jobs))
         .route("/auth/setup", post(setup))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -1551,6 +1552,14 @@ pub async fn recent_templates(
             .filter(|id| registry.get(id).is_some())
             .collect(),
     ))
+}
+
+#[utoipa::path(get, path = "/jobs", tag = "printing",
+    responses((status = 200, description = "Every recorded print job, newest first", body = Vec<JobRecord>)))]
+pub async fn list_jobs(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<JobRecord>>, AppError> {
+    Ok(Json(state.store().list_jobs().await?))
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]

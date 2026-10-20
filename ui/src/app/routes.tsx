@@ -7,6 +7,7 @@ import { TemplateDetail } from "../pages/TemplateDetail";
 import { NewTemplate } from "../pages/NewTemplate";
 import { Catalog } from "../pages/Catalog";
 import { Import } from "../pages/Import";
+import { PrintHistory } from "../pages/PrintHistory";
 import { Settings } from "../pages/Settings";
 import { Login } from "../pages/Login";
 import { Setup } from "../pages/Setup";
@@ -27,6 +28,7 @@ export const routes = createRoutesFromElements(
         <Route path="templates/new" element={<NewTemplate />} />
         <Route path="templates/:id" element={<TemplateDetail />} />
         <Route path="import" element={<Import />} />
+        <Route path="print-history" element={<PrintHistory />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Route>
