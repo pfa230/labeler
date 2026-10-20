@@ -513,6 +513,36 @@ describe("Templates list", () => {
     expect(screen.getByText("Pallet")).toBeInTheDocument();
   });
 
+  it("keeps All selected when a removed category is restored later", async () => {
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Shipping"])],
+      sources: { pallet: "id: pallet\nname: Pallet\ncategories: [Shipping]\n" },
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+    fireEvent.click(filterButton("Shipping"));
+
+    // Remove the only Shipping listing. The fallback shows All, and the stored selection must follow.
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.change(await screen.findByLabelText("Category 1"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    await waitFor(() => expect(filterButton("All")).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.queryByRole("button", { name: "Shipping" })).not.toBeInTheDocument();
+
+    // Bring Shipping back: a stale stored selection would silently reselect it here.
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+    fireEvent.change(screen.getByLabelText("Category 2"), { target: { value: "Shipping" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+
+    await waitFor(() => expect(filterButton("Shipping")).toBeInTheDocument());
+    expect(filterButton("All")).toHaveAttribute("aria-pressed", "true");
+    expect(filterButton("Shipping")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("Pallet")).toBeInTheDocument();
+  });
+
   it("inserts an absent categories key when saving", async () => {
     const { writes } = stubFetch({
       templates: [tpl("loose", "Loose", [])],

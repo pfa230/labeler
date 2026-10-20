@@ -293,6 +293,12 @@ export function Templates() {
     return selectedFilter;
   }, [selectedFilter, categories, hasUncategorized]);
 
+  // The fallback above only hides a vanished choice for this render. Reset the stored selection too, so
+  // a later save that reintroduces that category does not silently reselect it.
+  if (activeFilter !== selectedFilter) {
+    setSelectedFilter(activeFilter);
+  }
+
   const filtered = useMemo(() => {
     let list = data?.templates ?? [];
     if (activeFilter.kind === "uncategorized") {
