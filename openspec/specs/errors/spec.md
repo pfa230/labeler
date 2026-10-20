@@ -25,13 +25,12 @@ Every error response SHALL have `Content-Type: application/json` and the body `{
 | `reference_unresolved` | TemplateInvalid | A part of the template that does not come from a label does not resolve against the request's snapshot: a `vars` key the store lacks, a datetime format name the `datetime_formats` setting lacks, or a tokened default whose value its parameter's type refuses (`parameters`); `details.field` names the key, the format name or the parameter. |
 | `qr_payload_invalid` | UnsupportedLayoutItem | A `qr` value cannot be encoded, for example because it is too long. |
 | `coord_out_of_frame` | UnsupportedLayoutItem | A resolved coordinate lies below or left of the frame. |
-| `item_out_of_frame` | UnsupportedLayoutItem | A resolved item box extends beyond the frame. |
+| `item_out_of_frame` | UnsupportedLayoutItem | A resolved item box extends beyond its frame or crosses the sheet stock outline (`layout`). |
 | `line_endpoint_out_of_frame` | UnsupportedLayoutItem | A resolved line endpoint lies beyond the frame. |
 | `line_degenerate` | UnsupportedLayoutItem | A line's start and end resolve to the same point. |
 | `edge_rect_inverted` | UnsupportedLayoutItem | At render, a `to` resolves below or left of its `at`. |
 | `size_invalid` | UnsupportedLayoutItem | At render, a parameter-supplied extent is not greater than 0, or a resolved extent is negative. |
 | `text_does_not_fit` | UnsupportedLayoutItem | A `text` does not fit its box under its `overflow` policy. |
-| `text_character_unmapped` | UnsupportedLayoutItem | A drawable character in a resolved text value is not mapped by its measurement font; `details.field` is the text-value layout path and `details.character` the unmapped Unicode scalar as a string. |
 | `image_format_unsupported` | UnsupportedLayoutItem | The image's MIME type or file extension is not supported. |
 | `image_data_invalid` | UnsupportedLayoutItem | Inline image data is not a usable base64 `data:` URI. |
 | `image_asset_missing` | UnsupportedLayoutItem | The referenced asset file does not exist. |
