@@ -4,6 +4,15 @@ const INVALID_SOURCE = "The template source is not valid YAML.";
 const UNSUPPORTED_SOURCE =
   "This template's categories cannot be edited here because they are not a direct list.";
 
+const YAML_SENSITIVE = /[\u007f-\u009f\u2028\u2029]/g;
+
+function encodeCategories(categories: string[]): string {
+  return JSON.stringify(categories).replace(
+    YAML_SENSITIVE,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 export type CategoryRead = { ok: true; categories: string[] } | { ok: false; reason: string };
 export type CategoryEdit = { ok: true; source: string } | { ok: false; reason: string };
 
@@ -134,7 +143,7 @@ export function editCategories(source: string, categories: string[]): CategoryEd
   const located = locate(source);
   if (located.kind === "unsupported") return { ok: false, reason: located.reason };
 
-  const json = JSON.stringify(categories);
+  const json = encodeCategories(categories);
   if (located.kind === "replace") {
     const edited =
       source.slice(0, located.replaceFrom) +

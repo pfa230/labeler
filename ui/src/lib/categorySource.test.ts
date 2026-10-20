@@ -270,6 +270,14 @@ describe("editCategories", () => {
     expect(readCategories(result.source)).toEqual({ ok: true, categories: ["A,B", 'He said "hi"'] });
   });
 
+  it("escapes a NEL so the server does not fold it into a space", () => {
+    const result = editCategories("categories: [Old]\n", ["A\u0085B"]);
+    expect(result).toEqual({
+      ok: true,
+      source: 'categories: ["A\\u0085B"]\n',
+    });
+  });
+
   it("retains a leading BOM when inserting an absent key", () => {
     const source = "\uFEFFid: pallet\nname: Pallet\n";
     const result = editCategories(source, ["A"]);
