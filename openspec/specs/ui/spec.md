@@ -17,12 +17,12 @@ The light and dark palettes SHALL each meet WCAG 2.x level AA: text and non-text
 
 ### Requirement: Template format is shown
 
-Template cards and the template detail page SHALL show whether a template is `single` or `sheet`, and for a `sheet` the number of positions it declares.
+Template cards and the template detail page SHALL show whether a template is `single` or `sheet`, and for a `sheet` the number of positions it declares. Installed and catalog cards SHALL use the same format badge presentation.
 
 #### Scenario: Grid and detail agree
 
-- **WHEN** one `sheet` template with 24 positions is viewed on the template grid and on its detail page
-- **THEN** both show that it is a sheet of 24
+- **WHEN** one `sheet` template with 24 positions is viewed in Catalog, on the template grid and on its detail page
+- **THEN** all three show that it is a sheet of 24
 
 ### Requirement: Preview pane states
 
