@@ -401,3 +401,12 @@ The page SHALL show loading while its first read is pending, an empty-history me
 - **WHEN** the initial history read is pending, then succeeds empty, or instead fails
 - **THEN** the page respectively shows loading, an empty-history message, or the service's error and Retry
 - **AND** Retry performs another history read
+
+### Requirement: Print-form list dragging
+
+The print-form list editor defined by "Parameter controls" SHALL offer a drag handle to move an element directly to another element's position. Earlier/later buttons SHALL remain visible and keyboard-operable.
+
+#### Scenario: Dragging moves an empty element past duplicates
+
+- **WHEN** the list holds `["A","B","A",""]` and the operator drags the fourth element to the second position
+- **THEN** the displayed and submitted array is `["A","","B","A"]`
