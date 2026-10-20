@@ -36,6 +36,8 @@ Define the safe region as the physical outline's interior. Validate the whole re
 
 Put the small point/four-corner predicate and orthogonal coordinate mapping in the existing resolver geometry module. Ellipses use normalized distance from the slot center; rounded rectangles use their straight interior and corner-circle distance. Reuse the existing coordinate tolerance, with no configurable precision. Both load and render call this rule and use the existing `item_out_of_frame` classification for a crossing; no new reason slug is needed. Curved failures do not have an offending x/y axis, so do not manufacture an axis-specific resolver violation.
 
+Update the existing `item_out_of_frame` row in the errors spec to explicitly include a box crossing the sheet stock outline. The full rectangular layout frame and the curved physical boundary are distinct, so leaving only 'beyond the frame' would omit the newly accepted raise-site. This is a clarification of the chosen existing classification, not a new reason slug or a change to the accepted failure policy. The errors table owns that reason's meaning; the layout delta owns when containment fails.
+
 At render, carry the accumulated mapping from the current local frame into sheet coordinates through the existing item/container traversal. Check active text/QR boxes in `render_single_item`, after absolute placement or flow returns a resolved box. Compose container position, author-space padding and the existing 0/90/180/270 rotation. Check per repeat instance using its existing path and let batch collection handle failures normally. The check does not alter measurement or run a second fitting pass.
 
 ### Check only genuinely known geometry at load

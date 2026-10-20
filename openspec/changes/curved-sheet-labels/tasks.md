@@ -2,7 +2,7 @@
 
 ## 1. Describe stock and share containment geometry
 
-- [ ] 1.1 Add sheet `shape`/`rounded` through raw parsing, conversion, domain/OpenAPI metadata and the UI format type. Update the authoring key table and focused parsing/metadata tests: default rectangle, circle/oval dimensions, accepted physical radius and rejected radius/shape combinations with field paths. These fail when a declared outline is lost, changed or accepted outside its contract.
+- [ ] 1.1 Add sheet `shape`/`rounded` through raw parsing, conversion, domain/OpenAPI metadata and the UI format type, and clarify the existing reason-table row as designed. Update the authoring key table and focused parsing/metadata tests: default rectangle, circle/oval dimensions, accepted physical radius and rejected radius/shape combinations with field paths. These fail when a declared outline is lost, changed or accepted outside its contract.
 - [ ] 1.2 Add the shared outline containment predicate and orthogonal local-to-slot mapping in the existing geometry module. Test the spec's wide central rectangle, ellipse and rounded-corner inside/outside points and composed padding/rotation. Wire exact-geometry load checks into the current validation walk, retaining existing rectangular checks; prove a fixed outside box is refused while the content-width scenario loads. These fail on an inscribed-square restriction, wrong physical coordinates or treating an unmeasured stand-in as a real box.
 
 ## 2. Validate resolved content and clip output

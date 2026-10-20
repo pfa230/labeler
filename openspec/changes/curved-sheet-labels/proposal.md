@@ -27,6 +27,7 @@ None.
 - `templates`: Sheet stock shape declarations.
 - `layout`: Curved-boundary checks for resolved text and QR boxes, with load-time handling of geometry that needs measurement or packing.
 - `rendering`: Physical stock clipping for sheet slots.
+- `errors`: Clarify that the existing `item_out_of_frame` reason also covers sheet stock-outline crossings.
 
 ## Impact
 
