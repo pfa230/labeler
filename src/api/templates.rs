@@ -47,6 +47,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
 #[utoipa::path(
     get,
     path = "/templates",
+    tag = "api",
     responses(
         (status = 200, description = "List templates", body = TemplateList)
     )
@@ -75,6 +76,7 @@ pub async fn list_templates(
 #[utoipa::path(
     post,
     path = "/template-registry/reload",
+    tag = "api",
     responses(
         (status = 200, description = "Templates reloaded from disk", body = ReloadResponse),
         (status = 500, description = "Failed to read the templates directory", body = ErrorResponse)
@@ -151,6 +153,7 @@ fn reload_and_describe(
 #[utoipa::path(
     post,
     path = "/templates/{id}",
+    tag = "api",
     params(("id" = String, Path, description = "Template ID")),
     request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
     responses(
@@ -195,6 +198,7 @@ pub async fn create_template(
 #[utoipa::path(
     put,
     path = "/templates/{id}",
+    tag = "api",
     params(("id" = String, Path, description = "Template ID")),
     request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
     responses(
@@ -236,6 +240,7 @@ pub async fn replace_template(
 #[utoipa::path(
     delete,
     path = "/templates/{id}",
+    tag = "api",
     params(("id" = String, Path, description = "Template ID")),
     responses(
         (status = 204, description = "Template deleted"),
@@ -260,6 +265,7 @@ pub async fn delete_template(
 #[utoipa::path(
     get,
     path = "/templates/{id}",
+    tag = "api",
     params(
         ("id" = String, Path, description = "Template ID")
     ),
@@ -292,6 +298,7 @@ pub async fn get_template(
 #[utoipa::path(
     get,
     path = "/templates/{id}/source",
+    tag = "api",
     params(("id" = String, Path, description = "Template ID")),
     responses(
         (status = 200, description = "The template file's bytes, served or broken", content_type = "text/yaml"),
@@ -317,6 +324,7 @@ pub async fn template_source(
 #[utoipa::path(
     get,
     path = "/templates/{id}/thumbnail",
+    tag = "api",
     params(("id" = String, Path, description = "Template id")),
     responses(
         (status = 200, description = "Rendered PNG thumbnail", content_type = "image/png", body = Vec<u8>),

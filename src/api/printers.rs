@@ -58,6 +58,7 @@ fn validate_printer(id: &str, name: &str, connection: &PrinterConnection) -> Res
 #[utoipa::path(
     get,
     path = "/printers",
+    tag = "api",
     responses((status = 200, description = "List printers", body = [Printer]))
 )]
 pub async fn list_printers(
@@ -69,6 +70,7 @@ pub async fn list_printers(
 #[utoipa::path(
     post,
     path = "/printers",
+    tag = "api",
     request_body = NewPrinter,
     responses(
         (status = 201, description = "Printer created", body = Printer),
@@ -100,6 +102,7 @@ pub async fn create_printer(
 #[utoipa::path(
     get,
     path = "/printers/{id}",
+    tag = "api",
     params(("id" = String, Path, description = "Printer ID")),
     responses(
         (status = 200, description = "Printer", body = Printer),
@@ -121,6 +124,7 @@ pub async fn get_printer(
 #[utoipa::path(
     put,
     path = "/printers/{id}",
+    tag = "api",
     params(("id" = String, Path, description = "Printer ID")),
     request_body = PrinterUpdate,
     responses(
@@ -155,6 +159,7 @@ pub async fn replace_printer(
 #[utoipa::path(
     delete,
     path = "/printers/{id}",
+    tag = "api",
     params(("id" = String, Path, description = "Printer ID")),
     responses(
         (status = 204, description = "Printer deleted"),
@@ -222,6 +227,7 @@ impl ProbeResponse {
 #[utoipa::path(
     post,
     path = "/printers/probe",
+    tag = "api",
     request_body = PrinterConnection,
     responses(
         (status = 200, description = "Probe result (ok or unreachable)", body = ProbeResponse),
@@ -237,6 +243,7 @@ pub async fn probe_printer(
 #[utoipa::path(
     post,
     path = "/printers/{id}/probe",
+    tag = "api",
     params(("id" = String, Path, description = "Printer ID")),
     responses(
         (status = 200, description = "Probe result (ok or unreachable)", body = ProbeResponse),
@@ -274,6 +281,7 @@ pub enum CutResponse {
 #[utoipa::path(
     post,
     path = "/printers/{id}/cut",
+    tag = "api",
     params(("id" = String, Path, description = "Printer ID")),
     responses(
         (status = 200, description = "Cut result (ok or failed)", body = CutResponse),

@@ -249,6 +249,7 @@ async fn run_batch(
 #[utoipa::path(
     post,
     path = "/render",
+    tag = "api",
     request_body = RenderRequest,
     responses(
         (status = 200, description = "ZIP (single) or paginated PDF (sheet), as an attachment"),
@@ -281,6 +282,7 @@ pub async fn render_labels(
 #[utoipa::path(
     post,
     path = "/print",
+    tag = "api",
     request_body = PrintRequest,
     responses(
         (status = 200, description = "Print summary", body = BatchSummary),
@@ -316,6 +318,7 @@ pub async fn print_labels(
 #[utoipa::path(
     post,
     path = "/render/label",
+    tag = "api",
     params(
         ("format" = Option<String>, Query, description = "Output format: png (default) or pdf"),
         ("color_mode" = Option<String>, Query, description = "Color mode for PNG: color (default) or bilevel"),

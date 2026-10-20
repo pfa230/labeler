@@ -29,6 +29,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
 #[utoipa::path(
     get,
     path = "/variables",
+    tag = "api",
     responses((status = 200, description = "All variables", body = std::collections::BTreeMap<String, String>))
 )]
 pub async fn get_variables(
@@ -40,6 +41,7 @@ pub async fn get_variables(
 #[utoipa::path(
     put,
     path = "/variables/{key}",
+    tag = "api",
     params(("key" = String, Path, description = "Variable key")),
     request_body = VariableValue,
     responses(
