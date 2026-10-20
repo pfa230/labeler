@@ -1072,10 +1072,12 @@ describe("issue-413: Import reads the published parameter list", () => {
     ]);
   });
 
-  it("shows concise list-cell help beside the grid", async () => {
+  it("shows concise list-cell help beside the grid, naming both quoting layers", async () => {
     renderPage();
     await loadCsv("title\nfirst\n");
-    expect(screen.getByText(/JSON array of strings/i)).toBeInTheDocument();
+    const help = screen.getByText(/JSON array of strings/i);
+    expect(help.textContent).toContain('["A","B"]');
+    expect(help.textContent).toContain('"[""A"",""B""]"');
   });
 
   it("a declared list the CSV lacks occupies an initially empty editable column and is omitted on submit", async () => {
@@ -1105,13 +1107,22 @@ describe("issue-413: Import reads the published parameter list", () => {
     expect(body.labels.map((l: { data: Record<string, unknown> }) => l.data.tags)).toEqual([undefined, [], [""]]);
   });
 
-  it("names a malformed list cell by row and column, blocks submission, and clears on correction", async () => {
+  it("names a malformed list cell by row and column, blocks Print and Download, and clears on correction", async () => {
     renderPage();
     await loadCsv('title,tags\nok,"[""A""]"\nbad,[1]\n');
     expect(await screen.findByText("Row 2, tags: must be a JSON array of strings")).toBeInTheDocument();
+
+    // With a printer chosen, both actions are blocked while the malformed cell stands.
+    fireEvent.change(screen.getByLabelText(/^printer$/i), { target: { value: "p1" } });
+    const print = screen.getByRole("button", { name: /^print$/i });
     const download = screen.getByRole("button", { name: /^download$/i });
+    expect(print).toBeDisabled();
     expect(download).toBeDisabled();
+    // Attempting either action sends no request.
+    fireEvent.click(print);
+    fireEvent.click(download);
     expect(countCalls("/api/render")).toBe(0);
+    expect(countCalls("/api/print")).toBe(0);
 
     // The malformed cell stays editable; correcting it to an array of strings removes the error.
     const cells = screen.getAllByLabelText("edit tags") as HTMLTextAreaElement[];
@@ -1128,8 +1139,10 @@ describe("issue-413: Import reads the published parameter list", () => {
   it("shows a malformed row's encoding error in the preview and sends no render request for it", async () => {
     renderPage();
     await loadCsv('title,tags\nok,"[""A""]"\nbad,[1]\n');
-    // Row 1 is previewed by default and is valid.
+    // Row 1 is previewed by default and is valid: its decoded list reaches the preview request.
     await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
+    const validBody = JSON.parse((lastCall("/api/render/label")![1] as RequestInit).body as string);
+    expect(validBody.data.tags).toEqual(["A"]);
     const before = countCalls("/api/render/label");
     fireEvent.click(screen.getByLabelText("preview row 2"));
     expect(await screen.findByText(/Preview failed: Row 2, tags: must be a JSON array of strings/)).toBeInTheDocument();

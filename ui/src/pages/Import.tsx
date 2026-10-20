@@ -23,6 +23,10 @@ import { EmptyTemplates } from "../components/EmptyTemplates";
 import type { TemplateDetail } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
+// A list is JSON inside a CSV cell, so its spelling carries two quoting layers. Name both concretely:
+// what an operator types in the grid, and what carries the same value through a CSV cell.
+const LIST_CELL_HELP =
+  'List cells hold a JSON array of strings. In a grid cell type ["A","B"]; in the CSV write "[""A"",""B""]". Leave a cell empty to omit the parameter.';
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
@@ -345,7 +349,7 @@ function CsvEditor({
         <>
           {params.some((p) => p.control === "list") && (
             <p className="text-xs" style={{ color: "var(--muted)" }}>
-              List cells hold a JSON array of strings, like [&quot;A&quot;,&quot;B&quot;]; leave a cell empty to omit the parameter.
+              {LIST_CELL_HELP}
             </p>
           )}
           <LabelGrid
