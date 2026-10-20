@@ -89,6 +89,28 @@ describe("editCategories", () => {
     });
   });
 
+  it("indents the replacement for an unindented block list", () => {
+    const source = "id: pallet\ncategories:\n- Shipping\nname: x\n";
+    const result = editCategories(source, ["Warehouse"]);
+    expect(result).toEqual({
+      ok: true,
+      source: 'id: pallet\ncategories:\n  ["Warehouse"]\nname: x\n',
+    });
+    if (!result.ok) throw new Error("expected an edit");
+    expect(parse(result.source)).toEqual({
+      id: "pallet",
+      categories: ["Warehouse"],
+      name: "x",
+    });
+  });
+
+  it("clears an unindented block list", () => {
+    const result = editCategories("categories:\n- Shipping\n", []);
+    expect(result).toEqual({ ok: true, source: "categories:\n  []\n" });
+    if (!result.ok) throw new Error("expected an edit");
+    expect(parse(result.source)).toEqual({ categories: [] });
+  });
+
   it("clears a flow list to an empty list", () => {
     const result = editCategories("id: pallet\ncategories: [Shipping]\nname: x\n", []);
     expect(result).toEqual({ ok: true, source: "id: pallet\ncategories: []\nname: x\n" });
@@ -116,8 +138,49 @@ describe("editCategories", () => {
     const result = editCategories("{ id: pallet, name: Pallet }", ["A", "B"]);
     expect(result).toEqual({
       ok: true,
-      source: '{ categories: ["A","B"], id: pallet, name: Pallet }',
+      source: '{categories: ["A","B"], id: pallet, name: Pallet }',
     });
+  });
+
+  it("inserts into an empty flow root without a trailing comma", () => {
+    const result = editCategories("{}", ["A"]);
+    expect(result).toEqual({ ok: true, source: '{categories: ["A"]}' });
+  });
+
+  it("inserts before an explicit key entry, not after its indicator", () => {
+    const source = "? name\n: Pallet\n";
+    const result = editCategories(source, ["A"]);
+    expect(result).toEqual({
+      ok: true,
+      source: 'categories: ["A"]\n? name\n: Pallet\n',
+    });
+    if (!result.ok) throw new Error("expected an edit");
+    expect(parse(result.source)).toEqual({ name: "Pallet", categories: ["A"] });
+  });
+
+  it("inserts before an anchored first entry, leaving the anchor on its key", () => {
+    const source = "&field name: Pallet\ndescription: *field\n";
+    const result = editCategories(source, ["A"]);
+    expect(result).toEqual({
+      ok: true,
+      source: 'categories: ["A"]\n&field name: Pallet\ndescription: *field\n',
+    });
+    if (!result.ok) throw new Error("expected an edit");
+    expect(parse(result.source)).toEqual({
+      name: "Pallet",
+      description: "name",
+      categories: ["A"],
+    });
+  });
+
+  it("inserts into a flow root with an anchored key without moving the anchor", () => {
+    const result = editCategories("{ &x id: pallet, name: Pallet }", ["A"]);
+    expect(result).toEqual({
+      ok: true,
+      source: '{categories: ["A"], &x id: pallet, name: Pallet }',
+    });
+    if (!result.ok) throw new Error("expected an edit");
+    expect(parse(result.source)).toEqual({ categories: ["A"], id: "pallet", name: "Pallet" });
   });
 
   it("handles a quoted categories key", () => {

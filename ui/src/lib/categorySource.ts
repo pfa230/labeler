@@ -8,19 +8,30 @@ export type CategoryRead = { ok: true; categories: string[] } | { ok: false; rea
 export type CategoryEdit = { ok: true; source: string } | { ok: false; reason: string };
 
 type Located =
-  | { kind: "replace"; categories: string[]; start: number; end: number; newline: string }
-  | { kind: "insert"; at: number; indent: string; flow: boolean; newline: string; categories: string[] }
+  | {
+      kind: "replace";
+      categories: string[];
+      replaceFrom: number;
+      end: number;
+      indent: string;
+      newline: string;
+    }
+  | { kind: "insert"; at: number; indent: string; flow: boolean; newline: string }
   | { kind: "unsupported"; reason: string };
 
 function lineTerminator(source: string): string {
   return source.includes("\r\n") ? "\r\n" : "\n";
 }
 
+function lineStart(source: string, position: number): number {
+  return source.lastIndexOf("\n", position - 1) + 1;
+}
+
 function indentationAt(source: string, position: number): string {
-  const lineStart = source.lastIndexOf("\n", position - 1) + 1;
-  let end = lineStart;
+  const start = lineStart(source, position);
+  let end = start;
   while (end < position && (source[end] === " " || source[end] === "\t")) end++;
-  return source.slice(lineStart, end);
+  return source.slice(start, end);
 }
 
 function locate(source: string): Located {
@@ -34,19 +45,7 @@ function locate(source: string): Located {
 
   const pair = root.items.find((p) => isScalar(p.key) && p.key.value === "categories");
   if (!pair) {
-    const first = root.items[0];
-    if (!first || !isScalar(first.key) || !first.key.range) {
-      return { kind: "insert", at: root.range[0] + 1, indent: "", flow: true, newline: "", categories: [] };
-    }
-    const flow = root.flow === true;
-    return {
-      kind: "insert",
-      at: first.key.range[0],
-      indent: flow ? "" : indentationAt(source, first.key.range[0]),
-      flow,
-      newline: lineTerminator(source),
-      categories: [],
-    };
+    return absentKey(root, source);
   }
 
   const key = pair.key;
@@ -71,12 +70,48 @@ function locate(source: string): Located {
   const end = value.range[1];
   const removed = source.slice(start, end);
   const newline = removed.endsWith("\r\n") ? "\r\n" : removed.endsWith("\n") ? "\n" : "";
-  return { kind: "replace", categories, start, end, newline };
+  if (value.flow === true) {
+    return { kind: "replace", categories, replaceFrom: start, end, indent: "", newline };
+  }
+
+  const existingIndent = source.slice(lineStart(source, start), start);
+  const keyIndent = indentationAt(source, key.range![0]);
+  const indent = existingIndent.length > keyIndent.length ? existingIndent : keyIndent + "  ";
+  return { kind: "replace", categories, replaceFrom: lineStart(source, start), end, indent, newline };
+}
+
+function absentKey(root: ReturnType<typeof parseDocument>["contents"], source: string): Located {
+  if (!isMap(root) || !root.range) {
+    return { kind: "unsupported", reason: UNSUPPORTED_SOURCE };
+  }
+  if (root.flow === true) {
+    const at = root.range[0] + 1;
+    return { kind: "insert", at, indent: "", flow: true, newline: "" };
+  }
+
+  const first = root.items[0];
+  if (!first || !isScalar(first.key) || !first.key.range) {
+    const at = root.range[0] + 1;
+    return { kind: "insert", at, indent: "", flow: true, newline: "" };
+  }
+
+  let at = lineStart(source, first.key.range[0]);
+  if (at === 0 && source.charCodeAt(0) === 0xfeff) at = 1;
+  let end = at;
+  while (end < source.length && (source[end] === " " || source[end] === "\t")) end++;
+  return {
+    kind: "insert",
+    at,
+    indent: source.slice(at, end),
+    flow: false,
+    newline: lineTerminator(source),
+  };
 }
 
 export function readCategories(source: string): CategoryRead {
   const located = locate(source);
   if (located.kind === "unsupported") return { ok: false, reason: located.reason };
+  if (located.kind === "insert") return { ok: true, categories: [] };
   return { ok: true, categories: located.categories };
 }
 
@@ -87,13 +122,28 @@ export function editCategories(source: string, categories: string[]): CategoryEd
   const json = JSON.stringify(categories);
   if (located.kind === "replace") {
     const edited =
-      source.slice(0, located.start) + json + located.newline + source.slice(located.end);
+      source.slice(0, located.replaceFrom) +
+      located.indent +
+      json +
+      located.newline +
+      source.slice(located.end);
     return { ok: true, source: edited };
   }
 
-  const inserted = located.flow
-    ? `categories: ${json}, `
-    : `categories: ${json}${located.newline}${located.indent}`;
-  const edited = source.slice(0, located.at) + inserted + source.slice(located.at);
+  if (located.flow) {
+    const separator = source[located.at] === "}" ? "" : ",";
+    const edited =
+      source.slice(0, located.at) +
+      `categories: ${json}${separator}` +
+      source.slice(located.at);
+    return { ok: true, source: edited };
+  }
+
+  const edited =
+    source.slice(0, located.at) +
+    located.indent +
+    `categories: ${json}` +
+    located.newline +
+    source.slice(located.at);
   return { ok: true, source: edited };
 }
