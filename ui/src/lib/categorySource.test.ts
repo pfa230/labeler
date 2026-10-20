@@ -103,6 +103,25 @@ describe("editCategories", () => {
     });
   });
 
+  it("leaves a trailing comment outside a flow value untouched", () => {
+    const source = "id: pallet\ncategories: [Shipping] # trailing after flow\nname: x\n";
+    const result = editCategories(source, ["A", "B"]);
+    expect(result).toEqual({
+      ok: true,
+      source: 'id: pallet\ncategories: ["A","B"] # trailing after flow\nname: x\n',
+    });
+  });
+
+  it("leaves an unrelated comment before the next key untouched", () => {
+    const source =
+      "categories:\n  - Shipping\n  - Warehouse\n# unrelated comment before name\nname: x\n";
+    const result = editCategories(source, ["A", "B"]);
+    expect(result).toEqual({
+      ok: true,
+      source: 'categories:\n  ["A","B"]\n# unrelated comment before name\nname: x\n',
+    });
+  });
+
   it("indents the replacement for an unindented block list", () => {
     const source = "id: pallet\ncategories:\n- Shipping\nname: x\n";
     const result = editCategories(source, ["Warehouse"]);
