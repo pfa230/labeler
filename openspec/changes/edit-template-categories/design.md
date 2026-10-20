@@ -2,7 +2,7 @@
 
 See proposal.md for motivation. `Templates.tsx` has a local card component and derives category choices from registry summaries. `useTemplateSource` returns `Response.text()`; `useReplaceTemplate` already PUTs raw YAML, invalidates list/detail and updates the source cache. The backend validates and atomically replaces the source before reloading the registry. `serde_yaml_ng` gives the domain parser no usable source spans, and the UI has no YAML dependency.
 
-Attended research inspected [yaml v2 node ranges](https://eemeli.org/yaml/#content-nodes), [CST documentation](https://github.com/eemeli/yaml/blob/main/docs/07_parsing_yaml.md) and [whole-document formatting limitations](https://github.com/eemeli/yaml/issues/308). A local probe using installed yaml 2.9.1 passed 20 edits over block/flow lists, block/flow roots, absent keys, quoted keys, document markers, indentation, Unicode, CRLF and multiline strings, plus three refusal cases. It is a syntax/range proof, not an application acceptance run. Research artifacts remain in `.agent-runs/category-research/`.
+Attended research inspected [yaml v2 node ranges](https://eemeli.org/yaml/#content-nodes), [CST documentation](https://github.com/eemeli/yaml/blob/main/docs/07_parsing_yaml.md) and [whole-document formatting limitations](https://github.com/eemeli/yaml/issues/308). A local probe using installed yaml 2.9.1 passed 20 edits over block/flow lists, block/flow roots, absent keys, quoted keys, document markers, indentation, Unicode, CRLF and multiline strings, plus three refusal cases. It is a syntax/range proof, not an application acceptance run.
 
 ## Goals / Non-Goals
 

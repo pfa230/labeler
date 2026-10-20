@@ -4,7 +4,7 @@
 
 ## 2. Labels category editor
 
-- [ ] 2.1 Add the per-card action and one Labels-level editor with string entries, Add/Remove, Save/Cancel and source/write error presentation, reusing source GET and `useReplaceTemplate`. Extend `Templates.test.tsx` to capture the exact PUT source, verify adding an absent key and clearing, successful summary/filter refresh including a removed active choice, and no write/success on Cancel or unsupported source. Exercise a failed PUT so a false success or discarded error fails; preserve the fetched categories as separate strings rather than comma-splitting them.
+- [ ] 2.1 Add the per-card action and one Labels-level editor with string entries, Add/Remove, Save/Cancel and source/write error presentation plus unsupported-source refusal with a link to the template's YAML editor, reusing source GET and `useReplaceTemplate`. Extend `Templates.test.tsx` to capture the exact PUT source, verify adding an absent key and clearing, successful summary/filter refresh including a removed active choice, and no write/success on Cancel or unsupported source. Exercise a failed PUT so a false success or discarded error fails; preserve the fetched categories as separate strings rather than comma-splitting them.
 
 ## 3. Gates
 
