@@ -6766,18 +6766,44 @@ layout:
         }
 
         #[test]
-        fn a_character_the_font_does_not_map_is_outside_the_guarantee() {
-            let t = label("H\u{4E2D}", "top", "20", "content", "    overflow: fail\n");
-            crate::render::render_single_label(&t, &HashMap::new(), &no_settings(), &no_datetime())
-                .expect("an unmapped character is fitted and rendered, not refused");
-            // Inter's .notdef inks from −416 to 1856 units [fontTools].
-            let notdef_a = (1856.0 - 1490.0) / 2048.0 * 20.0;
-            let notdef_d = 416.0 / 2048.0 * 20.0;
-            let h = item_box(&compiled(&t).expect("compile").source, "#text(\"").2;
-            assert!(
-                (h - (CAP_20 + notdef_a + notdef_d)).abs() < 0.01,
-                "resolves {h} pt"
+        fn unmapped_text_is_refused_before_shortening() {
+            let assert_unmapped = |t: &TemplateContent, character: &str| {
+                let err = crate::render::render_single_label(
+                    t,
+                    &HashMap::new(),
+                    &no_settings(),
+                    &no_datetime(),
+                )
+                .expect_err("unmapped text must be refused");
+                assert_eq!(err.status().as_u16(), 422);
+                assert_eq!(err.code(), "UnsupportedLayoutItem");
+                assert_eq!(err.reason(), Some("text_character_unmapped"));
+                let details = err.details().expect("details");
+                assert_eq!(details["field"], "layout[0]");
+                assert_eq!(details["character"], character);
+            };
+
+            // `fail` would otherwise fit and draw Inter's `.notdef`.
+            assert_unmapped(
+                &label("H\u{4E2D}", "top", "20", "content", "    overflow: fail\n"),
+                "\u{4E2D}",
             );
+
+            // Ellipsis would shorten this value and pop the unsupported character away.
+            let long = format!("{}\u{4E2D}", "W".repeat(40));
+            assert_unmapped(
+                &label(&long, "top", "20", "content", "    overflow: ellipsis\n"),
+                "\u{4E2D}",
+            );
+
+            let supported = label("ok\nnext\ttab\u{200B}", "top", "20", "content", "");
+            crate::render::render_single_label(
+                &supported,
+                &HashMap::new(),
+                &no_settings(),
+                &no_datetime(),
+            )
+            .expect("line breaks, tabs and default ignorables need no glyph");
         }
 
         /// *A centred item with headroom is unaffected*: its box fits both the font bands and the

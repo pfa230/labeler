@@ -634,6 +634,14 @@ pub(super) fn layout_text(
     let normalized = item.raw_text.replace("\r\n", "\n").replace('\r', "\n");
     let segments: Vec<&str> = normalized.split('\n').collect();
 
+    let measurement_face = load_face(font_bytes()?)?;
+    if let Some(character) = normalized
+        .chars()
+        .find(|&c| requires_glyph(c) && measurement_face.glyph_index(c).is_none())
+    {
+        return Err(AppError::text_character_unmapped(path, character));
+    }
+
     // Step 2: Shrink font_size if range
     let (chosen_size, face) = match item.font_size {
         FontSize::Fixed(s) => (*s, instance(weight, *s)?),
@@ -1502,10 +1510,14 @@ impl ShapedRun {
     }
 }
 
+/// Whether a character needs a drawable glyph: newlines, tabs and default ignorables do not.
+fn requires_glyph(c: char) -> bool {
+    c != '\n' && c != '\t' && !typst::text::is_default_ignorable(c)
+}
+
 /// Typst shapes no run of only newlines, tabs or default ignorables (`shape_segment`).
 fn draws_nothing(text: &str) -> bool {
-    text.chars()
-        .all(|c| c == '\n' || c == '\t' || typst::text::is_default_ignorable(c))
+    text.chars().all(|c| !requires_glyph(c))
 }
 
 /// Typst's `shape_range` over a whole paragraph (`src/inline/shaping.rs`): BiDi levels, then runs of
