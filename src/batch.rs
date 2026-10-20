@@ -519,6 +519,8 @@ mod tests {
             paper_height: 40.0,
             label_width: 20.0,
             label_height: 10.0,
+            shape: Default::default(),
+            rounded: None,
             positions: (0..24)
                 .map(|i| {
                     crate::models::SheetPosition([(i % 6) as f32 * 20.0, (i / 6) as f32 * 10.0])

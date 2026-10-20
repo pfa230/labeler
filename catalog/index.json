@@ -14,6 +14,34 @@
     "vendor": "avery"
   },
   {
+    "category": "sheet",
+    "description": "Two 6x5 inch rounded-corner labels per US Letter sheet, a message and a QR code",
+    "fields": [
+      "message",
+      "code"
+    ],
+    "format": "sheet",
+    "id": "ol1417",
+    "media_width_mm": null,
+    "name": "OnlineLabels OL1417 6\" x 5\" Rounded Rectangle",
+    "path": "sheet/onlinelabels/ol1417.yaml",
+    "vendor": "onlinelabels"
+  },
+  {
+    "category": "sheet",
+    "description": "Twelve 2-inch circle labels per US Letter sheet, a message and a QR code",
+    "fields": [
+      "message",
+      "code"
+    ],
+    "format": "sheet",
+    "id": "ol2682",
+    "media_width_mm": null,
+    "name": "OnlineLabels OL2682 2\" Circle",
+    "path": "sheet/onlinelabels/ol2682.yaml",
+    "vendor": "onlinelabels"
+  },
+  {
     "category": "tape",
     "description": "Continuous tape, 12mm nominal (9.9mm printable at 180 dpi), text only",
     "fields": [

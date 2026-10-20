@@ -1,0 +1,56 @@
+name: OnlineLabels OL2682 2" Circle
+description: Twelve 2-inch circle labels per US Letter sheet, a message and a QR code
+unit: in
+dpi: 300
+params:
+  - name: message
+    type: string
+    description: "Label message text"
+    multiline: true
+  - name: code
+    type: string
+    description: "Payload encoded in the QR code"
+format:
+  type: sheet
+  paper_width: 8.5
+  paper_height: 11.0
+  label_width: 2.0
+  label_height: 2.0
+  shape: ellipse
+  # Positions from OnlineLabels OL2682: left/right margin 0.625, top/bottom margin 0.6,
+  # horizontal pitch 2.625, vertical pitch 2.6. Top-to-bottom rows, left-to-right within a row.
+  positions:
+    - [0.625, 8.4]
+    - [3.25, 8.4]
+    - [5.875, 8.4]
+    - [0.625, 5.8]
+    - [3.25, 5.8]
+    - [5.875, 5.8]
+    - [0.625, 3.2]
+    - [3.25, 3.2]
+    - [5.875, 3.2]
+    - [0.625, 0.6]
+    - [3.25, 0.6]
+    - [5.875, 0.6]
+layout:
+  # A full-slot tint reaches the corners, which the circular stock clips away.
+  - type: container
+    at: [0.0, 0.0]
+    size: [2.0, 2.0]
+    background: "#dbeafe"
+    items:
+      - type: text
+        value: "{message}"
+        at: [0.3, 1.2]
+        size: [1.4, 0.4]
+        font_size:
+          min: 6.0
+          max: 18.0
+        wrap: true
+        alignment:
+          horizontal: center
+          vertical: center
+      - type: qr
+        value: "{code}"
+        at: [0.7, 0.3]
+        size: [0.6, 0.6]

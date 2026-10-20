@@ -8,7 +8,7 @@ use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, Condition, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow,
     FontSize, Layout, LayoutItem, ParamControl, ParamEntry, ParamSpec, ParamType, Placement, Point,
-    Size, SizeValue, TemplateDetail, TemplateFormat, TemplateSummary,
+    Shape, Size, SizeValue, TemplateDetail, TemplateFormat, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -548,6 +548,7 @@ impl TemplateContent {
             val_frame,
             axes_resolved,
             &geometry_values,
+            sheet_slot_of(&instantiated.format),
         )?;
 
         if let TemplateFormat::Single {
@@ -567,6 +568,7 @@ impl TemplateContent {
                 label_width,
                 label_height,
                 positions,
+                ..
             } => {
                 if *paper_width <= 0.0 {
                     return Err("paper_width must be greater than 0".to_string());
@@ -1110,16 +1112,100 @@ fn validate_dimension(name: &str, dimension: &DynamicDimension) -> Result<(), St
     Ok(())
 }
 
+/// The sheet stock outline and the map from the current local frame into slot coordinates, used to
+/// check fixed text and QR boxes at load. `exact` is false once a content-sized or packed placement
+/// makes the physical box unknown; the check is then deferred to render.
+#[derive(Clone, Copy)]
+struct SheetSlot {
+    outline: resolver::StockOutline,
+    map: resolver::SlotMap,
+    exact: bool,
+}
+
+/// The sheet stock outline of an instantiated format, in slot coordinates.
+fn sheet_slot_of(format: &TemplateFormat) -> Option<SheetSlot> {
+    match format {
+        TemplateFormat::Sheet {
+            label_width,
+            label_height,
+            shape,
+            rounded,
+            ..
+        } => {
+            let outline = match shape {
+                Shape::Rect => resolver::StockOutline::Rect {
+                    w: *label_width,
+                    h: *label_height,
+                    rounded: *rounded,
+                },
+                Shape::Ellipse => resolver::StockOutline::Ellipse {
+                    w: *label_width,
+                    h: *label_height,
+                },
+            };
+            Some(SheetSlot {
+                outline,
+                map: resolver::SlotMap::IDENTITY,
+                exact: true,
+            })
+        }
+        TemplateFormat::Single { .. } => None,
+    }
+}
+
 fn validate_layout(
     layout: &Layout,
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
     geometry_values: &HashMap<String, f32>,
+    slot: Option<SheetSlot>,
 ) -> Result<(), String> {
     match layout {
         Layout::Items(items) => {
-            validate_layout_items(items, "layout", frame, axes_resolved, geometry_values)
+            validate_layout_items(items, "layout", frame, axes_resolved, geometry_values, slot)
         }
+    }
+}
+
+/// Whether every axis of `placement` resolves without a content measurement: an authored extent or
+/// a frame-filling one is known in a known frame.
+fn placement_is_exact(placement: &Placement, geometry_values: &HashMap<String, f32>) -> bool {
+    (0..2).all(|axis| {
+        !matches!(
+            resolver::source_of(placement, axis, geometry_values).source,
+            resolver::ExtentSource::Content
+        )
+    })
+}
+
+/// Refuse a text or QR box whose four mapped corners leave the stock outline. Only a box whose whole
+/// placement is known is checked; the rest is deferred to render.
+fn validate_stock_box(
+    path: &str,
+    placement: &Placement,
+    frame: Option<(f32, f32)>,
+    geometry_values: &HashMap<String, f32>,
+    slot: SheetSlot,
+) -> Result<(), String> {
+    let Some(frame) = frame else {
+        return Ok(());
+    };
+    if !slot.exact || !placement_is_exact(placement, geometry_values) {
+        return Ok(());
+    }
+    let placed = resolver::place(placement, frame, geometry_values, [None, None])
+        .map_err(|violation| violation_message(path, violation))?;
+    let (x0, y0) = slot.map.map(placed.x, placed.y);
+    let (x1, y1) = slot.map.map(placed.x + placed.w, placed.y + placed.h);
+    let (low_x, high_x) = (x0.min(x1), x0.max(x1));
+    let (low_y, high_y) = (y0.min(y1), y0.max(y1));
+    if slot
+        .outline
+        .contains_box(low_x, low_y, high_x - low_x, high_y - low_y)
+    {
+        Ok(())
+    } else {
+        Err(format!("{path}: item crosses the sheet stock outline"))
     }
 }
 
@@ -1131,6 +1217,7 @@ fn validate_layout_items(
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
     geometry_values: &HashMap<String, f32>,
+    slot: Option<SheetSlot>,
 ) -> Result<(), String> {
     for (idx, item) in items.iter().enumerate() {
         validate_layout_item(
@@ -1139,6 +1226,7 @@ fn validate_layout_items(
             frame,
             axes_resolved,
             geometry_values,
+            slot,
         )?;
     }
     Ok(())
@@ -1150,6 +1238,7 @@ fn validate_layout_item(
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
     geometry_values: &HashMap<String, f32>,
+    slot: Option<SheetSlot>,
 ) -> Result<(), String> {
     let at_key = |key: &str, msg: &str| format!("{path}.{key}: {msg}");
     validate_when(item.when()).map_err(|msg| at_key("when", &msg))?;
@@ -1210,6 +1299,9 @@ fn validate_layout_item(
                 .map_err(|msg| at_key("font_weight", &msg))?;
             validate_font_size(font_size).map_err(|msg| at_key("font_size", &msg))?;
             validate_placement(placement, path, false, frame, geometry_values)?;
+            if let Some(slot) = slot {
+                validate_stock_box(path, placement, frame, geometry_values, slot)?;
+            }
         }
         LayoutItem::Qr {
             placement,
@@ -1235,6 +1327,9 @@ fn validate_layout_item(
                 ));
             }
             validate_placement(placement, path, false, frame, geometry_values)?;
+            if let Some(slot) = slot {
+                validate_stock_box(path, placement, frame, geometry_values, slot)?;
+            }
         }
         LayoutItem::Image { placement, .. } => {
             validate_placement(placement, path, false, frame, geometry_values)?;
@@ -1326,12 +1421,40 @@ fn validate_layout_item(
                 None => None,
             };
 
+            // The children's boxes are known in sheet coordinates only while this container's own
+            // placement is exact and it does not pack its children into unknown positions.
+            let child_slot = slot.and_then(|parent| {
+                let exact = parent.exact
+                    && placement_is_exact(placement, geometry_values)
+                    && flow.is_none();
+                if !exact {
+                    return Some(SheetSlot {
+                        exact: false,
+                        ..parent
+                    });
+                }
+                let outer = frame?;
+                let placed =
+                    resolver::place(placement, outer, geometry_values, [None, None]).ok()?;
+                let local = resolver::container_child_map(
+                    placed,
+                    padding,
+                    resolver::rotation_of(placement),
+                );
+                Some(SheetSlot {
+                    outline: parent.outline,
+                    map: resolver::SlotMap::compose(&parent.map, &local),
+                    exact: true,
+                })
+            });
+
             validate_layout_items(
                 items,
                 &format!("{path}.items"),
                 child_frame,
                 child_axes_resolved,
                 geometry_values,
+                child_slot,
             )?;
         }
     }
@@ -2352,6 +2475,155 @@ layout:
     fn text_content_width_on_a_sheet_validates_ok() {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [content, 8.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    #[test]
+    fn a_sheet_defaults_to_a_square_cornered_rectangle() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 50\n  label_height: 50\n  positions: [[0.0, 0.0]]\nlayout: []\n";
+        let template = parse_template_ok(yaml);
+        match &template.format {
+            TemplateFormat::Sheet { shape, rounded, .. } => {
+                assert_eq!(*shape, Shape::Rect);
+                assert_eq!(*rounded, None);
+            }
+            other => panic!("expected a sheet format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_sheet_declares_a_circle_or_oval_outline_from_its_dimensions() {
+        for (w, h) in [(50.0, 50.0), (80.0, 50.0)] {
+            let yaml = format!(
+                "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: {w}\n  label_height: {h}\n  shape: ellipse\n  positions: [[0.0, 0.0]]\nlayout: []\n"
+            );
+            let template = parse_template_ok(&yaml);
+            match &template.format {
+                TemplateFormat::Sheet {
+                    label_width,
+                    label_height,
+                    shape,
+                    rounded,
+                    ..
+                } => {
+                    assert_eq!(*shape, Shape::Ellipse);
+                    assert_eq!(*label_width, w);
+                    assert_eq!(*label_height, h);
+                    assert_eq!(*rounded, None);
+                }
+                other => panic!("expected a sheet format, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_sheet_accepts_a_physical_corner_radius_up_to_half_the_shorter_side() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  rounded: 5\n  positions: [[0.0, 0.0]]\nlayout: []\n";
+        let template = parse_template_ok(yaml);
+        match &template.format {
+            TemplateFormat::Sheet { shape, rounded, .. } => {
+                assert_eq!(*shape, Shape::Rect);
+                assert_eq!(*rounded, Some(5.0));
+            }
+            other => panic!("expected a sheet format, got {other:?}"),
+        }
+
+        let at_limit = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  rounded: 20\n  positions: [[0.0, 0.0]]\nlayout: []\n";
+        assert_eq!(parse_and_validate(at_limit), Ok(()));
+    }
+
+    #[test]
+    fn a_sheet_refuses_a_radius_outside_its_contract() {
+        for (rounded, expected) in [
+            ("20.0001", "at rounded: rounded radius must be at most half"),
+            (
+                "0",
+                "at rounded: rounded radius must be a finite number greater than 0",
+            ),
+            (
+                "-1",
+                "at rounded: rounded radius must be a finite number greater than 0",
+            ),
+        ] {
+            let yaml = format!(
+                "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  rounded: {rounded}\n  positions: [[0.0, 0.0]]\nlayout: []\n"
+            );
+            let err = parse_and_validate(&yaml).expect_err("expected a refusal");
+            assert!(err.contains(expected), "for rounded {rounded}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_sheet_refuses_rounded_on_an_ellipse_and_an_unknown_shape() {
+        let on_ellipse = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  shape: ellipse\n  rounded: 5\n  positions: [[0.0, 0.0]]\nlayout: []\n";
+        let err = parse_and_validate(on_ellipse).expect_err("expected a refusal");
+        assert!(
+            err.contains("at rounded: rounded is only supported on rect sheets"),
+            "{err}"
+        );
+
+        let unknown = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  shape: circle\n  positions: [[0.0, 0.0]]\nlayout: []\n";
+        let err = parse_and_validate(unknown).expect_err("expected a refusal");
+        assert!(err.contains("at shape:"), "{err}");
+        assert!(err.contains("circle"), "{err}");
+    }
+
+    fn ellipse_sheet(layout: &str) -> String {
+        format!(
+            "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 50\n  label_height: 50\n  shape: ellipse\n  positions: [[0.0, 0.0]]\nlayout:\n{layout}"
+        )
+    }
+
+    #[test]
+    fn a_fixed_box_that_crosses_the_stock_outline_is_refused_at_load() {
+        let outside = ellipse_sheet(
+            "  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [10.0, 10.0]\n    font_size: 6\n",
+        );
+        let err = parse_and_validate(&outside).expect_err("expected a refusal");
+        assert!(
+            err.contains("layout[0]: item crosses the sheet stock outline"),
+            "{err}"
+        );
+
+        let inside = ellipse_sheet(
+            "  - type: text\n    value: \"x\"\n    at: [20.0, 20.0]\n    size: [10.0, 10.0]\n    font_size: 6\n",
+        );
+        assert_eq!(parse_and_validate(&inside), Ok(()));
+    }
+
+    #[test]
+    fn a_fixed_box_across_a_rounded_corner_is_refused_at_load() {
+        let template = |at: &str| {
+            format!("name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  rounded: 5\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: {at}\n    size: [10.0, 10.0]\n    font_size: 6\n")
+        };
+        assert_eq!(parse_and_validate(&template("[0.0, 5.0]")), Ok(()));
+        let err = parse_and_validate(&template("[0.0, 0.0]")).expect_err("expected a refusal");
+        assert!(
+            err.contains("item crosses the sheet stock outline"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_content_width_box_defers_the_curved_check_to_render() {
+        let yaml = ellipse_sheet(
+            "  - type: text\n    value: \"x\"\n    at: [5.0, 20.0]\n    size: [content, 10.0]\n    font_size: 6\n",
+        );
+        assert_eq!(parse_and_validate(&yaml), Ok(()));
+    }
+
+    #[test]
+    fn a_padded_rotated_container_maps_its_children_into_the_slot() {
+        let container = |at: &str| {
+            ellipse_sheet(&format!(
+                "  - type: container\n    at: [0.0, 0.0]\n    size: [50.0, 50.0]\n    rotate: 90\n    padding: 1.0\n    items:\n      - type: qr\n        value: \"x\"\n        at: {at}\n        size: [5.0, 5.0]\n"
+            ))
+        };
+        assert_eq!(parse_and_validate(&container("[20.0, 20.0]")), Ok(()));
+        let err = parse_and_validate(&container("[0.0, 0.0]")).expect_err("expected a refusal");
+        assert!(
+            err.contains("layout[0].items[0]: item crosses the sheet stock outline"),
+            "{err}"
+        );
     }
 
     #[test]

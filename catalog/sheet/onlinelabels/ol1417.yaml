@@ -1,0 +1,46 @@
+name: OnlineLabels OL1417 6" x 5" Rounded Rectangle
+description: Two 6x5 inch rounded-corner labels per US Letter sheet, a message and a QR code
+unit: in
+dpi: 300
+params:
+  - name: message
+    type: string
+    description: "Label message text"
+    multiline: true
+  - name: code
+    type: string
+    description: "Payload encoded in the QR code"
+format:
+  type: sheet
+  paper_width: 8.5
+  paper_height: 11.0
+  label_width: 6.0
+  label_height: 5.0
+  rounded: 0.125
+  # Positions from OnlineLabels OL1417: left/right margin 1.25, top/bottom margin 0.4375,
+  # vertical gap 0.125. Top-to-bottom order.
+  positions:
+    - [1.25, 5.5625]
+    - [1.25, 0.4375]
+layout:
+  # A full-slot tint reaches the square corners, which the rounded stock clips away.
+  - type: container
+    at: [0.0, 0.0]
+    size: [6.0, 5.0]
+    background: "#dcfce7"
+    items:
+      - type: text
+        value: "{message}"
+        at: [0.5, 3.4]
+        size: [5.0, 1.0]
+        font_size:
+          min: 10.0
+          max: 48.0
+        wrap: true
+        alignment:
+          horizontal: center
+          vertical: center
+      - type: qr
+        value: "{code}"
+        at: [0.5, 0.5]
+        size: [1.2, 1.2]

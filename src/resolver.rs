@@ -784,6 +784,143 @@ pub fn axis_requirement(
     requirement(&spec, claimed)
 }
 
+/// The physical stock outline of a sheet slot, in slot coordinates: origin bottom-left, y up, the
+/// slot's full width and height. The interior is the safe region for text and QR boxes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StockOutline {
+    Rect {
+        w: f32,
+        h: f32,
+        rounded: Option<f32>,
+    },
+    Ellipse {
+        w: f32,
+        h: f32,
+    },
+}
+
+impl StockOutline {
+    /// Whether the axis-aligned box with low corner `(x, y)` and extents `(w, h)` lies inside. A
+    /// zero-area box is exempt: only positive-area text and QR boxes cross the outline. Four-corner
+    /// containment suffices because the interior of each selected outline is convex.
+    pub fn contains_box(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
+        if w <= 0.0 || h <= 0.0 {
+            return true;
+        }
+        [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+            .iter()
+            .all(|&(px, py)| self.contains_point(px, py))
+    }
+
+    /// Whether a point is inside the outline, within [`BOUNDS_EPSILON`].
+    pub fn contains_point(&self, x: f32, y: f32) -> bool {
+        match *self {
+            StockOutline::Rect {
+                w,
+                h,
+                rounded: None,
+            } => {
+                x >= -BOUNDS_EPSILON
+                    && y >= -BOUNDS_EPSILON
+                    && x <= w + BOUNDS_EPSILON
+                    && y <= h + BOUNDS_EPSILON
+            }
+            StockOutline::Rect {
+                w,
+                h,
+                rounded: Some(r),
+            } => {
+                if x < -BOUNDS_EPSILON
+                    || y < -BOUNDS_EPSILON
+                    || x > w + BOUNDS_EPSILON
+                    || y > h + BOUNDS_EPSILON
+                {
+                    return false;
+                }
+                // The nearest point of the straight interior; inside the corner circles of radius r
+                // the distance to that interior stays at most r.
+                let nx = x.clamp(r, w - r);
+                let ny = y.clamp(r, h - r);
+                let (dx, dy) = (x - nx, y - ny);
+                let limit = r + BOUNDS_EPSILON;
+                dx * dx + dy * dy <= limit * limit
+            }
+            StockOutline::Ellipse { w, h } => {
+                let rx = w / 2.0;
+                let ry = h / 2.0;
+                let nx = (x - rx) / rx;
+                let ny = (y - ry) / ry;
+                nx * nx + ny * ny <= 1.0 + BOUNDS_EPSILON
+            }
+        }
+    }
+}
+
+/// A mapping from one local frame's coordinates into sheet-slot coordinates, restricted to the
+/// orthogonal rotations a layout can compose: `x' = m00*x + m01*y + tx`, `y' = m10*x + m11*y + ty`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotMap {
+    m00: f32,
+    m01: f32,
+    m10: f32,
+    m11: f32,
+    tx: f32,
+    ty: f32,
+}
+
+impl SlotMap {
+    /// The identity: a frame that is already in slot coordinates.
+    pub const IDENTITY: SlotMap = SlotMap {
+        m00: 1.0,
+        m01: 0.0,
+        m10: 0.0,
+        m11: 1.0,
+        tx: 0.0,
+        ty: 0.0,
+    };
+
+    pub fn map(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            self.m00 * x + self.m01 * y + self.tx,
+            self.m10 * x + self.m11 * y + self.ty,
+        )
+    }
+
+    /// `outer` applied after `inner`, mapping `inner`'s input into `outer`'s output space.
+    pub fn compose(outer: &SlotMap, inner: &SlotMap) -> SlotMap {
+        SlotMap {
+            m00: outer.m00 * inner.m00 + outer.m01 * inner.m10,
+            m01: outer.m00 * inner.m01 + outer.m01 * inner.m11,
+            m10: outer.m10 * inner.m00 + outer.m11 * inner.m10,
+            m11: outer.m10 * inner.m01 + outer.m11 * inner.m11,
+            tx: outer.m00 * inner.tx + outer.m01 * inner.ty + outer.tx,
+            ty: outer.m10 * inner.tx + outer.m11 * inner.ty + outer.ty,
+        }
+    }
+}
+
+/// The map from a container's padded inner frame into the frame that holds the container, from the
+/// container's placed box `pbox`, its `padding` and its orthogonal `rotation`. It composes the
+/// padding offset, the quarter-turn about the container's canvas centre and the container's own
+/// placement, matching the order the renderer emits.
+pub fn container_child_map(pbox: Placed, padding: &Padding, rotation: Rotation) -> SlotMap {
+    let (left, bottom, w, h) = (padding.left, padding.bottom, pbox.w, pbox.h);
+    let (m00, m01, m10, m11, tx, ty) = match rotation {
+        Rotation::R0 => (1.0, 0.0, 0.0, 1.0, left, bottom),
+        Rotation::R90 => (0.0, -1.0, 1.0, 0.0, w - bottom, left),
+        Rotation::R180 => (-1.0, 0.0, 0.0, -1.0, w - left, h - bottom),
+        Rotation::R270 => (0.0, 1.0, -1.0, 0.0, bottom, h - left),
+    };
+    SlotMap {
+        m00,
+        m01,
+        m10,
+        m11,
+        tx: tx + pbox.x,
+        ty: ty + pbox.y,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1480,5 +1617,102 @@ mod tests {
             arrange_flow((20.0, 9.0), &fail, &children),
             Err((2, Violation::AnchorBeyondFrame { axis: 1 }))
         );
+    }
+
+    #[test]
+    fn an_ellipse_keeps_the_wide_middle_a_centred_line_uses() {
+        let circle = StockOutline::Ellipse { w: 50.0, h: 50.0 };
+        // The spec's 48.9 by 10 box near the top stays inside, where an inscribed 35.3553 square
+        // would have been the widest option.
+        assert!(circle.contains_box(0.55, 20.0, 48.9, 10.0));
+        assert!(circle.contains_box(0.55, 20.0, 35.3553, 10.0));
+        // A shade wider crosses the curve at the corners.
+        assert!(!circle.contains_box(0.55, 20.0, 49.1, 10.0));
+    }
+
+    #[test]
+    fn a_rounded_rectangle_clips_only_its_corners() {
+        let rounded = StockOutline::Rect {
+            w: 60.0,
+            h: 40.0,
+            rounded: Some(5.0),
+        };
+        assert!(rounded.contains_point(30.0, 20.0));
+        assert!(rounded.contains_point(0.0, 20.0));
+        assert!(rounded.contains_point(0.0, 5.0));
+        assert!(!rounded.contains_point(0.0, 0.0));
+        assert!(!rounded.contains_point(1.0, 1.0));
+        assert!(rounded.contains_point(4.0, 4.0));
+        // The same size without a radius keeps its corner.
+        let square = StockOutline::Rect {
+            w: 60.0,
+            h: 40.0,
+            rounded: None,
+        };
+        assert!(square.contains_point(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_zero_area_box_is_exempt_from_the_curved_check() {
+        let circle = StockOutline::Ellipse { w: 50.0, h: 50.0 };
+        assert!(circle.contains_box(49.0, 49.0, 0.0, 0.0));
+        assert!(circle.contains_box(49.0, 49.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn a_container_child_map_composes_padding_rotation_and_placement() {
+        let pbox = Placed {
+            x: 10.0,
+            y: 5.0,
+            w: 20.0,
+            h: 10.0,
+        };
+        let padding = Padding {
+            top: 4.0,
+            right: 6.0,
+            bottom: 3.0,
+            left: 2.0,
+        };
+
+        let r0 = container_child_map(pbox, &padding, Rotation::R0);
+        assert_eq!(r0.map(0.0, 0.0), (12.0, 8.0));
+        assert_eq!(r0.map(5.0, 4.0), (17.0, 12.0));
+
+        // A quarter turn CCW maps the inner origin toward the outer box's bottom-right.
+        let r90 = container_child_map(pbox, &padding, Rotation::R90);
+        assert_eq!(r90.map(0.0, 0.0), (27.0, 7.0));
+
+        let r180 = container_child_map(pbox, &padding, Rotation::R180);
+        assert_eq!(r180.map(0.0, 0.0), (28.0, 12.0));
+
+        let r270 = container_child_map(pbox, &padding, Rotation::R270);
+        assert_eq!(r270.map(0.0, 0.0), (13.0, 13.0));
+    }
+
+    #[test]
+    fn composing_maps_applies_the_outer_one_last() {
+        let outer = container_child_map(
+            Placed {
+                x: 100.0,
+                y: 0.0,
+                w: 20.0,
+                h: 20.0,
+            },
+            &Padding::ZERO,
+            Rotation::R0,
+        );
+        let inner = container_child_map(
+            Placed {
+                x: 1.0,
+                y: 2.0,
+                w: 5.0,
+                h: 5.0,
+            },
+            &Padding::ZERO,
+            Rotation::R0,
+        );
+        let composed = SlotMap::compose(&outer, &inner);
+        assert_eq!(composed.map(0.0, 0.0), (101.0, 2.0));
+        assert_eq!(SlotMap::IDENTITY.map(3.0, 4.0), (3.0, 4.0));
     }
 }

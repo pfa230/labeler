@@ -49,7 +49,7 @@ layout: [ ... ]       # the items to draw, back to front
 
 `format` comes in two shapes, and most surprises follow from which one you picked:
 
-- **`sheet`**: identical fixed-size slots on a page. The layout describes one slot, and the engine repeats it into every position. Output is PDF.
+- **`sheet`**: identical fixed-size slots on a page. The layout describes one slot, and the engine repeats it into every position. Output is PDF. `shape` (`rect`, the default, or `ellipse`) picks the stock outline; on a rectangle `rounded` gives a physical corner radius.
 - **`single`**: one label. A numeric `width` is fixed; a `{ min, max }` range makes it **auto-length**: continuous tape cut to fit the content.
 
 Full key tables: [templates](../openspec/specs/templates/spec.md), [parameters](../openspec/specs/parameters/spec.md), [layout](../openspec/specs/layout/spec.md), [text](../openspec/specs/text/spec.md).
@@ -258,6 +258,31 @@ The `vertical` branch is a portrait design rotated onto the landscape slot. `rot
 ![The horizontal and vertical branches side by side](images/authoring-asset-tag.png)
 
 Governing spec: [when](../openspec/specs/layout/spec.md#requirement-when-gates-an-item), [rotation](../openspec/specs/layout/spec.md#requirement-container-rotation), [shapes and paint](../openspec/specs/layout/spec.md#requirement-shapes-and-paint-keys), [colours](../openspec/specs/layout/spec.md#requirement-the-colour-vocabulary).
+
+### Round and rounded sheet stock
+
+A `sheet` format declares its stock outline for the whole slot: `shape: ellipse` for round or oval stock, or `rounded: <radius>` on the default rectangle for a physical corner radius. Both use the same `label_width` and `label_height`, so a circle is an ellipse with equal sides (`catalog/sheet/onlinelabels/ol2682.yaml`) and a rounded rectangle is `catalog/sheet/onlinelabels/ol1417.yaml`:
+
+```yaml
+format:
+  type: sheet
+  paper_width: 8.5
+  paper_height: 11.0
+  label_width: 6.0
+  label_height: 5.0
+  rounded: 0.125
+  positions:
+    - [1.25, 5.5625]
+    - [1.25, 0.4375]
+```
+
+**The layout still uses the full slot rectangle.** Coordinates, edge-relative anchors, `fill` and text fitting mean what they do on any other sheet. The curved outline does not shrink the frame; it decides where ink is clipped and which text and QR boxes are legally placed. A centred line can therefore use the wide middle of a circle that an inscribed square would give up: on a 50 mm circle a 48.9 mm-wide, 10 mm-tall box at `[0.55, 20]` is accepted, where the largest inscribed square is only 35.3553 mm wide.
+
+Decorative paint, lines and images may reach the edge: they are clipped to the stock outline in both the one-slot thumbnail and every PDF slot, so a full-slot background loses its corners on a circle or its curved corners on a rounded rectangle. Text and QR boxes are, by contrast, refused. Every active `text` or `qr` box with positive area must keep all four corners inside the outline after all ancestor placement, padding and rotation; a box that crosses fails with `422` and reason `item_out_of_frame`, naming the item path (deferred to the request when the box is measured or packed). The check never moves or resizes a box, so size the box to the strip of stock you want the content in.
+
+Nothing adds a safe-area field. Where a vendor recommends a margin against printer shifting — OnlineLabels describes a 0.125-inch one — express it by placing the boxes that far inside the outline, as the examples do. Root padding or an authored `at` is how you clear the edge.
+
+Governing spec: [sheet stock shape](../openspec/specs/templates/spec.md#requirement-label-format), [stock-outline containment](../openspec/specs/layout/spec.md#requirement-sheet-text-and-qr-stay-inside-the-stock-outline), [sheet stock clipping](../openspec/specs/rendering/spec.md#requirement-sheet-stock-clipping).
 
 ### Flow
 

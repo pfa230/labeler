@@ -711,7 +711,7 @@ pub enum Overflow {
     Fail,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
     #[default]
@@ -931,6 +931,10 @@ pub enum TemplateFormat {
         paper_height: f32,
         label_width: f32,
         label_height: f32,
+        #[serde(default)]
+        shape: Shape,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rounded: Option<f32>,
         positions: Vec<SheetPosition>,
     },
     Single {

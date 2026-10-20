@@ -406,14 +406,56 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
                 paper_height,
                 label_width,
                 label_height,
+                shape,
+                rounded,
                 positions,
-            }) => Ok(TemplateFormat::Sheet {
-                paper_width,
-                paper_height,
-                label_width,
-                label_height,
-                positions,
-            }),
+            }) => {
+                let shape = match shape.as_deref() {
+                    None | Some("rect") => Shape::Rect,
+                    Some("ellipse") => Shape::Ellipse,
+                    Some(other) => {
+                        return Err(TemplateError::Validation {
+                            path: "shape".to_string(),
+                            msg: format!(
+                                "unknown shape '{other}', accepted values are: rect, ellipse"
+                            ),
+                        })
+                    }
+                };
+                if rounded.is_some() && shape == Shape::Ellipse {
+                    return Err(TemplateError::Validation {
+                        path: "rounded".to_string(),
+                        msg: "rounded is only supported on rect sheets".to_string(),
+                    });
+                }
+                if let Some(r) = rounded {
+                    if !r.is_finite() || r <= 0.0 {
+                        return Err(TemplateError::Validation {
+                            path: "rounded".to_string(),
+                            msg: "rounded radius must be a finite number greater than 0"
+                                .to_string(),
+                        });
+                    }
+                    let max_radius = label_width.min(label_height) / 2.0;
+                    if r > max_radius {
+                        return Err(TemplateError::Validation {
+                            path: "rounded".to_string(),
+                            msg: format!(
+                                "rounded radius must be at most half the shorter label side ({max_radius})"
+                            ),
+                        });
+                    }
+                }
+                Ok(TemplateFormat::Sheet {
+                    paper_width,
+                    paper_height,
+                    label_width,
+                    label_height,
+                    shape,
+                    rounded,
+                    positions,
+                })
+            }
             RawTemplateFormat::Single(SingleFormatRaw {
                 width,
                 height,

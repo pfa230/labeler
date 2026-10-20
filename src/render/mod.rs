@@ -23,6 +23,8 @@ use serde_json::Value as JsonValue;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
+use typst::layout::{Frame, FrameItem};
+use typst::visualize::Curve;
 use typst_as_lib::TypstEngine;
 use typst_layout::PagedDocument;
 
@@ -465,6 +467,93 @@ fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedD
         .map_err(|err| AppError::internal(format!("typst compile failed: {err}")))
 }
 
+/// The internal label on an ellipse slot's box. It carries no request data; the compiled frame
+/// visitor finds the group by it and gives that group the ellipse clip.
+const SLOT_CLIP_LABEL: &str = "slotclip";
+
+/// Wrap one slot's rendered content in the physical stock box shared by thumbnails and PDF slots.
+/// A rectangle clips natively, with a `radius` when rounded; an ellipse is labelled so
+/// [`apply_ellipse_slot_clip`] can set its compiled group's clip.
+fn slot_box(
+    content: &str,
+    width_units: f32,
+    height_units: f32,
+    outline: &crate::resolver::StockOutline,
+    unit: &str,
+) -> Result<String, AppError> {
+    use crate::resolver::StockOutline;
+    let w = format_length(width_units, unit)?;
+    let h = format_length(height_units, unit)?;
+    Ok(match outline {
+        StockOutline::Rect { rounded: None, .. } => {
+            format!("#box(width: {w}, height: {h}, clip: true)[{content}]")
+        }
+        StockOutline::Rect {
+            rounded: Some(radius),
+            ..
+        } => {
+            let radius = format_length(*radius, unit)?;
+            format!("#box(width: {w}, height: {h}, clip: true, radius: {radius})[{content}]")
+        }
+        StockOutline::Ellipse { .. } => {
+            format!("#box(width: {w}, height: {h})[{content}] <{SLOT_CLIP_LABEL}>")
+        }
+    })
+}
+
+/// Rebuild `frame`, recursively giving every group labelled `<slotclip>` an ellipse clip of its own
+/// size. A labelled group's frame is the box the slot content was laid out in.
+fn clip_slot_groups(frame: &Frame, out: &mut Frame) {
+    for (pos, item) in frame.items() {
+        match item {
+            FrameItem::Group(group) => {
+                let mut group = group.clone();
+                let mut child = Frame::new(group.frame.size(), group.frame.kind());
+                if group.frame.has_baseline() {
+                    child.set_baseline(group.frame.baseline());
+                }
+                clip_slot_groups(&group.frame, &mut child);
+                group.frame = child;
+                if group
+                    .label
+                    .is_some_and(|label| label.resolve().as_str() == SLOT_CLIP_LABEL)
+                {
+                    group.clip = Some(Curve::ellipse(group.frame.size()));
+                }
+                out.push(*pos, FrameItem::Group(group));
+            }
+            other => out.push(*pos, other.clone()),
+        }
+    }
+}
+
+/// Apply the ellipse stock clip to every labelled slot group, rebuilding the document from its
+/// adjusted pages.
+fn apply_ellipse_slot_clip(mut doc: PagedDocument, format: &TemplateFormat) -> PagedDocument {
+    if !matches!(
+        sheet_outline(format),
+        Some(crate::resolver::StockOutline::Ellipse { .. })
+    ) {
+        return doc;
+    }
+    let pages = doc
+        .pages()
+        .iter()
+        .cloned()
+        .map(|mut page| {
+            let mut frame = Frame::new(page.frame.size(), page.frame.kind());
+            if page.frame.has_baseline() {
+                frame.set_baseline(page.frame.baseline());
+            }
+            clip_slot_groups(&page.frame, &mut frame);
+            page.frame = frame;
+            page
+        })
+        .collect();
+    let info = doc.info_mut().clone();
+    PagedDocument::new(pages, info)
+}
+
 fn compile_single_doc(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
@@ -584,8 +673,11 @@ fn compile_label_source(
     writeln!(source, "#set text(font: \"Inter\")")
         .map_err(|err| AppError::internal(format!("failed to build typst source: {err}")))?;
 
-    let context =
+    let mut context =
         RenderContext::new(unit, resolved_data, env, &images).with_instants(&resolved.instants);
+    if let Some(outline) = sheet_outline(&template.format) {
+        context = context.with_stock(outline);
+    }
     let body = context.render_items(
         items,
         &measured,
@@ -594,6 +686,10 @@ fn compile_label_source(
         None,
         "layout",
     )?;
+    let body = match sheet_outline(&template.format) {
+        Some(outline) => slot_box(&body, width_units, height_units, &outline, unit)?,
+        None => body,
+    };
     source.push_str(&body);
 
     tracing::debug!(name = %template.name, typst = %source, "render typst source");
@@ -612,7 +708,8 @@ fn compile_label_doc(
     env: &RenderEnv,
 ) -> Result<PagedDocument, AppError> {
     let compiled = compile_label_source(template, data, env)?;
-    compile_paged(compiled.source, compiled.files)
+    let doc = compile_paged(compiled.source, compiled.files)?;
+    Ok(apply_ellipse_slot_clip(doc, &template.format))
 }
 
 /// Render a single representative label to PNG. For sheets, renders one slot. A thumbnail is a
@@ -727,18 +824,21 @@ pub fn render_single_label_pdf(
         .map(|label| label.bytes)
 }
 
-pub fn render_sheet_pages(
+/// Compile a sheet batch into its pages with the stock clip applied. Shared by PDF export and the
+/// pagination/clip tests, which inspect the compiled slot groups.
+fn compile_sheet_document(
     template: &TemplateDefinition,
     labels: &[LabelInput],
     start_slot: u32,
     env: &RenderEnv,
-) -> Result<Vec<u8>, AppError> {
+) -> Result<PagedDocument, AppError> {
     let TemplateFormat::Sheet {
         paper_width,
         paper_height,
         label_width,
         label_height,
         positions,
+        ..
     } = &template.format
     else {
         return Err(AppError::internal(
@@ -758,6 +858,7 @@ pub fn render_sheet_pages(
     let page_height_units = *paper_height;
     let unit = &template.unit;
     let items = select_layout_items(template)?;
+    let outline = sheet_outline(&template.format).expect("a sheet format has a stock outline");
 
     check_dimension_limit(page_width_units, unit, "paper width")?;
     check_dimension_limit(page_height_units, unit, "paper height")?;
@@ -798,7 +899,8 @@ pub fn render_sheet_pages(
         };
         let geometry_values = render_geometry_values(&resolved.data, template);
         let context = RenderContext::new(unit, &resolved.data, env, &images)
-            .with_instants(&resolved.instants);
+            .with_instants(&resolved.instants)
+            .with_stock(outline);
         let (measured, _) = match context.measure_items(
             items,
             (*label_width, *label_height),
@@ -858,14 +960,8 @@ pub fn render_sheet_pages(
             let top = point.y + *label_height;
             let dx = format_length(point.x, unit)?;
             let dy = format_length(page_height_units - top, unit)?;
-            let bw = format_length(*label_width, unit)?;
-            let bh = format_length(*label_height, unit)?;
-            writeln!(
-                source,
-                "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {bw}, height: {bh}, clip: true)[{}]]",
-                rendered[idx]
-            )
-            .map_err(|err| {
+            let boxed = slot_box(&rendered[idx], *label_width, *label_height, &outline, unit)?;
+            writeln!(source, "#place(top + left, dx: {dx}, dy: {dy})[{boxed}]").map_err(|err| {
                 AppError::internal(format!("failed to build typst source: {err}"))
             })?;
         }
@@ -873,6 +969,16 @@ pub fn render_sheet_pages(
     tracing::debug!(name = %template.name, typst = %source, "render typst source");
 
     let doc = compile_paged(source, images.into_inner().files)?;
+    Ok(apply_ellipse_slot_clip(doc, &template.format))
+}
+
+pub fn render_sheet_pages(
+    template: &TemplateDefinition,
+    labels: &[LabelInput],
+    start_slot: u32,
+    env: &RenderEnv,
+) -> Result<Vec<u8>, AppError> {
+    let doc = compile_sheet_document(template, labels, start_slot, env)?;
     typst_pdf::pdf(&doc, &Default::default())
         .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))
 }
@@ -993,6 +1099,40 @@ pub(crate) struct RenderContext<'a> {
     pub env: &'a RenderEnv<'a>,
     pub images: &'a RefCell<ImageCollector>,
     pub instants: Option<&'a BTreeMap<String, DateTime<Local>>>,
+    /// For a sheet, the physical stock outline and the map from the current local frame into slot
+    /// coordinates. `None` for a single label and for a context that is not a sheet subtree.
+    stock: Option<RenderSlot>,
+}
+
+/// The stock outline a sheet slot renders inside, with the map from the current local frame into
+/// slot coordinates.
+#[derive(Debug, Clone, Copy)]
+struct RenderSlot {
+    outline: crate::resolver::StockOutline,
+    map: crate::resolver::SlotMap,
+}
+/// The physical stock outline of a template's format, if it is a sheet.
+fn sheet_outline(format: &TemplateFormat) -> Option<crate::resolver::StockOutline> {
+    match format {
+        TemplateFormat::Sheet {
+            label_width,
+            label_height,
+            shape,
+            rounded,
+            ..
+        } => Some(match shape {
+            Shape::Rect => crate::resolver::StockOutline::Rect {
+                w: *label_width,
+                h: *label_height,
+                rounded: *rounded,
+            },
+            Shape::Ellipse => crate::resolver::StockOutline::Ellipse {
+                w: *label_width,
+                h: *label_height,
+            },
+        }),
+        TemplateFormat::Single { .. } => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1076,6 +1216,7 @@ impl<'a> RenderContext<'a> {
             env,
             images,
             instants: None,
+            stock: None,
         }
     }
 
@@ -1089,7 +1230,33 @@ impl<'a> RenderContext<'a> {
             env: self.env,
             images: self.images,
             instants: self.instants,
+            stock: self.stock,
         }
+    }
+
+    /// A context like this one but whose frame maps into slot coordinates through `map`.
+    fn with_slot(
+        &self,
+        map: crate::resolver::SlotMap,
+        outline: crate::resolver::StockOutline,
+    ) -> RenderContext<'_> {
+        RenderContext {
+            unit: self.unit,
+            data: self.data,
+            env: self.env,
+            images: self.images,
+            instants: self.instants,
+            stock: Some(RenderSlot { outline, map }),
+        }
+    }
+
+    /// Start carrying a sheet's stock outline for the root slot frame.
+    pub(crate) fn with_stock(mut self, outline: crate::resolver::StockOutline) -> Self {
+        self.stock = Some(RenderSlot {
+            outline,
+            map: crate::resolver::SlotMap::IDENTITY,
+        });
+        self
     }
 
     pub(crate) fn with_instants(mut self, instants: &'a BTreeMap<String, DateTime<Local>>) -> Self {
@@ -1894,6 +2061,7 @@ impl<'a> RenderContext<'a> {
                 ..
             } => {
                 let resolved_weight = self.resolve_font_weight(font_weight.as_ref())?;
+                self.check_stock(args.pbox, args.path)?;
                 self.render_text_item(
                     out,
                     TextRenderArgs {
@@ -1914,6 +2082,7 @@ impl<'a> RenderContext<'a> {
                 ..
             } => {
                 let payload = self.resolve_item_text(value)?;
+                self.check_stock(args.pbox, args.path)?;
                 if !payload.is_empty() {
                     let svg_xml = build_qr_svg(payload.as_bytes(), *error_correction, *quiet_zone)?;
                     self.render_qr_item(out, svg_xml, placement, args.pbox)?;
@@ -1958,6 +2127,29 @@ impl<'a> RenderContext<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Refuse a resolved text or QR box whose four mapped corners leave the sheet stock outline.
+    /// A single label, or a box the mapping does not reach, has no outline to cross.
+    fn check_stock(&self, pbox: PlacedBox, path: &str) -> Result<(), AppError> {
+        let Some(slot) = &self.stock else {
+            return Ok(());
+        };
+        let (x0, y0) = slot.map.map(pbox.x, pbox.y);
+        let (x1, y1) = slot.map.map(pbox.x + pbox.w, pbox.y + pbox.h);
+        let (low_x, high_x) = (x0.min(x1), x0.max(x1));
+        let (low_y, high_y) = (y0.min(y1), y0.max(y1));
+        if slot
+            .outline
+            .contains_box(low_x, low_y, high_x - low_x, high_y - low_y)
+        {
+            Ok(())
+        } else {
+            Err(AppError::unsupported_layout_item(
+                Reason::ItemOutOfFrame,
+                format!("at {path}: item crosses the sheet stock outline"),
+            ))
+        }
     }
 
     fn resolve_placement_box(
@@ -2179,7 +2371,24 @@ impl<'a> RenderContext<'a> {
         let ((canvas_w, canvas_h), inner) =
             crate::resolver::container_frames((args.pbox.w, args.pbox.h), rotation, args.padding);
 
-        let child_source = self.render_items(
+        let child_ctx = match &self.stock {
+            Some(slot) => {
+                let placed = crate::resolver::Placed {
+                    x: args.pbox.x,
+                    y: args.pbox.y,
+                    w: args.pbox.w,
+                    h: args.pbox.h,
+                };
+                let local = crate::resolver::container_child_map(placed, args.padding, rotation);
+                self.with_slot(
+                    crate::resolver::SlotMap::compose(&slot.map, &local),
+                    slot.outline,
+                )
+            }
+            None => self.with_data(self.data),
+        };
+
+        let child_source = child_ctx.render_items(
             args.items,
             args.children_measured,
             inner,
@@ -2285,7 +2494,7 @@ pub const SAMPLE_PNG_DATA_URI: &str =
 mod tests {
     use super::{
         count_pdf_pages, render_sheet_pages, render_single_label, render_single_label_image,
-        render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
+        render_single_label_pdf, render_thumbnail_png, Frame, FrameItem, SAMPLE_PNG_DATA_URI,
     };
     use crate::errors::AppError;
     use crate::models::{
@@ -4788,6 +4997,8 @@ layout:
                     paper_height: 10.0,
                     label_width: 10.0,
                     label_height: 10.0,
+                    shape: Default::default(),
+                    rounded: None,
                     positions: vec![SheetPosition([0.0, 0.0]), SheetPosition([10.0, 0.0])],
                 },
                 params: IndexMap::from([(
@@ -4855,6 +5066,189 @@ layout:
         .expect("render");
         assert!(pdf.starts_with(b"%PDF"));
         assert_eq!(count_pdf_pages(&pdf), 2);
+    }
+
+    /// Parse and validate `yaml`, render it as a one-label sheet batch with `data`, and return the
+    /// batch result. Data keys are passed straight through as the label's `data` object.
+    fn render_sheet_yaml(yaml: &str, data: serde_json::Value) -> Result<Vec<u8>, AppError> {
+        let content = crate::parse::parse_template(yaml).expect("parse sheet template");
+        content.validate().expect("validate sheet template");
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            content,
+        };
+        let data = match data {
+            serde_json::Value::Object(map) => map.into_iter().collect(),
+            _ => panic!("label data must be an object"),
+        };
+        let label = LabelInput {
+            data,
+            copies: std::num::NonZeroU32::MIN,
+        };
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = crate::render::resolve_environment(&template, &settings, &datetime)
+            .expect("resolve environment");
+        render_sheet_pages(&template, &[label], 0, &env)
+    }
+
+    /// The reason slug on the first failure of a batch error.
+    fn first_batch_reason(err: &AppError) -> Option<&str> {
+        err.details()?["failures"][0]["details"]["reason"].as_str()
+    }
+
+    fn ellipse_sheet_with(params_block: &str, layout: &str) -> String {
+        format!(
+            "name: T\nunit: mm\ndpi: 200\n{params_block}format:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 50\n  label_height: 50\n  shape: ellipse\n  positions: [[0.0, 0.0]]\nlayout:\n{layout}\n"
+        )
+    }
+
+    #[test]
+    fn a_centred_line_fills_the_wide_middle_of_an_ellipse() {
+        let yaml = ellipse_sheet_with(
+            "",
+            "  - type: text\n    value: \"A very wide centred line\"\n    at: [0.55, 20.0]\n    size: [48.9, 10.0]\n    font_size: 6\n",
+        );
+        let pdf = render_sheet_yaml(&yaml, json!({})).expect("the wide middle must render");
+        assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn a_parameter_box_is_checked_at_render_after_its_default_passed_at_load() {
+        let yaml = ellipse_sheet_with(
+            "params:\n  - name: w\n    type: number\n    default: 40\n",
+            "  - type: text\n    value: \"x\"\n    at: [5.0, 20.0]\n    size: [\"{w}\", 10.0]\n    font_size: 6\n",
+        );
+        assert!(render_sheet_yaml(&yaml, json!({"w": 40})).is_ok());
+        let err = render_sheet_yaml(&yaml, json!({"w": 45})).unwrap_err();
+        assert_eq!(first_batch_reason(&err), Some("item_out_of_frame"));
+        assert!(err.details().unwrap().to_string().contains("layout[0]"));
+    }
+
+    #[test]
+    fn packed_flow_content_is_checked_at_render() {
+        let yaml = ellipse_sheet_with(
+            "",
+            "  - type: container\n    at: [32.0, 0.0]\n    size: [15.0, 10.0]\n    flow:\n      direction: row\n    items:\n      - type: text\n        value: \"x\"\n        size: [fill, 10.0]\n        font_size: 6\n",
+        );
+        let err = render_sheet_yaml(&yaml, json!({})).unwrap_err();
+        assert_eq!(first_batch_reason(&err), Some("item_out_of_frame"));
+    }
+
+    #[test]
+    fn a_nested_rotated_qr_crosses_the_curve_only_at_the_requested_size() {
+        let yaml = ellipse_sheet_with(
+            "params:\n  - name: box\n    type: number\n    default: 5\n",
+            "  - type: container\n    at: [0.0, 0.0]\n    size: [50.0, 50.0]\n    rotate: 90\n    padding: 1.0\n    items:\n      - type: qr\n        value: \"x\"\n        at: [20.0, 20.0]\n        size: [\"{box}\", \"{box}\"]\n",
+        );
+        assert!(render_sheet_yaml(&yaml, json!({"box": 5})).is_ok());
+        let err = render_sheet_yaml(&yaml, json!({"box": 25})).unwrap_err();
+        assert_eq!(first_batch_reason(&err), Some("item_out_of_frame"));
+        assert!(
+            err.details()
+                .unwrap()
+                .to_string()
+                .contains("layout[0].items[0]"),
+            "{}",
+            err.details().unwrap()
+        );
+    }
+
+    /// A one-slot thumbnail of `yaml`, decoded to a grayscale image.
+    fn thumbnail_gray(yaml: &str) -> image::GrayImage {
+        let content = crate::parse::parse_template(yaml).expect("parse sheet template");
+        content.validate().expect("validate sheet template");
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let png = render_thumbnail_png(&content, &HashMap::new(), &settings, &datetime)
+            .expect("thumbnail");
+        image::load_from_memory(&png)
+            .expect("decode png")
+            .to_luma8()
+    }
+
+    fn assert_dark(img: &image::GrayImage, x: u32, y: u32) {
+        let value = img.get_pixel(x, y).0[0];
+        assert!(value < 128, "pixel ({x},{y}) is {value}, expected dark");
+    }
+
+    fn assert_light(img: &image::GrayImage, x: u32, y: u32) {
+        let value = img.get_pixel(x, y).0[0];
+        assert!(value >= 128, "pixel ({x},{y}) is {value}, expected light");
+    }
+
+    #[test]
+    fn an_ellipse_thumbnail_clips_a_full_slot_background() {
+        let yaml = ellipse_sheet_with(
+            "",
+            "  - type: container\n    at: [0.0, 0.0]\n    size: [50.0, 50.0]\n    background: black\n    items: []\n",
+        );
+        let img = thumbnail_gray(&yaml);
+        assert_light(&img, 1, 1);
+        assert_dark(&img, img.width() / 2, img.height() / 2);
+    }
+
+    #[test]
+    fn a_rounded_thumbnail_clips_only_its_corners() {
+        let yaml = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 60\n  label_height: 40\n  rounded: 5\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [60.0, 40.0]\n    background: black\n    items: []\n";
+        let img = thumbnail_gray(yaml);
+        let (mid_y, mid_x) = (img.height() / 2, img.width() / 2);
+        assert_light(&img, 1, 1);
+        assert_dark(&img, 1, mid_y);
+        assert_dark(&img, mid_x, mid_y);
+    }
+
+    fn collect_slot_clips(frame: &Frame, out: &mut Vec<(f64, f64)>) {
+        for (_, item) in frame.items() {
+            if let FrameItem::Group(group) = item {
+                if group
+                    .label
+                    .is_some_and(|label| label.resolve().as_str() == super::SLOT_CLIP_LABEL)
+                {
+                    assert!(
+                        group.clip.is_some(),
+                        "a labelled ellipse slot must carry a clip"
+                    );
+                    out.push((group.frame.width().to_pt(), group.frame.height().to_pt()));
+                }
+                collect_slot_clips(&group.frame, out);
+            }
+        }
+    }
+
+    #[test]
+    fn each_populated_ellipse_slot_gets_its_own_clip_across_pages() {
+        let yaml = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 50\n  label_height: 50\n  shape: ellipse\n  positions: [[0.0, 0.0], [50.0, 50.0]]\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [50.0, 50.0]\n    background: black\n    items: []\n";
+        let content = crate::parse::parse_template(yaml).expect("parse");
+        content.validate().expect("validate");
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            content,
+        };
+        let labels: Vec<LabelInput> = (0..3)
+            .map(|_| LabelInput {
+                data: HashMap::new(),
+                copies: std::num::NonZeroU32::MIN,
+            })
+            .collect();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = crate::render::resolve_environment(&template, &settings, &datetime).unwrap();
+        let doc =
+            super::compile_sheet_document(&template, &labels, 0, &env).expect("compile sheet");
+
+        assert_eq!(doc.pages().len(), 2);
+        let mut clips = Vec::new();
+        for page in doc.pages() {
+            collect_slot_clips(&page.frame, &mut clips);
+        }
+        // One clip per populated slot: 2 on page one, 1 on page two.
+        assert_eq!(clips.len(), 3);
+        let expected = 50.0 / 25.4 * 72.0;
+        for (w, h) in clips {
+            assert!((w - expected).abs() < 0.5, "slot clip width {w}");
+            assert!((h - expected).abs() < 0.5, "slot clip height {h}");
+        }
     }
 
     #[test]
@@ -5038,6 +5432,8 @@ layout:
                     paper_height: 5.0,
                     label_width: 10.0,
                     label_height: 5.0,
+                    shape: Default::default(),
+                    rounded: None,
                     positions: vec![SheetPosition([0.0, 0.0])],
                 },
                 params: IndexMap::from([(
@@ -5158,6 +5554,8 @@ layout:
                     paper_height: 20.0,
                     label_width: 20.0,
                     label_height: 20.0,
+                    shape: Default::default(),
+                    rounded: None,
                     positions: vec![SheetPosition([0.0, 0.0])],
                 },
                 params: IndexMap::from([(
@@ -5363,8 +5761,8 @@ layout:
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
-    /// #135: every template in either root must parse, validate and render — the five catalog
-    /// entries and the five fixtures alike. Deliberately wider than the catalog: `brother_18mm_qr`,
+    /// #135: every template in either root must parse, validate and render — the catalog entries
+    /// and the fixtures alike. Deliberately wider than the catalog: `brother_18mm_qr`,
     /// `brother_9mm` and `brother_18mm` have zero references anywhere in `src/`, so this gate is the
     /// only thing proving they work. An exact set, not a floor: "render whatever the loader found"
     /// passes vacuously the moment a root is misconfigured and the loader quietly returns fewer.
@@ -5396,6 +5794,8 @@ layout:
             "container_rect_rounded_corner",
             "container_rect_stroked_edge",
             "homebox-qr",
+            "ol1417",
+            "ol2682",
         ]);
         assert_eq!(
             found, expected,
@@ -5457,6 +5857,8 @@ layout:
             "brother_18mm",
             "brother_24mm",
             "brother_9mm",
+            "ol1417",
+            "ol2682",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -5641,6 +6043,8 @@ layout:
                 paper_height: 100.0,
                 label_width: 10.0,
                 label_height: 5.0,
+                shape: Default::default(),
+                rounded: None,
                 positions: vec![SheetPosition([0.0, 0.0])],
             },
             params: IndexMap::new(),

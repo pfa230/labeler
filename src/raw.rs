@@ -182,6 +182,10 @@ pub struct SheetFormatRaw {
     pub paper_height: f32,
     pub label_width: f32,
     pub label_height: f32,
+    #[serde(default)]
+    pub shape: Option<String>,
+    #[serde(default)]
+    pub rounded: Option<f32>,
     pub positions: Vec<SheetPosition>,
 }
 

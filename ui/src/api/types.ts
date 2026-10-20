@@ -2,7 +2,7 @@ export interface ApiErrorBody { error: { code: string; message: string; details?
 export type Dimension = number | { min?: number; max?: number };
 export type TemplateFormat =
   | { type: "single"; width: Dimension; height: number }
-  | { type: "sheet"; paper_width: number; paper_height: number; label_width: number; label_height: number; positions: [number, number][] };
+  | { type: "sheet"; paper_width: number; paper_height: number; label_width: number; label_height: number; shape?: "rect" | "ellipse"; rounded?: number; positions: [number, number][] };
 
 export type ParamValue = string | number | boolean | string[];
 
