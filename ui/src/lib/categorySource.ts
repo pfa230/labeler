@@ -43,7 +43,7 @@ function locate(source: string): Located {
     return { kind: "unsupported", reason: UNSUPPORTED_SOURCE };
   }
 
-  const pair = root.items.find((p) => {
+  const matches = root.items.filter((p) => {
     const key = p.key;
     if (!key) return false;
     if (isScalar(key)) return key.value === "categories";
@@ -53,9 +53,14 @@ function locate(source: string): Located {
     }
     return false;
   });
-  if (!pair) {
+  if (matches.length === 0) {
     return absentKey(root, source);
   }
+  if (matches.length > 1) {
+    return { kind: "unsupported", reason: UNSUPPORTED_SOURCE };
+  }
+
+  const pair = matches[0];
 
   const key = pair.key;
   if (!isScalar(key) || typeof key.value !== "string" || key.anchor || key.tag) {

@@ -35,6 +35,13 @@ describe("readCategories", () => {
     });
   });
 
+  it("refuses a categories key duplicated by an aliased key", () => {
+    expect(readCategories("name: &field categories\ncategories: [Old]\n*field : [Other]\n")).toEqual({
+      ok: false,
+      reason: expect.any(String),
+    });
+  });
+
   it("refuses an explicit tag on the list", () => {
     expect(readCategories("categories: !foo [A]\n")).toEqual({
       ok: false,
@@ -275,6 +282,10 @@ describe("editCategories", () => {
   it.each([
     ["a shared anchor reused through an alias", "base: &c [Old]\ncategories: *c\n"],
     ["an indirect categories key through an alias", "name: &field categories\n*field : [Old]\n"],
+    [
+      "a categories key duplicated by an aliased key",
+      "name: &field categories\ncategories: [Old]\n*field : [Other]\n",
+    ],
     ["an anchored list", "categories: &c [Old]\n"],
     ["a tagged list", "categories: !foo [A]\n"],
     ["an anchored entry", "categories: [&a A]\n"],

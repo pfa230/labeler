@@ -317,9 +317,11 @@ export function Templates() {
     }
   };
 
-  const handleSaved = (id: string, categories: string[]) => {
-    // A save that settles after Cancel must close only the editor it belongs to, not one opened since.
-    setEditor((current) => (current && current.id === id ? null : current));
+  const handleSaved = (edited: { id: string; source: string }, categories: string[]) => {
+    // A save that settles after Cancel must close only the editor instance it belongs to; a later
+    // editor for the same template is a different object and must stay open with its own draft.
+    setEditor((current) => (current === edited ? null : current));
+    const id = edited.id;
     // The summaries refetch asynchronously; decide against the categories this save wrote.
     setSelectedFilter((current) => {
       if (current.kind === "category") {
@@ -465,7 +467,7 @@ export function Templates() {
           id={editor.id}
           source={editor.source}
           onClose={() => setEditor(null)}
-          onSaved={(categories) => handleSaved(editor.id, categories)}
+          onSaved={(categories) => handleSaved(editor, categories)}
         />
       )}
 

@@ -625,6 +625,41 @@ describe("Templates list", () => {
     expect(screen.getByText("Pallet")).toBeInTheDocument();
   });
 
+  it("keeps a reopened editor's draft when an earlier save settles", async () => {
+    let release!: () => void;
+    const holdPut = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Shipping"])],
+      sources: { pallet: "id: pallet\ncategories: [Shipping]\nname: x\n" },
+      holdPut,
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.change(await screen.findByLabelText("Category 1"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+
+    // Cancel the saving editor and reopen the same template with a fresh draft.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Edit categories for pallet")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+    fireEvent.change(screen.getByLabelText("Category 2"), { target: { value: "Archive" } });
+
+    release();
+
+    // The completed save must not close the reopened editor or discard its new entry.
+    expect(await screen.findByText("Saved pallet")).toBeInTheDocument();
+    expect(screen.getByText("Edit categories for pallet")).toBeInTheDocument();
+    expect(screen.getByLabelText("Category 2")).toHaveValue("Archive");
+  });
+
   it("refuses an anchored categories list and links to the YAML editor without writing", async () => {
     const { writes } = stubFetch({
       templates: [tpl("pallet", "Pallet", ["Old"])],
