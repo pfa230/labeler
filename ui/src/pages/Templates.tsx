@@ -154,26 +154,24 @@ function CategoryEditor({
     );
   }
 
-  const submit = () => {
+  // Awaiting the mutation keeps Save's completion handling alive after this editor unmounts: a
+  // per-call `mutate` callback is dropped once the observer has no listeners, so closing the editor
+  // mid-save would swallow the filter refresh.
+  const submit = async () => {
     const result = editCategories(source, entries);
     if (!result.ok) {
       setSaveError(result.reason);
       return;
     }
-    save.mutate(
-      { id, yaml: result.source },
-      {
-        onSuccess: () => {
-          push({ kind: "ok", message: `Saved ${id}` });
-          onSaved(entries);
-        },
-        onError: (err) => {
-          const message = err instanceof Error ? err.message : "Save failed";
-          setSaveError(message);
-          push({ kind: "error", message });
-        },
-      },
-    );
+    try {
+      await save.mutateAsync({ id, yaml: result.source });
+      push({ kind: "ok", message: `Saved ${id}` });
+      onSaved(entries);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Save failed";
+      setSaveError(message);
+      push({ kind: "error", message });
+    }
   };
 
   return (
@@ -308,7 +306,8 @@ export function Templates() {
   };
 
   const handleSaved = (id: string, categories: string[]) => {
-    setEditor(null);
+    // A save that settles after Cancel must close only the editor it belongs to, not one opened since.
+    setEditor((current) => (current && current.id === id ? null : current));
     // The summaries refetch asynchronously; decide against the categories this save wrote.
     setSelectedFilter((current) => {
       if (current.kind === "category") {

@@ -67,6 +67,7 @@ function stubFetch(opts?: {
   templates?: typeof templates;
   sources?: Record<string, string>;
   putFails?: (id: string) => boolean;
+  holdPut?: Promise<void>;
 }) {
   let favorites = [...(opts?.favorites ?? [])];
   const recent = [...(opts?.recent ?? [])];
@@ -93,6 +94,7 @@ function stubFetch(opts?: {
       const id = decodeURIComponent(url.slice("/api/templates/".length));
       const body = typeof init?.body === "string" ? init.body : "";
       writes.push({ id, body });
+      if (opts?.holdPut) await opts.holdPut;
       if (opts?.putFails?.(id)) {
         return new Response(
           JSON.stringify({ error: { code: "Invalid", message: "server said no" } }),
@@ -549,6 +551,43 @@ describe("Templates list", () => {
     );
     expect(writes).toHaveLength(0);
     expect(screen.queryByText("Saved pallet")).not.toBeInTheDocument();
+  });
+
+  it("returns a removed filter to All when the save settles after the editor is cancelled", async () => {
+    let release!: () => void;
+    const holdPut = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { writes } = stubFetch({
+      templates: [tpl("pallet", "Pallet", ["Shipping"])],
+      sources: { pallet: "id: pallet\ncategories: [Shipping]\nname: x\n" },
+      holdPut,
+    });
+    renderPage();
+    await screen.findByText("Pallet");
+    fireEvent.click(filterButton("Shipping"));
+
+    fireEvent.click(editButton("Pallet"));
+    fireEvent.change(await screen.findByLabelText("Category 1"), { target: { value: "Warehouse" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(writes).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Edit categories for pallet")).not.toBeInTheDocument(),
+    );
+
+    release();
+    await waitFor(() => {
+      const toolbar = screen.getByRole("toolbar", { name: "Category filter" });
+      expect(within(toolbar).queryByRole("button", { name: "Shipping" })).not.toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "Warehouse" })).toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "All" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+    expect(screen.getByText("Pallet")).toBeInTheDocument();
   });
 
   it("refuses an anchored categories list and links to the YAML editor without writing", async () => {
