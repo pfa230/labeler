@@ -16,7 +16,7 @@ import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { useSheetPreview } from "../lib/sheetPreview";
-import { pruneDataForSubmit } from "../lib/labelInputs";
+import { resolveImportData } from "../lib/labelInputs";
 import { ApiError, printBatch, renderBatch, saveBlob, sentMessage } from "../api/client";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
@@ -26,6 +26,13 @@ type BatchFailures = { failures?: { index: number; code: string; message: string
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
+
+// The list-encoding errors of every row, each naming its 1-based data row and column, in row order.
+function importEncodingErrors(rows: LabelGridRow[], params: TemplateDetail["params"]): string[] {
+  return rows.flatMap((r, i) =>
+    resolveImportData(r.data, params).errors.map((e) => `Row ${i + 1}, ${e.field}: ${e.message}`),
+  );
+}
 
 export function Import() {
   const { data: templates, isError: templatesFailed } = useTemplates();
@@ -106,26 +113,30 @@ function CsvEditor({
 
   const params = useMemo(() => detail?.params ?? [], [detail]);
   const templateFields = useMemo(() => params.map((p) => p.name), [params]);
-  const listNames = useMemo(
-    () => new Set(params.filter((p) => p.control === "list").map((p) => p.name)),
-    [params],
-  );
 
   const displayedFields = useMemo(() => {
     const set = new Set(csvFields);
     for (const f of templateFields) set.add(f);
-    return [...set].filter((f) => !listNames.has(f));
-  }, [csvFields, templateFields, listNames]);
+    return [...set];
+  }, [csvFields, templateFields]);
 
   const cellInput = (field: string) => (detail ? params.find((p) => p.name === field) : { name: field, control: "text" as const });
 
   // The first row is previewed when none is selected or the selected one was removed.
   const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : rows[0]?.id;
 
-  const dataFor = (r: LabelGridRow) => pruneDataForSubmit(r.data, params);
+  // Decode declared list cells against the current template; the same resolution feeds previews and
+  // submission, so an encoding error blocks both.
+  const dataFor = (r: LabelGridRow) => resolveImportData(r.data, params).data;
+  const encodingErrors = useMemo(() => importEncodingErrors(rows, params), [rows, params]);
+  const hasEncodingError = encodingErrors.length > 0;
 
   // Build the resolved label for the selected row using the same resolution the submit path uses.
-  const selRow = rows.find((r) => r.id === resolvedSelectedId);
+  const selIndex = rows.findIndex((r) => r.id === resolvedSelectedId);
+  const selRow = selIndex === -1 ? undefined : rows[selIndex];
+  const selEncodingError = selRow
+    ? resolveImportData(selRow.data, params).errors.map((e) => `Row ${selIndex + 1}, ${e.field}: ${e.message}`).join("; ")
+    : "";
   const previewData = detail && selRow ? dataFor(selRow) : undefined;
   const previewLabel = previewData ? { data: previewData } : undefined;
 
@@ -136,14 +147,22 @@ function CsvEditor({
 
   const sheetPreview = useSheetPreview(
     { templateId: detail?.id ?? "", labels: resolveLabels(rows, copies, dataFor), startSlot },
-    isSheet && rows.length > 0 && !blocked,
+    isSheet && rows.length > 0 && !blocked && !hasEncodingError,
   );
   const rowPreview = useRowPreview({
     templateId: detail?.id ?? "",
-    label: isSheet ? undefined : detail ? previewLabel : undefined,
+    label: isSheet || selEncodingError ? undefined : detail ? previewLabel : undefined,
   });
 
-  const preview = isSheet ? (blocked ? { loading: false, blocked } : sheetPreview) : rowPreview;
+  const preview = isSheet
+    ? blocked
+      ? { loading: false, blocked }
+      : hasEncodingError
+        ? { loading: false, error: encodingErrors.join("; ") }
+        : sheetPreview
+    : selEncodingError
+      ? { loading: false, error: selEncodingError }
+      : rowPreview;
 
   const ignoredNotices: string[] = [];
 
@@ -195,6 +214,11 @@ function CsvEditor({
     // disabled state lags a blur-commit by one render). Check the live snapshot against the printer.
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
+    const snapshotError = importEncodingErrors(snapshot, params)[0];
+    if (snapshotError) {
+      setFormError(snapshotError);
+      return;
+    }
     const printTo = mode === "print" ? printer : undefined;
     if (mode === "print" && !printTo) {
       setFormError("Select a printer to print.");
@@ -309,38 +333,45 @@ function CsvEditor({
         </button>
       </div>
 
-      {(issues.length > 0 || ignoredNotices.length > 0) && (
+      {(issues.length > 0 || encodingErrors.length > 0 || ignoredNotices.length > 0) && (
         <ul className="text-sm" style={{ color: "var(--bad)" }}>
-          {[...issues, ...ignoredNotices].map((m) => (
+          {[...issues, ...encodingErrors, ...ignoredNotices].map((m) => (
             <li key={m}>{m}</li>
           ))}
         </ul>
       )}
 
       {displayedFields.length > 0 && (
-        <LabelGrid
-          rows={rows}
-          fields={displayedFields}
-          cellInput={cellInput}
-          onRowsChange={(next, { indexes }) => {
-            // Rows may carry a prior run's annotation; clear it on the edited rows.
-            const dirty = new Set(indexes);
-            commitRows(next.map((r, i) => ({ ...r, annotation: dirty.has(i) ? undefined : r.annotation })));
-            setFormError(null); // editing invalidates a prior submit error
-          }}
-          onDuplicate={(id) => {
-            // A structural change invalidates the prior run's per-row results, so clear annotations.
-            commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
-            setFormError(null);
-          }}
-          onRemove={(id) => {
-            commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
-            setFormError(null);
-          }}
-          disabled={busy}
-          selectedRowId={isSheet ? undefined : resolvedSelectedId}
-          onSelectRow={isSheet ? undefined : setSelectedRowId}
-        />
+        <>
+          {params.some((p) => p.control === "list") && (
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              List cells hold a JSON array of strings, like [&quot;A&quot;,&quot;B&quot;]; leave a cell empty to omit the parameter.
+            </p>
+          )}
+          <LabelGrid
+            rows={rows}
+            fields={displayedFields}
+            cellInput={cellInput}
+            onRowsChange={(next, { indexes }) => {
+              // Rows may carry a prior run's annotation; clear it on the edited rows.
+              const dirty = new Set(indexes);
+              commitRows(next.map((r, i) => ({ ...r, annotation: dirty.has(i) ? undefined : r.annotation })));
+              setFormError(null); // editing invalidates a prior submit error
+            }}
+            onDuplicate={(id) => {
+              // A structural change invalidates the prior run's per-row results, so clear annotations.
+              commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
+              setFormError(null);
+            }}
+            onRemove={(id) => {
+              commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined })));
+              setFormError(null);
+            }}
+            disabled={busy}
+            selectedRowId={isSheet ? undefined : resolvedSelectedId}
+            onSelectRow={isSheet ? undefined : setSelectedRowId}
+          />
+        </>
       )}
 
       {rows.length > 0 && (
@@ -427,7 +458,7 @@ function CsvEditor({
             <button
               type="button"
               onClick={() => run("print")}
-              disabled={busy || !printer || stale}
+              disabled={busy || !printer || stale || hasEncodingError}
               className={buttonBase}
               style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
             >
@@ -436,7 +467,7 @@ function CsvEditor({
             <button
               type="button"
               onClick={() => run("download")}
-              disabled={busy || stale}
+              disabled={busy || stale || hasEncodingError}
               className={`${buttonBase} border`}
               style={{ borderColor: "var(--border)", color: "var(--ink)" }}
             >

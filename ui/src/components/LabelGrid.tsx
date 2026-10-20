@@ -322,7 +322,7 @@ function DataCell({ row, column }: ICellProps) {
     );
   }
 
-  if (spec.control === "textarea") {
+  if (spec.control === "textarea" || spec.control === "list") {
     const lines = strValue.split(/\r\n|\n/);
     const isMultiline = lines.length > 1;
     const remaining = lines.length - 1;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { blankOptionLabel, getOwnKey, pruneDataForSubmit, setOwnKey } from "./labelInputs";
+import { blankOptionLabel, getOwnKey, pruneDataForSubmit, resolveImportData, setOwnKey } from "./labelInputs";
 import type { Param } from "../api/types";
 
 const param = (name: string, control: Param["control"], extra: Partial<Param> = {}): Param =>
@@ -89,6 +89,56 @@ describe("pruneDataForSubmit", () => {
       held_off: "false",
       unreadable: "yes",
     });
+  });
+});
+
+describe("resolveImportData", () => {
+  const listParam = (name = "tags"): Param => ({ name, type: "list", control: "list" });
+
+  it("decodes a declared list cell as a JSON array of strings, keeping order, duplicates and empty elements", () => {
+    const { data, errors } = resolveImportData({ tags: '["A","","B,C","A"]' }, [listParam()]);
+    expect(errors).toEqual([]);
+    expect(data).toEqual({ tags: ["A", "", "B,C", "A"] });
+  });
+
+  it("applies normal JSON escapes inside the array", () => {
+    const { data, errors } = resolveImportData({ tags: '["line\\nbreak","quote\\"d"]' }, [listParam()]);
+    expect(errors).toEqual([]);
+    expect(data).toEqual({ tags: ["line\nbreak", 'quote"d'] });
+  });
+
+  it("omits an empty or absent list cell, and distinguishes [] from [\"\"]", () => {
+    expect(resolveImportData({ tags: "" }, [listParam()]).data).toEqual({});
+    expect(resolveImportData({}, [listParam()]).data).toEqual({});
+    expect(resolveImportData({ tags: "[]" }, [listParam()]).data).toEqual({ tags: [] });
+    expect(resolveImportData({ tags: '[""]' }, [listParam()]).data).toEqual({ tags: [""] });
+  });
+
+  it("reports a value that is not an array of strings against its field and omits it", () => {
+    expect(resolveImportData({ tags: "[1]" }, [listParam()])).toEqual({
+      data: {},
+      errors: [{ field: "tags", message: "must be a JSON array of strings" }],
+    });
+    expect(resolveImportData({ tags: '"x"' }, [listParam()]).errors).toHaveLength(1);
+    expect(resolveImportData({ tags: '[["a"]]' }, [listParam()]).errors).toHaveLength(1);
+  });
+
+  it("reports malformed JSON and nonempty whitespace", () => {
+    expect(resolveImportData({ tags: "[" }, [listParam()]).errors).toEqual([
+      { field: "tags", message: "is not valid JSON" },
+    ]);
+    expect(resolveImportData({ tags: "   " }, [listParam()]).errors).toHaveLength(1);
+  });
+
+  it("keeps pruneDataForSubmit's rules for every other control", () => {
+    const params: Param[] = [
+      { name: "title", type: "string", control: "text" },
+      { name: "flag", type: "boolean", control: "checkbox", default: true },
+      listParam(),
+    ];
+    const { data, errors } = resolveImportData({ title: "", flag: "", tags: '["x"]', extra: "drop" }, params);
+    expect(errors).toEqual([]);
+    expect(data).toEqual({ flag: true, tags: ["x"] });
   });
 });
 

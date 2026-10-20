@@ -35,6 +35,52 @@ export function pruneDataForSubmit(data: Record<string, unknown>, params: Param[
   return result;
 }
 
+export interface ImportEncodingError {
+  field: string;
+  message: string;
+}
+
+// Decode a declared list parameter's Import cell. An empty or absent cell means omission; otherwise the
+// text must be a JSON array of strings, with normal JSON escapes. Returns the decoded values, or the
+// reason the cell cannot be decoded.
+function decodeListCell(v: unknown): { values?: string[]; error?: string } {
+  if (isBlank(v)) return {};
+  if (typeof v !== "string") return { error: "must be a JSON array of strings" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    return { error: "is not valid JSON" };
+  }
+  if (!Array.isArray(parsed) || !parsed.every((e) => typeof e === "string")) {
+    return { error: "must be a JSON array of strings" };
+  }
+  return { values: parsed as string[] };
+}
+
+// Resolve an Import row's raw cell text into the data its label submits. Declared list cells are
+// decoded here; every other control keeps pruneDataForSubmit's rules. A list cell that is neither
+// absent, empty, nor a JSON array of strings yields an error and stays out of the data; the caller
+// keeps the raw cell editable and blocks submission until it is corrected or omitted.
+export function resolveImportData(
+  data: Record<string, unknown>,
+  params: Param[],
+): { data: Record<string, ParamValue>; errors: ImportEncodingError[] } {
+  const errors: ImportEncodingError[] = [];
+  const decoded: Record<string, unknown> = {};
+  for (const param of params) {
+    const v = getOwnKey(data, param.name);
+    if (param.control === "list") {
+      const { values, error } = decodeListCell(v);
+      if (error) errors.push({ field: param.name, message: error });
+      else if (values !== undefined) setOwnKey(decoded, param.name, values);
+    } else if (v !== undefined) {
+      setOwnKey(decoded, param.name, v);
+    }
+  }
+  return { data: pruneDataForSubmit(decoded, params), errors };
+}
+
 export function blankOptionLabel(param: Pick<Param, "default">): string {
   return param.default === undefined ? "" : `(default: ${String(param.default)})`;
 }

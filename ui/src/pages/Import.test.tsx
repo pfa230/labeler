@@ -571,7 +571,7 @@ describe("CSV Import screen: datetime parameters", () => {
     expect(body.labels[0].data.printed_on).toBe("not a date");
   });
 
-  it("skips list parameters when building grid columns and does not break import", async () => {
+  it("shows a declared list column, decodes its JSON cell, and submits the array", async () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -599,27 +599,22 @@ describe("CSV Import screen: datetime parameters", () => {
     await screen.findByRole("option", { name: "Tag" });
     fireEvent.change(picker, { target: { value: "t1" } });
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    // Include a list column in the CSV: without the Import.tsx filter it would render as a `--` column
-    // and without the pruneDataForSubmit guard it would be sent as `tags: "red;blue"` and get 400.
-    fireEvent.change(csv, { target: { value: "sku,tags\n123,red;blue\n" } });
+    // The outer CSV quoting carries a JSON array whose elements hold commas and quotes.
+    fireEvent.change(csv, { target: { value: 'sku,tags\n123,"[""A"","""",""B,C"",""A""]"\n' } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByLabelText(/copies/i);
 
-    // csvFields contains "tags" but displayedFields must filter it out
-    expect(await screen.findByDisplayValue("123")).toBeInTheDocument();
-    expect(screen.queryByText("tags")).toBeNull();
-    // The grid must not show an inert column for the list field
-    expect(screen.queryByText("red;blue")).toBeNull();
+    // The list column is visible and editable as JSON text.
+    const cell = (await screen.findByLabelText("edit tags")) as HTMLTextAreaElement;
+    expect(cell.tagName).toBe("TEXTAREA");
+    expect(cell.value).toBe('["A","","B,C","A"]');
+
     const download = await screen.findByRole("button", { name: /download/i });
-    expect(download).toBeEnabled();
+    await waitFor(() => expect(download).toBeEnabled());
     fireEvent.click(download);
-    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === "/api/render")).toBe(true));
-    const batchCall = fetchMock.mock.calls.find(([u]) => String(u) === "/api/render")!;
-    const body = JSON.parse((batchCall[1] as RequestInit).body as string);
-    // A list column carried as a CSV string must not reach the batch body (pruneDataForSubmit guard).
-    expect(body.labels).toHaveLength(1);
-    expect(body.labels[0].data.sku).toBe("123");
-    expect(body.labels[0].data.tags).toBeUndefined();
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(body.labels[0].data).toEqual({ sku: "123", tags: ["A", "", "B,C", "A"] });
   });
 });
 
@@ -1012,12 +1007,12 @@ describe("issue-413: Import reads the published parameter list", () => {
         .map((h) => h.textContent)
         .filter((h) => paramsDetail.params.some((p) => p.name === h));
     await screen.findByRole("grid", { name: /label rows/i });
-    expect(declared()).toEqual(["title", "subtitle", "code", "flag", "on"]);
+    expect(declared()).toEqual(["title", "subtitle", "code", "tags", "flag", "on"]);
     fireEvent.change(screen.getByLabelText(/paste csv/i), { target: { value: "title\nx\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     fireEvent.click(await screen.findByRole("button", { name: "remove row" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "remove row" })).not.toBeInTheDocument());
-    expect(declared()).toEqual(["title", "subtitle", "code", "flag", "on"]);
+    expect(declared()).toEqual(["title", "subtitle", "code", "tags", "flag", "on"]);
   });
 
   it("A18: draws columns from detail.params and never requests /inputs", async () => {
@@ -1025,7 +1020,7 @@ describe("issue-413: Import reads the published parameter list", () => {
     await loadCsv("subtitle,title\nsub,tit\n");
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
     const fieldHeaders = headers.filter((h) => paramsDetail.params.some((p) => p.name === h));
-    expect(fieldHeaders).toEqual(["subtitle", "title", "code", "flag", "on"]);
+    expect(fieldHeaders).toEqual(["subtitle", "title", "code", "tags", "flag", "on"]);
     const download = screen.getByRole("button", { name: /^download$/i });
     await waitFor(() => expect(download).toBeEnabled());
     fireEvent.click(download);
@@ -1075,6 +1070,121 @@ describe("issue-413: Import reads the published parameter list", () => {
       [false, false],
       [true, false],
     ]);
+  });
+
+  it("shows concise list-cell help beside the grid", async () => {
+    renderPage();
+    await loadCsv("title\nfirst\n");
+    expect(screen.getByText(/JSON array of strings/i)).toBeInTheDocument();
+  });
+
+  it("a declared list the CSV lacks occupies an initially empty editable column and is omitted on submit", async () => {
+    renderPage();
+    await loadCsv("title\nfirst\n");
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toContain("tags");
+    const cell = (await screen.findByLabelText("edit tags")) as HTMLTextAreaElement;
+    expect(cell.tagName).toBe("TEXTAREA");
+    expect(cell.value).toBe("");
+    const download = screen.getByRole("button", { name: /^download$/i });
+    await waitFor(() => expect(download).toBeEnabled());
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(body.labels[0].data.tags).toBeUndefined();
+  });
+
+  it("distinguishes an empty list cell from [] and [\"\"]", async () => {
+    renderPage();
+    await loadCsv('title,tags\na,\nb,[]\nc,"[""""]"\n');
+    const download = screen.getByRole("button", { name: /^download$/i });
+    await waitFor(() => expect(download).toBeEnabled());
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(body.labels.map((l: { data: Record<string, unknown> }) => l.data.tags)).toEqual([undefined, [], [""]]);
+  });
+
+  it("names a malformed list cell by row and column, blocks submission, and clears on correction", async () => {
+    renderPage();
+    await loadCsv('title,tags\nok,"[""A""]"\nbad,[1]\n');
+    expect(await screen.findByText("Row 2, tags: must be a JSON array of strings")).toBeInTheDocument();
+    const download = screen.getByRole("button", { name: /^download$/i });
+    expect(download).toBeDisabled();
+    expect(countCalls("/api/render")).toBe(0);
+
+    // The malformed cell stays editable; correcting it to an array of strings removes the error.
+    const cells = screen.getAllByLabelText("edit tags") as HTMLTextAreaElement[];
+    expect(cells[1].value).toBe("[1]");
+    fireEvent.change(cells[1], { target: { value: '["1"]' } });
+    await waitFor(() => expect(screen.queryByText(/Row 2, tags/)).toBeNull());
+    await waitFor(() => expect(download).toBeEnabled());
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(body.labels[1].data.tags).toEqual(["1"]);
+  });
+
+  it("shows a malformed row's encoding error in the preview and sends no render request for it", async () => {
+    renderPage();
+    await loadCsv('title,tags\nok,"[""A""]"\nbad,[1]\n');
+    // Row 1 is previewed by default and is valid.
+    await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
+    const before = countCalls("/api/render/label");
+    fireEvent.click(screen.getByLabelText("preview row 2"));
+    expect(await screen.findByText(/Preview failed: Row 2, tags: must be a JSON array of strings/)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(countCalls("/api/render/label")).toBe(before);
+  });
+
+  it("keeps a list cell's raw text across a switch to a scalar parameter and back", async () => {
+    const listDetail = { ...detail, params: [{ name: "tags", type: "list", control: "list" }] };
+    const scalarDetail = { ...detail, id: "t2", name: "Tag2", params: [{ name: "tags", type: "string", control: "text" }] };
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/templates/t1")) return json(listDetail);
+      if (url.startsWith("/api/templates/t2")) return json(scalarDetail);
+      if (url.startsWith("/api/templates")) {
+        return json({
+          templates: [
+            { id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format },
+            { id: "t2", name: "Tag2", description: "", unit: "mm", dpi: 300, format: detail.format },
+          ],
+        });
+      }
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/render")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    fireEvent.change(await screen.findByLabelText(/paste csv/i), { target: { value: 'tags\n["A"]\n' } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    const listCell = (await screen.findByLabelText("edit tags")) as HTMLTextAreaElement;
+    expect(listCell.tagName).toBe("TEXTAREA");
+    fireEvent.change(listCell, { target: { value: '["B"]' } });
+
+    // Switch to a scalar template of the same name: the raw text is recovered, not the array.
+    fireEvent.change(picker, { target: { value: "t2" } });
+    await waitFor(() => expect((screen.getByLabelText("edit tags") as HTMLElement).tagName).toBe("INPUT"));
+    expect((screen.getByLabelText("edit tags") as HTMLInputElement).value).toBe('["B"]');
+
+    // Switch back: the same raw text is decoded as a list again.
+    fireEvent.change(picker, { target: { value: "t1" } });
+    await waitFor(() => expect((screen.getByLabelText("edit tags") as HTMLElement).tagName).toBe("TEXTAREA"));
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).toBeEnabled());
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/render")).toBe(1));
+    const body = JSON.parse((lastCall("/api/render")![1] as RequestInit).body as string);
+    expect(body.labels[0].data.tags).toEqual(["B"]);
   });
 });
 
