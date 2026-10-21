@@ -1,5 +1,21 @@
 # Spec Delta
 
+## MODIFIED Requirements
+
+### Requirement: Grid columns
+
+Except for the result column, a batch grid's columns SHALL be fixed by the template, not by its rows, and SHALL be drawn before any row exists. The Import grid SHALL show the loaded CSV's headers in file order, then every declared parameter the CSV lacks, in declaration order.
+
+#### Scenario: Import keeps the file's order
+
+- **WHEN** a template declares `title`, `subtitle`, `code` and a CSV with headers `subtitle`, `title` is loaded
+- **THEN** the Import grid's columns run `subtitle`, `title`, `code`
+
+#### Scenario: Declared lists occupy columns
+
+- **WHEN** a template declares `title` then list parameter `tags` and the CSV has only the `title` header
+- **THEN** the grid shows `title` then an initially empty editable `tags` column
+
 ## ADDED Requirements
 
 ### Requirement: Batch result display
