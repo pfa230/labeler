@@ -8,7 +8,7 @@ Fixes #187
 
 ## What Changes
 
-- Add a literal `font` family name using the renderer's normalized names, defaulting to Inter; select the shipped Roboto Condensed font as `Roboto`.
+- Add a literal `font` family name using the renderer's normalized names, defaulting to Inter; select the shipped Source Sans 3 font as `SourceSans3VF` and Roboto Condensed as `Roboto`.
 - Ship Source Sans 3, JetBrains Mono and Roboto Condensed, with their licenses.
 - Load custom fonts additively from `{LABELER_CONFIG_DIR}/fonts` on process restart, without host system fonts or an image rebuild.
 - Resolve family and weight consistently for measurement and emission, including static faces and variable fonts without optical-size axes.
