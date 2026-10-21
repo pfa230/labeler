@@ -56,19 +56,9 @@ The two boolean variables are on only for the exact value `true`. Their effects 
 
 ## Custom fonts
 
-Place custom TrueType or OpenType files under `/config/fonts` in the existing
-config volume (`{LABELER_CONFIG_DIR}/fonts` outside Docker), then restart Labeler.
-Select the normalized family name with `font: Family Name` on a text item; names
-are case-insensitive. The shipped selectors are `Inter` (the default),
-`SourceSans3VF` for Source Sans 3, `JetBrains Mono` and `Roboto` for Roboto Condensed.
-See the [custom-family example](AUTHORING.md#font-families).
+Place custom TrueType or OpenType files under `/config/fonts` in the existing config volume (`{LABELER_CONFIG_DIR}/fonts` outside Docker), then restart Labeler. Select the normalized family name with `font: Family Name` on a text item; names are case-insensitive. The shipped selectors are `Inter` (the default), `SourceSans3VF` for Source Sans 3, `JetBrains Mono` and `Roboto` for Roboto Condensed. See the [custom-family example](AUTHORING.md#font-families).
 
-The font inventory is loaded once for the process lifetime. A template-registry
-reload does not reload fonts. Removing a file leaves running renders unchanged;
-after restart, a template naming the missing family is quarantined. An absent
-custom-font directory contributes no fonts, and unusable files contribute no
-family. Bundled families win name collisions. System and renderer-embedded fonts
-are excluded, so mounting custom files adds families without rebuilding the image.
+The font inventory is loaded once for the process lifetime. A template-registry reload does not reload fonts. Removing a file leaves running renders unchanged; after restart, a template naming the missing family is quarantined. An absent custom-font directory contributes no fonts, and unusable files contribute no family. Bundled families win name collisions. System and renderer-embedded fonts are not available. Mounted files add families without rebuilding the image.
 
 ## First run
 

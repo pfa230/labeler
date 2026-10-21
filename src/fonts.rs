@@ -58,10 +58,34 @@ pub(crate) fn inventory() -> &'static FontInventory {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use typst::layout::{Frame, FrameItem};
     use typst::text::FontStretch;
+
+    pub(crate) struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        pub(crate) fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let n = N.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("labeler-fonts-{}-{tag}-{n}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn assert_emitted_font(frame: &Frame, expected: &Font) -> usize {
         frame
@@ -79,9 +103,8 @@ mod tests {
 
     #[test]
     fn loaded_inventory_retains_removed_bytes() {
-        let custom =
-            std::path::PathBuf::from(format!(".agent-runs/font-inventory-{}", std::process::id()));
-        std::fs::create_dir_all(&custom).unwrap();
+        let scratch = TempDir::new("inventory");
+        let custom = scratch.path();
         for font in typst_assets::fonts().flat_map(|bytes| Font::iter(Bytes::new(bytes))) {
             if font.info().family == "Libertinus Serif"
                 && font.info().variant.style == typst::text::FontStyle::Normal
@@ -95,7 +118,7 @@ mod tests {
             }
         }
         std::fs::write(custom.join("unusable.ttf"), b"not a font").unwrap();
-        let inventory = FontInventory::load(Path::new("fonts"), &custom);
+        let inventory = FontInventory::load(Path::new("fonts"), custom);
         for family in ["Inter", "SourceSans3VF", "JetBrains Mono", "Roboto"] {
             assert_eq!(
                 inventory.select(family, 400),
@@ -117,7 +140,7 @@ mod tests {
             let face = ttf_parser::Face::parse(font.data(), font.index()).unwrap();
             assert!(face.variation_axes().is_empty());
         }
-        std::fs::remove_dir_all(&custom).unwrap();
+        std::fs::remove_dir_all(custom).unwrap();
         // A fresh engine must still emit the original loaded face after disk removal.
         for (family, weight) in [
             ("Libertinus Serif", 400),
@@ -140,19 +163,16 @@ mod tests {
                 ) > 0
             );
         }
-        let restarted = FontInventory::load(Path::new("fonts"), &custom);
+        let restarted = FontInventory::load(Path::new("fonts"), custom);
         assert!(restarted.select("Libertinus Serif", 400).is_none());
         assert_eq!(restarted.book.families().count(), 4);
     }
 
     #[test]
     fn bundled_family_excludes_a_closer_custom_weight() {
-        let root = std::path::PathBuf::from(format!(
-            ".agent-runs/font-precedence-{}",
-            std::process::id()
-        ));
-        let bundled = root.join("bundled");
-        let custom = root.join("custom");
+        let root = TempDir::new("precedence");
+        let bundled = root.path().join("bundled");
+        let custom = root.path().join("custom");
         std::fs::create_dir_all(&bundled).unwrap();
         std::fs::create_dir_all(&custom).unwrap();
         let face = |weight| {
@@ -192,6 +212,5 @@ mod tests {
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
         let doc = result.output.unwrap();
         assert!(assert_emitted_font(&doc.pages()[0].frame, &bold) > 0);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

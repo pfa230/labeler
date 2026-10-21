@@ -25,7 +25,7 @@ utoipa-axum = "0.3"
 utoipa-swagger-ui = { version = "10", features = ["axum"] }
 typst = "0.15"
 typst-layout = "0.15"
-typst-as-lib = { version = "0.17", features = ["typst-kit-embed-fonts", "typst-kit-fonts"] }
+typst-as-lib = "0.17"
 typst-render = "0.15"
 typst-pdf = "0.15"
 qrcode = "0.14"

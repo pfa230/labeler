@@ -519,24 +519,20 @@ mod font_tests {
             "{}",
             error.message_text()
         );
-        let dir = std::path::PathBuf::from(format!(
-            ".agent-runs/font-quarantine-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::fonts::tests::TempDir::new("quarantine");
+        let dir = scratch.path();
         std::fs::write(dir.join("unknown.yaml"), unknown).unwrap();
         std::fs::write(
             dir.join("known.yaml"),
             yaml.replace("Libertinus Serif", "Inter"),
         )
         .unwrap();
-        let registry = crate::templates::TemplateRegistry::load_from_dir(&dir).unwrap();
+        let registry = crate::templates::TemplateRegistry::load_from_dir(dir).unwrap();
         assert!(registry.get("known").is_some());
         assert!(registry.get("unknown").is_none());
         assert_eq!(registry.broken().len(), 1);
         assert!(registry.broken()[0]
             .error
             .contains("layout[0].items[0].font"));
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

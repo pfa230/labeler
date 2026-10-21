@@ -7708,11 +7708,8 @@ layout:
         fn custom_static_fonts_validate_fit_and_survive_removal() {
             const CHILD: &str = "LABELER_CUSTOM_FONT_TEST";
             if std::env::var_os(CHILD).is_none() {
-                let config = std::path::PathBuf::from(format!(
-                    ".agent-runs/custom-fonts-{}",
-                    std::process::id()
-                ));
-                let fonts = config.join("fonts");
+                let config = crate::fonts::tests::TempDir::new("custom");
+                let fonts = config.path().join("fonts");
                 std::fs::create_dir_all(&fonts).unwrap();
                 for font in typst_assets::fonts().flat_map(|bytes| {
                     typst::text::Font::iter(typst::foundations::Bytes::new(bytes))
@@ -7730,8 +7727,7 @@ layout:
                 }
                 let status = std::process::Command::new(std::env::current_exe().unwrap())
                     .args(["--exact", "render::tests::measured_ink::custom_static_fonts_validate_fit_and_survive_removal", "--nocapture"])
-                    .env(CHILD, "1").env("LABELER_CONFIG_DIR", &config).status().unwrap();
-                std::fs::remove_dir_all(config).unwrap();
+                    .env(CHILD, "1").env("LABELER_CONFIG_DIR", config.path()).status().unwrap();
                 assert!(status.success());
                 return;
             }
