@@ -59,6 +59,7 @@ Every error response SHALL have `Content-Type: application/json` and the body `{
 | `variable_key_invalid` | InvalidRequest | A variable key is empty or contains disallowed characters. |
 | `setting_value_invalid` | InvalidRequest | A setting's value fails its type or range rule. |
 | `datetime_pattern_invalid` | InvalidRequest | A datetime format pattern is not valid. |
+| `activity_cursor_invalid` | InvalidRequest | The activity `before_id` cursor is not a positive signed 64-bit integer. |
 | `username_empty` | InvalidRequest | The username is empty. |
 | `password_empty` | InvalidRequest | The password is empty. |
 
