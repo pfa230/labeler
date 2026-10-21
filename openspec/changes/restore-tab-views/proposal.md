@@ -27,4 +27,4 @@ None.
 
 Touches `Templates.tsx`, `Import.tsx`, `LabelGrid.tsx`, shell navigation/scroll handling, a small tab-draft helper and their UI tests. Uses existing browser and router facilities without a new dependency.
 
-Non-goals: persistence across browser sessions, server-side drafts, history of individual edits, and unsaved-YAML navigation guards or data-router conversion (https://github.com/pfa230/labeler/issues/143).
+Non-goals: persistence across browser sessions, server-side drafts, history of individual edits, and changes to the existing unsaved-YAML navigation guards or data router.
