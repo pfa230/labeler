@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { parse } from "yaml";
 import { ToastProvider } from "../app/toast";
 import { TemplateDetail } from "./TemplateDetail";
 import { SHEET_ICON, SINGLE_ICON, iconGeometry, noBadgeStyling } from "../setupTests";
@@ -136,14 +137,155 @@ function renderPage() {
     ],
     { initialEntries: ["/templates/brother_24mm_qr"] },
   );
-  return render(
+  const view = render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
         <RouterProvider router={router} />
       </ToastProvider>
     </QueryClientProvider>,
   );
+  return { ...view, router, qc };
 }
+
+const cloneSource = '\uFEFF# original\nname: Pallet  # display name\ndescription: \'Keep this\'\nunit: mm\nwidth: 80\n';
+const firstCopy = '\uFEFF# original\nname: "Pallet (copy)"  # display name\ndescription: \'Keep this\'\nunit: mm\nwidth: 80\n';
+const secondCopy = '\uFEFF# original\nname: "Pallet (copy 2)"  # display name\ndescription: \'Keep this\'\nunit: mm\nwidth: 80\n';
+
+function stubCloneFetch(createStatus = 201, sourceStatus = 200) {
+  stubFetch();
+  const fallback = globalThis.fetch;
+  const sources = new Map([[detail.id, cloneSource]]);
+  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const match = url.match(/^\/api\/templates\/([^/]+)(\/source)?$/);
+    if (!match) return fallback(input, init);
+    const [, id, sourcePath] = match;
+    if (init?.method === "POST") {
+      const status = sources.has(id) ? 409 : createStatus;
+      if (status !== 201) {
+        return new Response(JSON.stringify({ error: { code: "CreateFailed", message: `create ${status}` } }), {
+          status, headers: { "content-type": "application/json" },
+        });
+      }
+      sources.set(id, String(init.body));
+    }
+    if (init?.method === "PUT") sources.set(id, String(init.body));
+    const yaml = sources.get(id);
+    if (yaml === undefined) return fallback(input, init);
+    if (sourcePath) return new Response(yaml, { status: sourceStatus });
+    return new Response(JSON.stringify({ ...detail, id, name: parse(yaml).name }), {
+      status: init?.method === "POST" ? 201 : 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  vi.stubGlobal("fetch", fetch);
+  return { fetch, sources };
+}
+
+describe("Template cloning", () => {
+  it("creates distinct copies through collisions and opens a clean, seeded editor", async () => {
+    const { fetch, sources } = stubCloneFetch();
+    const { router } = renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Clone" }));
+    expect(screen.getByRole("button", { name: "Clone" })).toBeDisabled();
+    expect(await screen.findByRole("textbox", { name: "Template YAML" })).toHaveValue(firstCopy);
+    expect(screen.getByText("Raw YAML").closest("details")).toHaveAttribute("open");
+    expect(router.state.location.pathname).toBe(`/templates/${detail.id}-copy`);
+    expect(router.state.location.state).toEqual({ openForEditing: true });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Clone" })).toBeEnabled());
+
+    await act(() => router.navigate(-1));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Pallet" });
+    fireEvent.click(screen.getByRole("button", { name: "Clone" }));
+    expect(await screen.findByRole("textbox", { name: "Template YAML" })).toHaveValue(secondCopy);
+    expect(router.state.location.pathname).toBe(`/templates/${detail.id}-copy-2`);
+    expect(sources.get(`${detail.id}-copy`)).toBe(firstCopy);
+    expect(sources.get(`${detail.id}-copy-2`)).toBe(secondCopy);
+    expect(sources.get(detail.id)).toBe(cloneSource);
+
+    const writes = fetch.mock.calls.filter(([url, init]) => String(url).startsWith("/api/templates/") && init?.method);
+    expect(writes.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      [`/api/templates/${detail.id}-copy`, "POST", firstCopy],
+      [`/api/templates/${detail.id}-copy`, "POST", firstCopy],
+      [`/api/templates/${detail.id}-copy-2`, "POST", secondCopy],
+    ]);
+  });
+
+  it("revisits a saved copy using current source with a clean baseline", async () => {
+    const { sources } = stubCloneFetch();
+    const { router, qc } = renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Clone" }));
+    const editor = await screen.findByRole("textbox", { name: "Template YAML" });
+    const saved = firstCopy.replace('name: "Pallet (copy)"', 'name: "Saved copy"');
+    fireEvent.change(editor, { target: { value: saved } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("button", { name: "Edit" });
+    expect(sources.get(`${detail.id}-copy`)).toBe(saved);
+    fireEvent.click(screen.getByRole("button", { name: "go to other" }));
+    await screen.findByRole("heading", { name: "Other Label" });
+    // Evict the source to exercise a history revisit that must fetch before seeding the editor.
+    qc.removeQueries({ queryKey: ["template-source", `${detail.id}-copy`] });
+    await act(() => router.navigate(-1));
+    expect(await screen.findByRole("textbox", { name: "Template YAML" })).toHaveValue(saved);
+    expect(screen.getByRole("button", { name: "Clone" })).toBeEnabled();
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "go to other" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Other Label" });
+  });
+
+  it.each(["save", "discard"])("disables Clone for an unsaved edit until %s", async (action) => {
+    const { fetch } = stubCloneFetch();
+    renderPage();
+    fireEvent.click(await screen.findByText("Raw YAML"));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Template YAML" }), {
+      target: { value: cloneSource + "# edit\n" },
+    });
+    expect(screen.getByRole("button", { name: "Clone" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Clone" }));
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    if (action === "save") {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    }
+    await waitFor(() => expect(screen.getByRole("button", { name: "Clone" })).toBeEnabled());
+  });
+
+  it.each([
+    { failure: "source", createStatus: 201, sourceStatus: 500, message: "source 500", posts: 0 },
+    { failure: "create", createStatus: 500, sourceStatus: 200, message: "create 500", posts: 1 },
+  ])("keeps a $failure failure visible on the original without retrying create", async ({ createStatus, sourceStatus, message, posts }) => {
+    const { fetch, sources } = stubCloneFetch(createStatus, sourceStatus);
+    const { router } = renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Clone" }));
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(screen.getByRole("status").textContent).toBe(message);
+    expect(router.state.location.pathname).toBe(`/templates/${detail.id}`);
+    expect(screen.getByRole("heading", { name: "Pallet" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Template YAML" })).not.toBeInTheDocument();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(posts);
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "PUT" || init?.method === "DELETE")).toHaveLength(0);
+    expect([...sources.entries()]).toEqual([[detail.id, cloneSource]]);
+    expect(screen.getByRole("button", { name: "Clone" })).toBeEnabled();
+  });
+
+  it("sends no create if the fetched source cannot be parsed", async () => {
+    const { fetch, sources } = stubCloneFetch();
+    const { router } = renderPage();
+    await screen.findByRole("heading", { name: "Pallet" });
+    sources.set(detail.id, "name: [broken\n");
+    fireEvent.click(screen.getByRole("button", { name: "Clone" }));
+    expect(await screen.findByText(/end with a \]/)).toBeVisible();
+    expect(router.state.location.pathname).toBe(`/templates/${detail.id}`);
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+});
 
 // A sheet detail, with its own stub and route, so the twenty tests built around the single fixture
 // above are untouched. Without a sheet here the detail page could keep an iconless, countless pill
@@ -444,6 +586,7 @@ describe("Template detail", () => {
 
     // Immediately, while the new detail is still loading: the draft must already be gone.
     expect(screen.queryByRole("textbox", { name: /template yaml/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clone" })).toBeDisabled();
     expect(await screen.findByText("Other Label")).toBeInTheDocument();
     fireEvent.click(await screen.findByText(/raw yaml/i));
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));

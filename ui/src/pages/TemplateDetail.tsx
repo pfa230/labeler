@@ -1,6 +1,8 @@
-import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
+import { useEffect, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { fetchTemplateSource, useCreateTemplate, useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
+import { ApiError } from "../api/client";
+import { cloneTemplateSource } from "../lib/cloneTemplateSource";
 import { UnsavedYamlGuard } from "../app/UnsavedYamlGuard";
 import { useToast } from "../app/toast-context";
 import type { Dimension, TemplateFormat } from "../api/types";
@@ -31,9 +33,14 @@ function Chip({ children }: { children: React.ReactNode }) {
 }
 
 
-function RawYamlSection({ id }: { id: string }) {
+function RawYamlSection({ id, openForEditing, onDirtyChange }: {
+  id: string;
+  openForEditing: boolean;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
   const { data: source, isError: sourceFailed, error: sourceError } = useTemplateSource(id);
   const [draft, setDraft] = useState<string | null>(null);
+  const [startEditing, setStartEditing] = useState(openForEditing);
   // The text this edit started from. Not derived from `source`: a failed save drops the source query
   // and the refetch that follows can move `source` to match the draft (the persisted-but-422 case),
   // which would make a modified draft look untouched and skip the discard confirm.
@@ -43,9 +50,23 @@ function RawYamlSection({ id }: { id: string }) {
   const save = useReplaceTemplate();
   const { push } = useToast();
 
+  const dirty = draft !== null && draft !== baseline;
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
+
+  // The source can arrive after mount on a history revisit with an empty query cache.
+  if (startEditing && source !== undefined && !sourceFailed) {
+    setBaseline(source);
+    setDraft(source);
+    setStartEditing(false);
+  }
+
   return (
-    <UnsavedYamlGuard dirty={() => draft !== null && draft !== baseline}>
+    <UnsavedYamlGuard dirty={() => dirty}>
       <details
+        open={openForEditing}
         className="rounded-lg border p-4"
         style={{ background: "var(--surface)", borderColor: "var(--border)" }}
       >
@@ -173,9 +194,36 @@ export function TemplateDetail() {
   const { id = "" } = useParams();
   const { data: detail, dataUpdatedAt, isLoading, isError, isPlaceholderData, error } = useTemplate(id);
   const navigate = useNavigate();
+  const location = useLocation();
+  const [yamlDirty, setYamlDirty] = useState(false);
+  const [cloning, setCloning] = useState(false);
+  const create = useCreateTemplate();
   const [confirming, setConfirming] = useState(false);
   const remove = useDeleteTemplate();
   const { push } = useToast();
+
+  async function clone() {
+    setCloning(true);
+    try {
+      const source = await fetchTemplateSource(id);
+      for (let copyNumber = 1; ; copyNumber++) {
+        const copyId = `${id}-copy${copyNumber === 1 ? "" : `-${copyNumber}`}`;
+        const yaml = cloneTemplateSource(source, copyNumber);
+        try {
+          await create.mutateAsync({ id: copyId, yaml });
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 409) continue;
+          throw err;
+        }
+        navigate(`/templates/${copyId}`, { state: { openForEditing: true } });
+        break;
+      }
+    } catch (err) {
+      push({ kind: "error", message: err instanceof Error ? err.message : "Clone failed" });
+    } finally {
+      setCloning(false);
+    }
+  }
 
   const variables = detail?.variables ?? [];
 
@@ -199,6 +247,15 @@ export function TemplateDetail() {
               <p style={{ color: "var(--muted)" }}>{detail.description}</p>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={yamlDirty || cloning || isPlaceholderData}
+                onClick={clone}
+                className="rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50"
+                style={{ color: "var(--accent)" }}
+              >
+                Clone
+              </button>
               {confirming ? (
                 <>
                   <button
@@ -304,7 +361,12 @@ export function TemplateDetail() {
               mounted — and savable against a — while the address bar already reads b. The remount is how
               editor state is dropped (an effect that reset it would be setState-in-effect, which the
               lint rule rightly rejects). */}
-          <RawYamlSection key={id} id={id} />
+          <RawYamlSection
+            key={id}
+            id={id}
+            openForEditing={location.state?.openForEditing === true}
+            onDirtyChange={setYamlDirty}
+          />
         </>
       )}
     </div>
