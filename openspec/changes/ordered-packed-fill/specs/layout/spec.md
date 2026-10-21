@@ -85,16 +85,15 @@ A frame extent SHALL report `min(intrinsic, cap, available)` to its parent while
 
 A **packed child** is a direct child of a flow container. It SHALL NOT carry `at` or `to`, and SHALL NOT be a `line`; each is refused at load naming the child's path. For `fill` on the primary axis, its available extent SHALL be the current line's remaining extent after earlier occupying boxes and their gaps, less the pending gap before this child, clamped at zero. Other extents SHALL use the whole padded inner box. Initial measurement SHALL use this allocation, in template order.
 
-#### Scenario: A fill child beside a sibling overflows
+#### Scenario: A capped fill child fits beside a sibling
 
-- **WHEN** a non-wrapping `row` with inner width 30 and `gap: 2` holds an uncapped `size: [fill, 4]` child then a 10-wide child
-- **THEN** the first box is 30 wide and the second's arranged box overflows with `item_out_of_frame`
+- **WHEN** a `row` flow container with inner width 30 and `gap: 2` holds a 10-wide child then a `size: [fill, 4]` child with `max_w: 8`
+- **THEN** the second box is 8 wide at x = 12 and both boxes fit
 
 #### Scenario: A fill title takes the remainder of a row
 
 - **WHEN** a `row` flow container with inner width 30 and `gap: 2` holds a 10-wide child then a `size: [fill, 4]` child
 - **THEN** the second box is 18 wide at x = 12 and both boxes fit
-- **AND** with `max_w: 8` on the second child it is 8 wide
 
 #### Scenario: A column consumes remaining height
 

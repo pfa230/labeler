@@ -368,11 +368,10 @@ A missing or unknown `direction`, a negative or non-finite `gap`/`line_gap`, or 
 
 A **packed child** is a direct child of a flow container. It SHALL NOT carry `at` or `to`, and SHALL NOT be a `line`; each is refused at load naming the child's path. It SHALL be sized against the padded inner box as an anchorless item, exactly as the same item at `[0, 0]` in an absolutely arranged container. An uncapped `fill` child therefore takes the whole inner extent on that axis: alone it fills the container, and beside a sibling it overflows.
 
-#### Scenario: A fill child beside a sibling overflows
+#### Scenario: A capped fill child fits beside a sibling
 
-- **WHEN** a `row` flow container with inner width 30 and `gap: 2` holds a 10-wide child then a `size: [fill, 4]` child
-- **THEN** the second box is 30 wide at x = 12 and the render fails with `item_out_of_frame`
-- **AND** with `max_w: 8` on the second child it is 8 wide and fits
+- **WHEN** a `row` flow container with inner width 30 and `gap: 2` holds a 10-wide child then a `size: [fill, 4]` child with `max_w: 8`
+- **THEN** the second box is 8 wide at x = 12 and both boxes fit
 
 ### Requirement: Packing order, lines and occupancy
 
