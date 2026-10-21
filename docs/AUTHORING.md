@@ -161,10 +161,9 @@ A long message is laid out against a 30mm box, so it shrinks to 8pt and is short
 ### Font families
 
 A text item's literal `font` selects a family, case-insensitively. Omit it to use
-`Inter`. The shipped selectors are `Inter`, `Source Sans 3`, `JetBrains Mono` and
-`Roboto`; `Roboto` selects the shipped Roboto Condensed font. Use the renderer's
-normalized family name, without a variable-font suffix such as `Variable` or `VF`,
-not a filename. Family names do not interpolate.
+`Inter`. The shipped selectors are `Inter`, `SourceSans3VF` (Source Sans 3),
+`JetBrains Mono` and `Roboto` (Roboto Condensed). Use the renderer's normalized
+family name, not a filename. Family names do not interpolate.
 
 To use a custom family, place its TrueType or OpenType files in
 `{LABELER_CONFIG_DIR}/fonts` (`/config/fonts` in Docker) and restart the service.

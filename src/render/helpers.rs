@@ -372,6 +372,7 @@ pub(super) fn font_instance(
 ) -> Result<rustybuzz::Face<'_>, AppError> {
     let mut face = ttf_parser::Face::parse(font.data().as_slice(), font.index())
         .map_err(|err| AppError::internal(format!("failed to parse font: {err}")))?;
+    face.set_variation(ttf_parser::Tag::from_bytes(b"wdth"), 100.0);
     face.set_variation(WGHT, f32::from(weight));
     face.set_variation(OPSZ, size_pt);
     Ok(rustybuzz::Face::from_face(face))

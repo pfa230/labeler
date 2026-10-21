@@ -7650,7 +7650,7 @@ layout:
                 Some("text_does_not_fit")
             );
             assert_contained(&narrow("Roboto", "20", "fail"));
-            for family in ["Inter", "Roboto", "Source Sans 3", "JetBrains Mono"] {
+            for family in ["Inter", "Roboto", "SourceSans3VF", "JetBrains Mono"] {
                 let t = narrow(family, "{ min: 8, max: 20 }", "fail");
                 assert_contained(&t);
                 if family == "Inter" {
@@ -11733,7 +11733,9 @@ layout:
             "container box must carry rgb(\"#ff0000\"), got: {src}"
         );
         assert!(
-            src.contains("#text(size: 10pt, fill: rgb(\"#ff0000\"), overhang: false)"),
+            src.contains(
+                "#text(size: 10pt, fill: rgb(\"#ff0000\"), font: \"Inter\", overhang: false)"
+            ),
             "text must carry rgb(\"#ff0000\"), got: {src}"
         );
 

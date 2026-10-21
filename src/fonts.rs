@@ -96,7 +96,7 @@ mod tests {
         }
         std::fs::write(custom.join("unusable.ttf"), b"not a font").unwrap();
         let inventory = FontInventory::load(Path::new("fonts"), &custom);
-        for family in ["Inter", "Source Sans 3", "JetBrains Mono", "Roboto"] {
+        for family in ["Inter", "SourceSans3VF", "JetBrains Mono", "Roboto"] {
             assert_eq!(
                 inventory.select(family, 400),
                 inventory.select(&family.to_uppercase(), 400)
@@ -182,7 +182,7 @@ mod tests {
         std::fs::write(bundled.join("LibertinusSerif-Bold.otf"), bold.data()).unwrap();
         std::fs::write(custom.join("LibertinusSerif-Regular.otf"), regular.data()).unwrap();
         let inventory = FontInventory::load(&bundled, &custom);
-        assert_eq!(inventory.fonts, [bold.clone()]);
+        assert_eq!(inventory.fonts.as_slice(), std::slice::from_ref(&bold));
         assert_eq!(inventory.select("lIbErTiNuS sErIf", 400), Some(&bold));
         let engine = typst_as_lib::TypstEngine::builder()
             .fonts(inventory.fonts.clone())

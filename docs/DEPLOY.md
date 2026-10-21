@@ -47,7 +47,7 @@ Set these in `.env` for Compose, or with `-e` for `docker run`. Nothing is requi
 | `RUST_LOG` | `labeler=info,tower_http=info` | Log filter, tracing `EnvFilter` syntax. |
 | `PUID` / `PGID` | `1000` / `1000` | User and group the service runs as and `/config` is chowned to. Set to `id -u` / `id -g` of the volume's owner. |
 | `LABELER_CONFIG_DIR` | `/config` | All persistent state. In the container, mount a volume here rather than changing it. |
-| `LABELER_FONTS_DIR` | `fonts`, relative to the working directory (`/app` in the image) | Bundled-font directory, baked into the image. Includes Inter, Source Sans 3, JetBrains Mono and Roboto Condensed (selector `Roboto`). |
+| `LABELER_FONTS_DIR` | `fonts`, relative to the working directory (`/app` in the image) | Bundled-font directory, baked into the image. Includes Inter, Source Sans 3 (selector `SourceSans3VF`), JetBrains Mono and Roboto Condensed (selector `Roboto`). |
 | `LABELER_UI_DIR` | `ui/dist`; image sets `/app/ui/dist` | Built web UI. Baked into the image. |
 | `LABELER_TRUST_PROXY` | `false` | `true` behind a TLS-terminating reverse proxy that sets `X-Forwarded-Proto` and `X-Forwarded-Host`. |
 | `LABELER_NO_AUTH` | `false` | `true` removes the login wall, for single-user trusted-LAN use. |
@@ -60,7 +60,7 @@ Place custom TrueType or OpenType files under `/config/fonts` in the existing
 config volume (`{LABELER_CONFIG_DIR}/fonts` outside Docker), then restart Labeler.
 Select the normalized family name with `font: Family Name` on a text item; names
 are case-insensitive. The shipped selectors are `Inter` (the default),
-`Source Sans 3`, `JetBrains Mono` and `Roboto` for Roboto Condensed.
+`SourceSans3VF` for Source Sans 3, `JetBrains Mono` and `Roboto` for Roboto Condensed.
 See the [custom-family example](AUTHORING.md#font-families).
 
 The font inventory is loaded once for the process lifetime. A template-registry
