@@ -36,7 +36,7 @@ export type GridCellParam = Pick<Param, "name" | "control" | "values" | "min" | 
 export interface LabelGridProps {
   rows: LabelGridRow[];
   fields: string[];
-  resultHeading?: string;
+  resultHeading: string;
   cellInput?: (field: string) => GridCellParam | undefined;
   onRowsChange: (rows: LabelGridRow[], change: LabelGridRowsChange) => void;
   onDuplicate: (id: string) => void;

@@ -11,6 +11,7 @@ const selectionBaseProps = {
     { id: "r2", data: { title: "b" } },
   ] satisfies LabelGridRow[],
   fields: ["title"],
+  resultHeading: "Print result",
   onRowsChange: vi.fn(),
   onDuplicate: vi.fn(),
   onRemove: vi.fn(),
@@ -140,6 +141,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       <LabelGrid
         rows={[row]}
         fields={fields}
+        resultHeading="Print result"
         cellInput={cellInput}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -215,6 +217,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       <LabelGrid
         rows={[row]}
         fields={["title"]}
+        resultHeading="Print result"
         cellInput={cellInput}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -229,6 +232,7 @@ describe("4.1 Always-on rendering at rest across control types", () => {
       <LabelGrid
         rows={[row]}
         fields={["title"]}
+        resultHeading="Print result"
         cellInput={cellInput}
         disabled
         onRowsChange={() => {}}
@@ -303,6 +307,7 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
       <LabelGrid
         rows={[row]}
         fields={["note", "choice"]}
+        resultHeading="Print result"
         cellInput={cellInput}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -344,6 +349,7 @@ describe("4.3 Focus, pointer, and keyboard interactions", () => {
       <LabelGrid
         rows={[row]}
         fields={["note", "count", "choice"]}
+        resultHeading="Print result"
         cellInput={cellInput}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -390,6 +396,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["title"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "text" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -420,6 +427,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["title"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "text" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -442,6 +450,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["shipDate"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "date" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -472,6 +481,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["shipDate"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "date" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -494,6 +504,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["qty"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "integer" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -521,6 +532,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["qty"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "integer" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -541,6 +553,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
           },
         ]}
         fields={["on", "off", "blank", "bom"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "checkbox", default: f === "blank" ? true : undefined })}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -569,6 +582,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["flag"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "checkbox" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -595,6 +609,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={currentRows}
         fields={["flag"]}
+        resultHeading="Print result"
         cellInput={(f) => ({ name: f, control: "checkbox" })}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -628,6 +643,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={[row]}
         fields={["operable", "missingEntry", "imageCol"]}
+        resultHeading="Print result"
         cellInput={cellInput}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -648,6 +664,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={[row]}
         fields={["operable", "missingEntry", "imageCol"]}
+        resultHeading="Print result"
         cellInput={cellInput}
         disabled
         onRowsChange={() => {}}
@@ -663,6 +680,7 @@ describe("4.4 Multiline, unrepresentable presentations, and aria-readonly", () =
       <LabelGrid
         rows={[row]}
         fields={["operable", "missingEntry", "imageCol"]}
+        resultHeading="Print result"
         cellInput={cellInput}
         disabled={false}
         onRowsChange={() => {}}
@@ -682,7 +700,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       notes: { name: "notes", control: "text" },
     };
     render(
-      <LabelGrid rows={sampleRows()} fields={["sku", "notes"]} cellInput={(f) => specs[f]} onRowsChange={() => {}} onDuplicate={() => {}} onRemove={() => {}} />,
+      <LabelGrid rows={sampleRows()} fields={["sku", "notes"]} resultHeading="Print result" cellInput={(f) => specs[f]} onRowsChange={() => {}} onDuplicate={() => {}} onRemove={() => {}} />,
     );
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers).toContain("Stock code");
@@ -698,6 +716,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       <LabelGrid
         rows={sampleRows()}
         fields={fields}
+        resultHeading="Print result"
         onRowsChange={() => {}}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -739,6 +758,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       <LabelGrid
         rows={currentRows}
         fields={["size"]}
+        resultHeading="Print result"
         cellInput={(f) => (f === "size" ? spec : undefined)}
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
@@ -778,6 +798,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       <LabelGrid
         rows={[row]}
         fields={["size"]}
+        resultHeading="Print result"
         cellInput={(f) => (f === "size" ? spec : undefined)}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -798,6 +819,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       <LabelGrid
         rows={[{ id: "r1", data }]}
         fields={[spec.name]}
+        resultHeading="Print result"
         cellInput={(f) => (f === spec.name ? spec : undefined)}
         onRowsChange={() => {}}
         onDuplicate={() => {}}
@@ -827,6 +849,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
       <LabelGrid
         rows={currentRows}
         fields={["sku", "notes"]}
+        resultHeading="Print result"
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
@@ -866,6 +889,7 @@ describe("parameter names that shadow Object.prototype", () => {
       <LabelGrid
         rows={currentRows}
         fields={["__proto__", "constructor", "name"]}
+        resultHeading="Print result"
         onRowsChange={onRowsChange}
         onDuplicate={() => {}}
         onRemove={() => {}}
