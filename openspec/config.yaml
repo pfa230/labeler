@@ -18,7 +18,7 @@ rules:
     - Include literal `Fixes #N` for the one GitHub issue this change implements.
     - Stay inside that issue's scope. Work found outside it becomes a new issue, never an extra task.
     - Each listed change answers the issue's explicit request or a requirement the change amends. Drop the rest.
-    - Changes with no behavior change set `skip_specs: true` in `.openspec.yaml`.
+    - "Changes with no behavior change set `skip_specs: true` in `.openspec.yaml`."
   specs:
     - Put each delta in the existing domain capability it belongs to. Create a new capability only for a genuinely new domain.
     - A requirement states one observable behavior with SHALL or MUST. Scenarios cover the cases that matter, not restatements.
