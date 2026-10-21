@@ -58,7 +58,11 @@ export function useMainScroll(ready: boolean) {
     const main = content?.closest("main");
     if (!ready || !content || !main) return;
     const position = readViewScroll("main", url);
-    const save = () => saveViewScroll("main", url, { top: main.scrollTop, left: main.scrollLeft });
+    const save = () => {
+      // Scrolling takes over from a pending restore, even if its offset no longer fits.
+      observer.disconnect();
+      saveViewScroll("main", url, { top: main.scrollTop, left: main.scrollLeft });
+    };
     const observer = new ResizeObserver(() => restore());
     const restore = () => {
       // The asynchronous preview can still be expanding the destination page.
@@ -66,12 +70,12 @@ export function useMainScroll(ready: boolean) {
       main.scrollTop = position.top;
       main.scrollLeft = position.left;
       observer.disconnect();
-      main.addEventListener("scroll", save);
     };
     // Run after mount effects, including the grid's initial focus.
     const frame = requestAnimationFrame(() => {
       observer.observe(content);
       restore();
+      main.addEventListener("scroll", save);
     });
     return () => {
       cancelAnimationFrame(frame);
@@ -81,4 +85,3 @@ export function useMainScroll(ready: boolean) {
   }, [ready, url]);
   return root;
 }
-

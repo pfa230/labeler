@@ -50,10 +50,7 @@ function renderApp(state: AuthState, initialEntries: string[], withTemplates = f
 const authed: AuthState = { authed: true, needsSetup: false, me: { id: "u1", username: "alice" } };
 
 describe("App routes", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-    sessionStorage.clear();
-  });
+  beforeEach(() => vi.unstubAllGlobals());
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
