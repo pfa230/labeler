@@ -65,4 +65,4 @@ image = { version = "=0.25.10", default-features = false, features = ["png", "jp
 http-body-util = "0.1"
 tower = "0.5"
 wiremock = "0.6"
-typst-assets = "0.15"
+typst-assets = { version = "0.15", features = ["fonts"] }

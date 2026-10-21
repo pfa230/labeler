@@ -7632,9 +7632,7 @@ layout:
                     "content",
                     &format!("    font: {family}\n    overflow: {policy}\n"),
                 );
-                let crate::models::Layout::Items(items) = &mut t.layout else {
-                    unreachable!()
-                };
+                let crate::models::Layout::Items(items) = &mut t.layout;
                 let crate::models::LayoutItem::Text { placement, .. } = &mut items[0] else {
                     unreachable!()
                 };
@@ -7646,7 +7644,8 @@ layout:
             };
             assert_eq!(
                 compiled(&narrow("Inter", "20", "fail"))
-                    .err().expect("Inter must overflow")
+                    .err()
+                    .expect("Inter must overflow")
                     .reason(),
                 Some("text_does_not_fit")
             );

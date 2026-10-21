@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_inventory_excludes_collisions_and_retains_removed_bytes() {
+    fn loaded_inventory_retains_removed_bytes() {
         let custom =
             std::path::PathBuf::from(format!(".agent-runs/font-inventory-{}", std::process::id()));
         std::fs::create_dir_all(&custom).unwrap();
@@ -94,32 +94,22 @@ mod tests {
                 .unwrap();
             }
         }
-        let collision = Font::new(
-            Bytes::new(include_bytes!("../tests/fixtures/fonts/Roboto.ttf").as_slice()),
-            0,
-        )
-        .unwrap();
-        assert_eq!(collision.info().family, "Roboto");
-        assert_eq!(collision.info().variant.stretch, FontStretch::NORMAL);
-        std::fs::write(custom.join("Roboto.ttf"), collision.data()).unwrap();
         std::fs::write(custom.join("unusable.ttf"), b"not a font").unwrap();
         let inventory = FontInventory::load(Path::new("fonts"), &custom);
-        let bundled = inventory.select("Roboto", 400).unwrap();
-        assert_ne!(bundled.info().variant.stretch, FontStretch::NORMAL);
-        let competing_book = FontBook::from_fonts([bundled, &collision]);
-        assert_eq!(
-            competing_book.select("roboto", FontVariant::default()),
-            Some(1),
-            "ordering alone would select the custom font"
-        );
-        assert!(!inventory.fonts.contains(&collision));
-        assert_eq!(inventory.book.select_family("roboto").count(), 1);
         for family in ["Inter", "Source Sans 3", "JetBrains Mono", "Roboto"] {
             assert_eq!(
                 inventory.select(family, 400),
                 inventory.select(&family.to_uppercase(), 400)
             );
-            assert!(inventory.select(family, 400).is_some(), "{family}");
+            assert!(
+                inventory.select(family, 400).is_some(),
+                "{family}: {:?}",
+                inventory
+                    .fonts
+                    .iter()
+                    .map(|font| &font.info().family)
+                    .collect::<Vec<_>>()
+            );
         }
         for weight in [400, 700] {
             let font = inventory.select("lIbErTiNuS sErIf", weight).unwrap();
@@ -153,5 +143,55 @@ mod tests {
         let restarted = FontInventory::load(Path::new("fonts"), &custom);
         assert!(restarted.select("Libertinus Serif", 400).is_none());
         assert_eq!(restarted.book.families().count(), 4);
+    }
+
+    #[test]
+    fn bundled_family_excludes_a_closer_custom_weight() {
+        let root = std::path::PathBuf::from(format!(
+            ".agent-runs/font-precedence-{}",
+            std::process::id()
+        ));
+        let bundled = root.join("bundled");
+        let custom = root.join("custom");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&custom).unwrap();
+        let face = |weight| {
+            typst_assets::fonts()
+                .flat_map(|bytes| Font::iter(Bytes::new(bytes)))
+                .find(|font| {
+                    font.info().family == "Libertinus Serif"
+                        && font.info().variant.style == typst::text::FontStyle::Normal
+                        && font.info().variant.weight.to_number() == weight
+                })
+                .unwrap()
+        };
+        let bold = face(700);
+        let regular = face(400);
+        for font in [&bold, &regular] {
+            assert_eq!(font.info().variant.stretch, FontStretch::NORMAL);
+            let face = ttf_parser::Face::parse(font.data(), font.index()).unwrap();
+            assert!(face.variation_axes().is_empty());
+            assert_eq!(face.width().to_number(), 5);
+        }
+        let competing_book = FontBook::from_fonts([&bold, &regular]);
+        assert_eq!(
+            competing_book.select("libertinus serif", FontVariant::default()),
+            Some(1),
+            "ordering alone selects the closer custom weight"
+        );
+        std::fs::write(bundled.join("LibertinusSerif-Bold.otf"), bold.data()).unwrap();
+        std::fs::write(custom.join("LibertinusSerif-Regular.otf"), regular.data()).unwrap();
+        let inventory = FontInventory::load(&bundled, &custom);
+        assert_eq!(inventory.fonts, [bold.clone()]);
+        assert_eq!(inventory.select("lIbErTiNuS sErIf", 400), Some(&bold));
+        let engine = typst_as_lib::TypstEngine::builder()
+            .fonts(inventory.fonts.clone())
+            .main_file("#set text(font: \"Libertinus Serif\", weight: 400)\nWidget")
+            .build();
+        let result = engine.compile::<typst_layout::PagedDocument>();
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        let doc = result.output.unwrap();
+        assert!(assert_emitted_font(&doc.pages()[0].frame, &bold) > 0);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
