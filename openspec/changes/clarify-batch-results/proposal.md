@@ -28,4 +28,4 @@ None.
 
 Touches `Import.tsx`, `LabelGrid.tsx` and existing grid/Import tests. Reuses the existing annotations and their invalidation paths. No API changes or dependencies.
 
-Non-goals: print history, persistent operation logs, per-row download-success state and changing batch validation or execution.
+Non-goals: per-row result history within Import, persistent operation logs, per-row download-success state and changing batch validation or execution.
