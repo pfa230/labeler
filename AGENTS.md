@@ -20,7 +20,7 @@ A stateless label-rendering REST service (Rust/axum) with a React UI under `ui/`
 
 ## Spec
 
-The behavior contract lives in `openspec/specs/<domain>/spec.md`, one capability per domain: `templates`, `parameters`, `interpolation`, `layout`, `text`, `rendering`, `errors`, `auth`, `printing`, `settings`, `mcp`, `ui`. Read only the domains your change touches. `docs/AUTHORING.md` is the human guide to writing templates; where it disagrees with the spec, the guide is wrong.
+The behavior contract lives in `openspec/specs/<domain>/spec.md`, one capability per domain: `templates`, `parameters`, `interpolation`, `layout`, `text`, `rendering`, `errors`, `auth`, `printing`, `settings`, `mcp`, `ui`, `activity`. Read only the domains your change touches. `docs/AUTHORING.md` is the human guide to writing templates; where it disagrees with the spec, the guide is wrong.
 
 **Behavior changes go through OpenSpec and openspec-loop; nothing else does.** Behavior means labeler's API, template schema, layout, rendering, errors and UI, which is what the specs describe. The OpenSpec CLI is pinned in the root npm manifest: `npm ci`, then `npx --no-install openspec`. openspec-loop is installed globally (`npm install -g openspec-loop`) and needs `openspec` 1.14.0 or later on `PATH`; `openspec/loop.yaml` configures it. In the change's worktree:
 

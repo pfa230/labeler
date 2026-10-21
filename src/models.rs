@@ -1008,6 +1008,27 @@ pub struct JobRecord {
     pub actor_username: Option<String>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ActivityEntry {
+    pub id: i64,
+    pub time: String,
+    pub actor_id: String,
+    pub actor_name: String,
+    pub action: String,
+    pub target: String,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ActivityPage {
+    pub entries: Vec<ActivityEntry>,
+    pub next_before_id: Option<i64>,
+}
+
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LabelInput {

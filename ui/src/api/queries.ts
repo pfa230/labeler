@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, getJson, sendJson, del, putVoid } from "./client";
-import type { TemplateListResponse, TemplateDetail, Printer, PrinterConnection, PrinterUpdate, ProbeResult, JobRecord } from "./types";
+import type { TemplateListResponse, TemplateDetail, Printer, PrinterConnection, PrinterUpdate, ProbeResult, JobRecord, ActivityPage } from "./types";
 
 export function useTemplates() {
   return useQuery({
@@ -11,6 +11,13 @@ export function useTemplates() {
 
 export function useJobs() {
   return useQuery({ queryKey: ["jobs"], queryFn: () => getJson<JobRecord[]>("/jobs") });
+}
+
+export function useActivity(beforeId: number | null) {
+  return useQuery({
+    queryKey: ["activity", beforeId],
+    queryFn: () => getJson<ActivityPage>(beforeId === null ? "/activity" : `/activity?before_id=${beforeId}`),
+  });
 }
 
 export interface ReloadResult {

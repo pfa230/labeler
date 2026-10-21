@@ -3345,6 +3345,14 @@ layout:
         assert!(body["error"].get("details").is_none(), "{body}");
 
         assert_eq!(template_count(&app).await, 1);
+        let (_, page) = get_json(&app, "/api/activity").await;
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        let entry = &page["entries"][0];
+        assert_eq!(entry["action"], "template.reload");
+        assert_eq!(entry["target"], "registry");
+        assert_eq!(entry["outcome"], "failure");
+        assert_eq!(entry["error_code"], "Internal");
+        assert!(entry.get("error_reason").is_none());
     }
 
     /// A folder that can be listed but not searched (`rw-`): every entry's metadata read fails, so
@@ -3470,6 +3478,251 @@ layout:
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Fails if history is actor-filtered, unprotected, or cursor errors bypass the envelope.
+    #[tokio::test]
+    async fn activity_reads_are_shared_authenticated_and_validate_cursors() {
+        let dir = temp_templates_dir();
+        let (_, state) = build_app_in_with_state(&dir);
+        let other = state.store().create_user("other", "unused").unwrap();
+        state
+            .store()
+            .create_session(&crate::auth::sha256_hex("session"), &other.id, "+1 day")
+            .unwrap();
+        for target in ["older", "newer"] {
+            state
+                .store()
+                .insert_activity("u1", "pat", "template.create", target, None)
+                .unwrap();
+        }
+        let router = app(state);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/activity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for credential in [
+            ("authorization", format!("Bearer {TEST_TOKEN}")),
+            ("cookie", "labeler_session=session".to_string()),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/activity")
+                        .header(credential.0, &credential.1)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let page = json_response(response).await;
+            assert_eq!(page["entries"][0]["target"], "newer");
+            assert_eq!(page["entries"][1]["actor_name"], "pat");
+        }
+        let router = with_auth(router);
+        let (_, page) = get_json(&router, "/api/activity?before_id=2").await;
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["entries"][0]["target"], "older");
+        assert!(page["next_before_id"].is_null());
+        for cursor in ["abc", "0", "-1", "9223372036854775808"] {
+            let (status, body) =
+                get_json(&router, &format!("/api/activity?before_id={cursor}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{cursor}");
+            assert_eq!(body["error"]["code"], "InvalidRequest");
+            assert_eq!(
+                body["error"]["details"]["reason"],
+                "activity_cursor_invalid"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Fails on absent or wrong actor snapshots, leaked input, or missing failure classification.
+    #[tokio::test]
+    async fn template_activity_attributes_users_tokens_and_local_failures_without_input() {
+        let dir = temp_templates_dir();
+        let templates_dir = dir.join("templates");
+        std::fs::create_dir(&templates_dir).unwrap();
+        let db_path = dir.join("state.sqlite");
+        let store = Store::open(&db_path).unwrap();
+        seed_token(&store);
+        let owner = store.get_user_by_username("test").unwrap().unwrap();
+        store
+            .create_session(&crate::auth::sha256_hex("session"), &owner.id, "+1 day")
+            .unwrap();
+        let state = Arc::new(AppState::new(
+            TemplateRegistry::load_from_dir(&templates_dir).unwrap(),
+            templates_dir.clone(),
+            store,
+        ));
+        let router = app(state.clone());
+        for (method, credential) in [
+            ("POST", ("authorization", format!("Bearer {TEST_TOKEN}"))),
+            ("PUT", ("cookie", "labeler_session=session".to_string())),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/templates/box")
+                        .header(credential.0, credential.1)
+                        .header("host", "localhost")
+                        .header("origin", "http://localhost")
+                        .body(Body::from(template_yaml("box")))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+        }
+        for entry in state.store().list_activity(None).unwrap().entries {
+            assert_eq!(entry.actor_id, owner.id);
+            assert_eq!(entry.actor_name, "test");
+        }
+        // The selected handlers never run for authentication, origin or extraction refusals.
+        for request in [
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/templates/box")
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/templates/box")
+                .header("cookie", "labeler_session=session")
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/templates/box")
+                .header("authorization", format!("Bearer {TEST_TOKEN}"))
+                .body(Body::from(vec![0xff]))
+                .unwrap(),
+        ] {
+            assert!(router
+                .clone()
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status()
+                .is_client_error());
+        }
+        assert_eq!(state.store().list_activity(None).unwrap().entries.len(), 2);
+        drop(router);
+        drop(state);
+        let state = Arc::new(
+            AppState::new(
+                TemplateRegistry::load_from_dir(&templates_dir).unwrap(),
+                templates_dir.clone(),
+                Store::open(&db_path).unwrap(),
+            )
+            .with_no_auth(true),
+        );
+        let router = app(state.clone());
+        const SECRET: &str = "distinctive-private-yaml-value-94";
+        for (method, id, body, code, reason) in [
+            (
+                "PUT",
+                "box",
+                format!("name: [{SECRET}"),
+                "TemplateInvalid",
+                Some("template_validation_failed"),
+            ),
+            ("POST", "box", template_yaml("box"), "Conflict", None),
+            ("DELETE", "missing", String::new(), "NotFound", None),
+            (
+                "POST",
+                "bad.id",
+                template_yaml("box"),
+                "InvalidRequest",
+                Some("template_id_invalid"),
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(yaml_post(&format!("/api/templates/{id}"), method, body))
+                .await
+                .unwrap();
+            assert!(response.status().is_client_error());
+            let response = json_response(response).await;
+            assert_eq!(response["error"]["code"], code);
+            let page = state.store().list_activity(None).unwrap();
+            let entry = &page.entries[0];
+            assert_eq!(entry.actor_id, "local");
+            assert_eq!(entry.actor_name, "local");
+            assert_eq!(entry.target, id);
+            assert_eq!(entry.outcome, "failure");
+            assert_eq!(entry.error_code.as_deref(), Some(code));
+            assert_eq!(entry.error_reason.as_deref(), reason);
+        }
+        let (_, page) = get_json(&router, "/api/activity").await;
+        assert_eq!(page["entries"].as_array().unwrap().len(), 6);
+        assert!(!page.to_string().contains(SECRET));
+        // Inspect all persisted fields, not just the API's projection of them.
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        let mut stmt = db.prepare("SELECT * FROM activity").unwrap();
+        let columns = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            for column in 0..columns {
+                if let rusqlite::types::ValueRef::Text(text) = row.get_ref(column).unwrap() {
+                    assert!(!String::from_utf8_lossy(text).contains(SECRET));
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // A real SQLite write refusal must override the operation result without pretending rollback.
+    #[tokio::test]
+    async fn template_activity_write_failure_reports_possible_change() {
+        let dir = temp_templates_dir();
+        let templates_dir = dir.join("templates");
+        std::fs::create_dir(&templates_dir).unwrap();
+        let db_path = dir.join("state.sqlite");
+        let store = Store::open(&db_path).unwrap();
+        seed_token(&store);
+        let router = with_auth(app(Arc::new(AppState::new(
+            TemplateRegistry::load_from_dir(&templates_dir).unwrap(),
+            templates_dir.clone(),
+            store,
+        ))));
+        let db = rusqlite::Connection::open(db_path).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_activity BEFORE INSERT ON activity BEGIN SELECT RAISE(FAIL, 'activity write refused'); END;").unwrap();
+        // Both an otherwise successful create and its subsequent conflict report recording failure.
+        for _ in 0..2 {
+            let response = router
+                .clone()
+                .oneshot(yaml_post(
+                    "/api/templates/box",
+                    "POST",
+                    template_yaml("box"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let body = json_response(response).await;
+            assert_eq!(body["error"]["code"], "Internal");
+            assert_eq!(
+                body["error"]["message"],
+                "Activity could not be recorded; the requested change may already have happened"
+            );
+            assert_eq!(
+                std::fs::read_to_string(templates_dir.join("box.yaml")).unwrap(),
+                template_yaml("box")
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -3702,6 +3955,39 @@ layout:
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
+        let response = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/template-registry/reload",
+                "POST",
+                String::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, page) = get_json(&app, "/api/activity").await;
+        let entries = page["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 4, "internal reloads must not add entries");
+        for (entry, (action, target)) in entries.iter().zip([
+            ("template.reload", "registry"),
+            ("template.delete", "new1"),
+            ("template.replace", "new1"),
+            ("template.create", "new1"),
+        ]) {
+            assert_eq!(entry["action"], action);
+            assert_eq!(entry["target"], target);
+            assert_eq!(entry["outcome"], "success");
+            assert_eq!(entry["actor_name"], "test");
+            assert!(entry.get("error_code").is_none());
+            assert!(entry.get("error_reason").is_none());
+            assert_eq!(
+                chrono::DateTime::parse_from_rfc3339(entry["time"].as_str().unwrap())
+                    .unwrap()
+                    .offset()
+                    .local_minus_utc(),
+                0
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

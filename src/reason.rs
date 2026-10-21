@@ -72,6 +72,7 @@ reasons! {
     ColorModeUnknown => "color_mode_unknown",
     ResolutionInvalid => "resolution_invalid",
     BilevelRequiresPng => "bilevel_requires_png",
+    ActivityCursorInvalid => "activity_cursor_invalid",
     UsernameEmpty => "username_empty",
     PasswordEmpty => "password_empty",
 }

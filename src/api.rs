@@ -34,6 +34,7 @@ use crate::{
 #[cfg(test)]
 use crate::extract::Path;
 
+pub(crate) mod activity;
 pub(crate) mod auth;
 pub(crate) mod printers;
 pub(crate) mod rendering;
@@ -156,6 +157,7 @@ pub(crate) fn documented_router() -> OpenApiRouter<Arc<AppState>> {
         .merge(settings::router())
         .merge(rendering::router())
         .merge(auth::router())
+        .merge(activity::router())
 }
 
 fn api_router() -> Router<Arc<AppState>> {

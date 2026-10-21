@@ -1,4 +1,6 @@
-use crate::models::{JobRecord, Printer, PrinterConnection, RenderProfile};
+use crate::models::{
+    ActivityEntry, ActivityPage, JobRecord, Printer, PrinterConnection, RenderProfile,
+};
 use rusqlite::Connection as SqlConnection;
 use rusqlite::OptionalExtension;
 use rusqlite_migration::{Migrations, M};
@@ -158,6 +160,19 @@ fn migrations() -> Migrations<'static> {
             "DROP TABLE connections;
         DELETE FROM app_settings WHERE key = 'default_connection_id';",
         ),
+        M::up(
+            "CREATE TABLE activity (
+                id INTEGER PRIMARY KEY,
+                time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                actor_id TEXT NOT NULL,
+                actor_name TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                error_code TEXT,
+                error_reason TEXT
+            );",
+        ),
     ])
 }
 
@@ -182,6 +197,60 @@ impl Store {
         migrations().to_latest(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+        })
+    }
+
+    pub fn insert_activity(
+        &self,
+        actor_id: &str,
+        actor_name: &str,
+        action: &str,
+        target: &str,
+        failure: Option<(&str, Option<&str>)>,
+    ) -> Result<(), StoreError> {
+        self.connection().execute(
+            "INSERT INTO activity (actor_id, actor_name, action, target, outcome, error_code, error_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                actor_id, actor_name, action, target,
+                if failure.is_some() { "failure" } else { "success" },
+                failure.map(|(code, _)| code),
+                failure.and_then(|(_, reason)| reason),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_activity(&self, before_id: Option<i64>) -> Result<ActivityPage, StoreError> {
+        let conn = self.connection();
+        let mut stmt = conn.prepare(
+            "SELECT id, time, actor_id, actor_name, action, target, outcome, error_code, error_reason
+             FROM activity WHERE ?1 IS NULL OR id < ?1 ORDER BY id DESC LIMIT 101",
+        )?;
+        let mut entries = stmt
+            .query_map([before_id], |row| {
+                Ok(ActivityEntry {
+                    id: row.get(0)?,
+                    time: row.get(1)?,
+                    actor_id: row.get(2)?,
+                    actor_name: row.get(3)?,
+                    action: row.get(4)?,
+                    target: row.get(5)?,
+                    outcome: row.get(6)?,
+                    error_code: row.get(7)?,
+                    error_reason: row.get(8)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let next_before_id = if entries.len() > 100 {
+            entries.truncate(100);
+            entries.last().map(|entry| entry.id)
+        } else {
+            None
+        };
+        Ok(ActivityPage {
+            entries,
+            next_before_id,
         })
     }
 
@@ -755,6 +824,39 @@ mod tests {
                 resolution: Some(300),
             }),
         }
+    }
+
+    // Fails on lost/pruned history, wrong order, overlapping cursors, or unbounded pages.
+    #[test]
+    fn activity_survives_restart_with_exclusive_bounded_pages() {
+        let path = std::env::temp_dir().join(format!(
+            "labeler-activity-{}.sqlite",
+            crate::auth::random_secret()
+        ));
+        {
+            let store = Store::open(&path).unwrap();
+            for i in 1..=205 {
+                store
+                    .insert_activity("u1", "pat", "template.create", &i.to_string(), None)
+                    .unwrap();
+            }
+        }
+        let store = Store::open(&path).unwrap();
+        let mut cursor = None;
+        for (first, last, next) in [(205, 106, Some(106)), (105, 6, Some(6)), (5, 1, None)] {
+            let page = store.list_activity(cursor).unwrap();
+            assert_eq!(
+                page.entries
+                    .iter()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>(),
+                (last..=first).rev().collect::<Vec<_>>()
+            );
+            assert_eq!(page.next_before_id, next);
+            cursor = next;
+        }
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

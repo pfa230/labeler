@@ -56,12 +56,14 @@ describe("Shell", () => {
       "Labels",
       "Import",
       "Print history",
+      "Activity",
       "Settings",
     ]);
     expect(links.map((l) => l.getAttribute("href"))).toEqual([
       "/",
       "/import",
       "/print-history",
+      "/activity",
       "/settings",
     ]);
 

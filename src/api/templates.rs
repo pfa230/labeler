@@ -14,6 +14,7 @@ use crate::{
     errors::{AppError, NotFoundKind},
     extract::{Json, Path},
     fs_safe::{self, PublishResult},
+    middleware::Principal,
     models::{ErrorResponse, ReloadResponse, TemplateDetail, TemplateList},
     parse::parse_template,
     reason::Reason,
@@ -79,15 +80,47 @@ pub async fn list_templates(
 )]
 pub async fn reload_templates(
     State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
 ) -> Result<Json<ReloadResponse>, AppError> {
-    // Under the same lock the write endpoints hold, so it cannot interleave with a write and the
-    // reload that follows it.
-    let _guard = state.write_lock.lock().await;
-    let (count, broken_count) = state.reload()?;
-    Ok(Json(ReloadResponse {
-        count,
-        broken_count,
-    }))
+    let result = async {
+        // Under the same lock the write endpoints hold, so it cannot interleave with a write and the
+        // reload that follows it.
+        let _guard = state.write_lock.lock().await;
+        let (count, broken_count) = state.reload()?;
+        Ok(Json(ReloadResponse {
+            count,
+            broken_count,
+        }))
+    }
+    .await;
+    record_activity(&state, &principal, "template.reload", "registry", result)
+}
+
+fn record_activity<T>(
+    state: &AppState,
+    principal: &Principal,
+    action: &str,
+    target: &str,
+    result: Result<T, AppError>,
+) -> Result<T, AppError> {
+    let actor_name = match principal {
+        Principal::User { username, .. } => username.as_str(),
+        Principal::Local => "local",
+    };
+    let failure = result
+        .as_ref()
+        .err()
+        .map(|error| (error.code(), error.reason()));
+    state
+        .store()
+        .insert_activity(&principal.actor_id(), actor_name, action, target, failure)
+        .map_err(|error| {
+            tracing::error!(%error, "failed to record template activity");
+            AppError::internal(
+                "Activity could not be recorded; the requested change may already have happened",
+            )
+        })?;
+    result
 }
 
 fn check_template_id(id: &str) -> Result<(), AppError> {
@@ -160,33 +193,38 @@ fn reload_and_describe(
 )]
 pub async fn create_template(
     State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
     body: String,
 ) -> Result<Response, AppError> {
-    check_template_id(&id)?;
-    let content = parse_and_validate(&body)?;
+    let result = async {
+        check_template_id(&id)?;
+        let content = parse_and_validate(&body)?;
 
-    let _guard = state.write_lock.lock().await;
-    let context = detail_context(&state)?;
-    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-    state.before_publish();
-    // The exclusive publish decides existence from the disk, atomically, so a file copied in out of
-    // band or a broken one is never overwritten.
-    match fs_safe::stage_and_publish_new(root_fd.as_fd(), &format!("{id}.yaml"), &body)? {
-        PublishResult::Published => {}
-        PublishResult::AlreadyExists => {
-            return Err(AppError::conflict(format!(
-                "template '{id}' already exists"
-            )));
+        let _guard = state.write_lock.lock().await;
+        let context = detail_context(&state)?;
+        let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+        state.before_publish();
+        // The exclusive publish decides existence from the disk, atomically, so a file copied in out of
+        // band or a broken one is never overwritten.
+        match fs_safe::stage_and_publish_new(root_fd.as_fd(), &format!("{id}.yaml"), &body)? {
+            PublishResult::Published => {}
+            PublishResult::AlreadyExists => {
+                return Err(AppError::conflict(format!(
+                    "template '{id}' already exists"
+                )));
+            }
         }
+        reload_and_describe(
+            &state,
+            id.clone(),
+            content,
+            &context,
+            axum::http::StatusCode::CREATED,
+        )
     }
-    reload_and_describe(
-        &state,
-        id,
-        content,
-        &context,
-        axum::http::StatusCode::CREATED,
-    )
+    .await;
+    record_activity(&state, &principal, "template.create", &id, result)
 }
 
 #[utoipa::path(
@@ -205,30 +243,41 @@ pub async fn create_template(
 )]
 pub async fn replace_template(
     State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
     body: String,
 ) -> Result<Response, AppError> {
-    check_template_id(&id)?;
-    let content = parse_and_validate(&body)?;
+    let result = async {
+        check_template_id(&id)?;
+        let content = parse_and_validate(&body)?;
 
-    let _guard = state.write_lock.lock().await;
-    let filename = format!("{id}.yaml");
-    // Decided from the disk, not the registry, so a broken file is replaceable.
-    match std::fs::symlink_metadata(state.templates_dir.join(&filename)) {
-        Ok(_) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(AppError::not_found(NotFoundKind::Template, id));
+        let _guard = state.write_lock.lock().await;
+        let filename = format!("{id}.yaml");
+        // Decided from the disk, not the registry, so a broken file is replaceable.
+        match std::fs::symlink_metadata(state.templates_dir.join(&filename)) {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::not_found(NotFoundKind::Template, id.clone()));
+            }
+            Err(err) => {
+                return Err(AppError::internal(format!(
+                    "failed to check template file '{filename}': {err}"
+                )));
+            }
         }
-        Err(err) => {
-            return Err(AppError::internal(format!(
-                "failed to check template file '{filename}': {err}"
-            )));
-        }
+        let context = detail_context(&state)?;
+        let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+        fs_safe::stage_and_replace(root_fd.as_fd(), &filename, &body)?;
+        reload_and_describe(
+            &state,
+            id.clone(),
+            content,
+            &context,
+            axum::http::StatusCode::OK,
+        )
     }
-    let context = detail_context(&state)?;
-    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-    fs_safe::stage_and_replace(root_fd.as_fd(), &filename, &body)?;
-    reload_and_describe(&state, id, content, &context, axum::http::StatusCode::OK)
+    .await;
+    record_activity(&state, &principal, "template.replace", &id, result)
 }
 
 #[utoipa::path(
@@ -245,15 +294,20 @@ pub async fn replace_template(
 )]
 pub async fn delete_template(
     State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    check_template_id(&id)?;
-    let _guard = state.write_lock.lock().await;
-    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-    fs_safe::unlink_file(root_fd.as_fd(), &id)?;
-    state.store().remove_favorites_for_template(&id)?;
-    state.reload()?;
-    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+    let result = async {
+        check_template_id(&id)?;
+        let _guard = state.write_lock.lock().await;
+        let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+        fs_safe::unlink_file(root_fd.as_fd(), &id)?;
+        state.store().remove_favorites_for_template(&id)?;
+        state.reload()?;
+        Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+    }
+    .await;
+    record_activity(&state, &principal, "template.delete", &id, result)
 }
 
 #[utoipa::path(

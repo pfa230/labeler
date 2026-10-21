@@ -115,3 +115,20 @@ export type ProbeResult =
 
 // The cut answer: a printer-side failure carries the service's detail; an unknown id is an ApiError.
 export type CutResult = { status: "ok" } | { status: "failed"; detail: string };
+
+export interface ActivityEntry {
+  id: number;
+  time: string;
+  actor_id: string;
+  actor_name: string;
+  action: "template.create" | "template.replace" | "template.delete" | "template.reload";
+  target: string;
+  outcome: "success" | "failure";
+  error_code?: string;
+  error_reason?: string;
+}
+
+export interface ActivityPage {
+  entries: ActivityEntry[];
+  next_before_id: number | null;
+}

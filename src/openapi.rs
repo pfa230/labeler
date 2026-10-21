@@ -12,11 +12,11 @@ use crate::{
         },
     },
     models::{
-        BatchRowError, BatchSummary, ErrorBody, ErrorResponse, HealthResponse, JobRecord,
-        LabelInput, NewPrinter, ParamControl, ParamEntry, ParamSpec, ParamType, ParamValue,
-        PrintRequest, Printer, PrinterConnection, PrinterUpdate, ReloadResponse,
-        RenderLabelRequest, RenderProfile, RenderRequest, SheetPosition, TemplateDetail,
-        TemplateFormat, TemplateList, TemplateSummary, VariableValue,
+        ActivityEntry, ActivityPage, BatchRowError, BatchSummary, ErrorBody, ErrorResponse,
+        HealthResponse, JobRecord, LabelInput, NewPrinter, ParamControl, ParamEntry, ParamSpec,
+        ParamType, ParamValue, PrintRequest, Printer, PrinterConnection, PrinterUpdate,
+        ReloadResponse, RenderLabelRequest, RenderProfile, RenderRequest, SheetPosition,
+        TemplateDetail, TemplateFormat, TemplateList, TemplateSummary, VariableValue,
     },
 };
 
@@ -25,6 +25,8 @@ use crate::{
     servers((url = "/api")),
     components(
         schemas(
+            ActivityEntry,
+            ActivityPage,
             HealthResponse,
             VariableValue,
             ResolvedSetting,

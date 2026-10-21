@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { to: "/", label: "Labels" },
   { to: "/import", label: "Import" },
   { to: "/print-history", label: "Print history" },
+  { to: "/activity", label: "Activity" },
   { to: "/settings", label: "Settings" },
 ];
 

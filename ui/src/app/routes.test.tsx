@@ -20,6 +20,7 @@ function stubFetch(state: AuthState, withTemplates: boolean) {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith("/api/auth/me")) return json(state);
+    if (url === "/api/activity") return json({ entries: [], next_before_id: null });
     if (url === "/api/templates") return json({ templates: withTemplates ? viewTemplates : [] });
     if (url.startsWith("/api/templates/")) {
       return json({ ...viewTemplates.find((t) => url.endsWith(t.id)), params: [{ name: "sku", type: "string", control: "text" }] });
@@ -106,6 +107,19 @@ describe("App routes", () => {
     expect(screen.getByLabelText("edit sku")).toHaveValue("edited in tab");
     await act(() => router.navigate("/import"));
     expect(screen.getByLabelText("template")).toHaveValue("");
+  });
+
+  it("serves Activity through the authenticated shell", async () => {
+    const router = renderApp(authed, ["/activity"]);
+    await screen.findByRole("heading", { name: "Activity" });
+    expect(router.state.location.pathname).toBe("/activity");
+    expect(await screen.findByText("No activity recorded yet.")).toBeInTheDocument();
+  });
+
+  it("guards Activity for anonymous visitors", async () => {
+    const router = renderApp({ authed: false, needsSetup: false }, ["/activity"]);
+    await screen.findByRole("heading", { name: /sign in/i });
+    expect(router.state.location.pathname).toBe("/login");
   });
 
   it("sends an unknown path to the index fallback", async () => {
