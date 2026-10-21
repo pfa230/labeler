@@ -6,6 +6,7 @@ pub mod datetime_fmt;
 pub mod driver;
 pub mod errors;
 pub mod extract;
+mod fonts;
 pub mod fs_safe;
 pub mod interpolation;
 pub mod middleware;

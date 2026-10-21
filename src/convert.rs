@@ -328,6 +328,7 @@ impl LayoutItem {
                 Ok(LayoutItem::Text {
                     value: raw.value,
                     placement: placement.into_placement("text", is_packed)?,
+                    font: raw.font.unwrap_or_else(|| "Inter".into()),
                     font_size: raw.font_size,
                     font_weight: raw.font_weight,
                     color: raw.color,

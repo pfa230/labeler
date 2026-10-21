@@ -47,12 +47,28 @@ Set these in `.env` for Compose, or with `-e` for `docker run`. Nothing is requi
 | `RUST_LOG` | `labeler=info,tower_http=info` | Log filter, tracing `EnvFilter` syntax. |
 | `PUID` / `PGID` | `1000` / `1000` | User and group the service runs as and `/config` is chowned to. Set to `id -u` / `id -g` of the volume's owner. |
 | `LABELER_CONFIG_DIR` | `/config` | All persistent state. In the container, mount a volume here rather than changing it. |
-| `LABELER_FONTS_DIR` | `fonts`, relative to the working directory (`/app` in the image) | Font directory; must contain `InterVariable.ttf`. Baked into the image. |
+| `LABELER_FONTS_DIR` | `fonts`, relative to the working directory (`/app` in the image) | Bundled-font directory, baked into the image. Includes Inter, Source Sans 3, JetBrains Mono and Roboto Condensed (selector `Roboto`). |
 | `LABELER_UI_DIR` | `ui/dist`; image sets `/app/ui/dist` | Built web UI. Baked into the image. |
 | `LABELER_TRUST_PROXY` | `false` | `true` behind a TLS-terminating reverse proxy that sets `X-Forwarded-Proto` and `X-Forwarded-Host`. |
 | `LABELER_NO_AUTH` | `false` | `true` removes the login wall, for single-user trusted-LAN use. |
 
 The two boolean variables are on only for the exact value `true`. Their effects are specified in [auth](../openspec/specs/auth/spec.md) (Origin check, No-auth mode). Do not set `LABELER_TRUST_PROXY` unless a trusted proxy really sets those headers, or a LAN client can spoof them.
+
+## Custom fonts
+
+Place custom TrueType or OpenType files under `/config/fonts` in the existing
+config volume (`{LABELER_CONFIG_DIR}/fonts` outside Docker), then restart Labeler.
+Select the normalized family name with `font: Family Name` on a text item; names
+are case-insensitive. The shipped selectors are `Inter` (the default),
+`Source Sans 3`, `JetBrains Mono` and `Roboto` for Roboto Condensed.
+See the [custom-family example](AUTHORING.md#font-families).
+
+The font inventory is loaded once for the process lifetime. A template-registry
+reload does not reload fonts. Removing a file leaves running renders unchanged;
+after restart, a template naming the missing family is quarantined. An absent
+custom-font directory contributes no fonts, and unusable files contribute no
+family. Bundled families win name collisions. System and renderer-embedded fonts
+are excluded, so mounting custom files adds families without rebuilding the image.
 
 ## First run
 

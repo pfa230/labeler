@@ -2,7 +2,7 @@
 
 - [ ] 1.1 Bundle the three selected regular variable fonts and their licenses under `fonts/`; record upstream versions/sources and actual byte/image-size increase in the implementation commit message body. Verify the image's existing font copy includes them and confirm all four bundled selectors against Typst's normalized family names: `Inter`, `Source Sans 3`, `JetBrains Mono` and `Roboto` (Roboto Condensed).
 - [ ] 1.2 Build the process-lifetime loaded-font inventory shared by validation, measurement and compilation, using the existing Typst FontBook matcher and excluding custom faces whose normalized family matches a bundled family, case-insensitively, from the inventory and book. Verify with a temporary custom static regular/bold family that lookup is case-insensitive, removal leaves an existing inventory usable and rebuilding the inventory drops that family; also check the absent custom-directory case. Check bundled precedence with a normal-width custom `Roboto` face that would out-score bundled Roboto Condensed on variant distance if admitted: assert the custom face is excluded and `font: Roboto` still selects the bundled face for measurement and emission. These checks must fail if duplicates are merely ordered, matching diverges or font access remains path-based.
-- [ ] 1.3 Add literal `font` through raw/domain/conversion, default-instantiation cloning and template validation. Extend existing validation tests for an available custom family and an unknown family at a nested text item's `font` path; verify the existing invalid-body/quarantine behavior is used.
+- [x] 1.3 Add literal `font` through raw/domain/conversion, default-instantiation cloning and template validation. Extend existing validation tests for an available custom family and an unknown family at a nested text item's `font` path; verify the existing invalid-body/quarantine behavior is used.
 
 ## 2. Selected-face layout and rendering
 
@@ -11,5 +11,5 @@
 
 ## 3. Guidance and gates
 
-- [ ] 3.1 Update `docs/AUTHORING.md` and `docs/DEPLOY.md` with the `font` syntax, shipped font names and normalized selectors (`Roboto` for Roboto Condensed), `/config/fonts`, restart requirement and disappearance behavior; verify the documented YAML parses and renders with a custom font supplied through that directory.
+- [x] 3.1 Update `docs/AUTHORING.md` and `docs/DEPLOY.md` with the `font` syntax, shipped font names and normalized selectors (`Roboto` for Roboto Condensed), `/config/fonts`, restart requirement and disappearance behavior; verify the documented YAML parses and renders with a custom font supplied through that directory.
 - [ ] 3.2 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` and `npx --no-install openspec validate --all --strict --no-interactive`; retain their results in `.agent-runs/`.

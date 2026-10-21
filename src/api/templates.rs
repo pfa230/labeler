@@ -496,3 +496,47 @@ pub async fn recent_templates(
             .collect(),
     ))
 }
+
+#[cfg(test)]
+mod font_tests {
+    #[test]
+    fn unknown_nested_family_uses_existing_invalid_body_and_quarantine() {
+        let guide = include_str!("../../docs/AUTHORING.md");
+        let yaml = guide
+            .split("<!-- custom-font-example -->\n```yaml\n")
+            .nth(1)
+            .unwrap()
+            .split("\n```")
+            .next()
+            .unwrap();
+        let unknown = yaml.replace("Libertinus Serif", "Absent Family");
+        let error = super::parse_and_validate(&unknown).unwrap_err();
+        assert_eq!(error.status().as_u16(), 422);
+        assert_eq!(error.code(), "TemplateInvalid");
+        assert_eq!(error.reason(), Some("template_validation_failed"));
+        assert!(
+            error.message_text().contains("layout[0].items[0].font"),
+            "{}",
+            error.message_text()
+        );
+        let dir = std::path::PathBuf::from(format!(
+            ".agent-runs/font-quarantine-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("unknown.yaml"), unknown).unwrap();
+        std::fs::write(
+            dir.join("known.yaml"),
+            yaml.replace("Libertinus Serif", "Inter"),
+        )
+        .unwrap();
+        let registry = crate::templates::TemplateRegistry::load_from_dir(&dir).unwrap();
+        assert!(registry.get("known").is_some());
+        assert!(registry.get("unknown").is_none());
+        assert_eq!(registry.broken().len(), 1);
+        assert!(registry.broken()[0]
+            .error
+            .contains("layout[0].items[0].font"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

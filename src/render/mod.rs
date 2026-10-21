@@ -14,7 +14,7 @@ use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, format_length_up,
     interpolate, parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32,
-    resolve_image_asset, to_page_coords, typst_alignment, typst_font_options,
+    resolve_image_asset, to_page_coords, typst_alignment,
 };
 
 pub(crate) use helpers::value_to_string;
@@ -455,7 +455,7 @@ impl ImageCollector {
 fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedDocument, AppError> {
     let mut builder = TypstEngine::builder()
         .main_file(source)
-        .search_fonts_with(typst_font_options());
+        .fonts(crate::fonts::inventory().fonts.clone());
     if !files.is_empty() {
         builder = builder
             .with_static_file_resolver(files.iter().map(|(p, b)| (p.as_str(), b.as_slice())));
@@ -1169,6 +1169,7 @@ struct ContainerRenderArgs<'a> {
 }
 
 struct TextRenderArgs<'a> {
+    font: &'a str,
     pub placement: &'a Placement,
     pub font_weight: Option<u16>,
     pub color: Option<&'a crate::models::Color>,
@@ -1779,6 +1780,7 @@ impl<'a> RenderContext<'a> {
         match item {
             LayoutItem::Text {
                 value,
+                font,
                 font_size,
                 font_weight,
                 wrap,
@@ -1794,6 +1796,7 @@ impl<'a> RenderContext<'a> {
                 let text_fit = helpers::layout_text(
                     helpers::TextLayoutItem {
                         raw_text: &text,
+                        font,
                         font_size,
                         font_weight: self.resolve_font_weight(font_weight.as_ref())?,
                         wrap: *wrap,
@@ -2055,6 +2058,7 @@ impl<'a> RenderContext<'a> {
             }
             LayoutItem::Text {
                 placement,
+                font,
                 font_weight,
                 color,
                 alignment,
@@ -2065,6 +2069,7 @@ impl<'a> RenderContext<'a> {
                 self.render_text_item(
                     out,
                     TextRenderArgs {
+                        font,
                         placement,
                         font_weight: resolved_weight,
                         color: color.as_ref(),
@@ -2196,14 +2201,15 @@ impl<'a> RenderContext<'a> {
         }
 
         let leading_pt = helpers::derived_leading_pt(
+            args.font,
             weight,
             args.text_fit.font_size_pt,
             args.text_fit.line_spacing,
         )?;
 
         let body = format!(
-            "#text(size: {}pt{weight_arg}{fill_arg}, overhang: false)[#set par(leading: {leading_pt}pt)\n{body}]",
-            args.text_fit.font_size_pt
+            "#text(size: {}pt{weight_arg}{fill_arg}, font: \"{}\", overhang: false)[#set par(leading: {leading_pt}pt)\n{body}]",
+            args.text_fit.font_size_pt, escape_typst_string(args.font)
         );
 
         let pad = match args.alignment.vertical {
@@ -2595,6 +2601,7 @@ mod tests {
                 Position([0.0, 0.0]),
                 Size([size_w, SizeValue::fixed(30.0)]),
             ),
+            font: "Inter".into(),
             font_size,
             font_weight: None,
             color: None,
@@ -2630,6 +2637,7 @@ mod tests {
                     SizeValue::fixed(30.0),
                 ]),
             ),
+            font: "Inter".into(),
             font_size,
             font_weight: weight.map(Into::into),
             color: None,
@@ -2802,6 +2810,7 @@ mod tests {
                 max_h: None,
                 rotate: None,
             },
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: None,
@@ -2834,6 +2843,7 @@ mod tests {
                 max_h: None,
                 rotate: None,
             },
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: None,
@@ -2952,6 +2962,7 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 color: None,
@@ -3013,6 +3024,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::content(), SizeValue::fixed(8.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: weight.map(Into::into),
                 color: None,
@@ -3087,6 +3099,7 @@ layout:
                 Position([0.0, 0.0]),
                 Size([SizeValue::content(), SizeValue::fixed(10.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             color: None,
@@ -3176,6 +3189,7 @@ layout:
                 Position([0.0, 3.0]),
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             color: None,
@@ -3332,6 +3346,7 @@ layout:
                 max_h: None,
                 rotate: None,
             },
+            font: "Inter".into(),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             color: None,
@@ -3439,6 +3454,7 @@ layout:
                 max_h: None,
                 rotate: None,
             },
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: None,
@@ -3515,6 +3531,7 @@ layout:
                     max_h: Some(200.0),
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 color: None,
@@ -3549,6 +3566,7 @@ layout:
                     max_h: Some(200.0),
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 color: None,
@@ -3583,6 +3601,7 @@ layout:
                         max_h,
                         rotate: None,
                     },
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     color: None,
@@ -3758,6 +3777,7 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 color: None,
@@ -3812,6 +3832,7 @@ layout:
                 max_h: None,
                 rotate: None,
             },
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: None,
@@ -3896,6 +3917,7 @@ layout:
                 max_h: None,
                 rotate: None,
             },
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: None,
@@ -3970,6 +3992,7 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 color: None,
@@ -4038,6 +4061,7 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Range {
                     min: 6.0,
                     max: 28.0,
@@ -4374,6 +4398,7 @@ layout:
                     Position([2.0, 2.0]),
                     Size([SizeValue::fixed(30.0), SizeValue::fixed(8.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 color: None,
@@ -4520,6 +4545,7 @@ layout:
                     Position([1.0, 1.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -4607,6 +4633,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::content(), SizeValue::fixed(HEIGHT_MM)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
                 color: None,
@@ -4866,6 +4893,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::content(), SizeValue::content()]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
                 color: None,
@@ -4902,6 +4930,7 @@ layout:
             ctx.render_text_item(
                 &mut typst_rendered,
                 super::TextRenderArgs {
+                    font: "Inter",
                     placement,
                     font_weight: None,
                     color: None,
@@ -5021,6 +5050,7 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
                     color: None,
@@ -5453,6 +5483,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(5.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 color: None,
@@ -5505,6 +5536,7 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     color: None,
@@ -5603,6 +5635,7 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     color: None,
@@ -5891,6 +5924,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(5.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 color: None,
@@ -6070,6 +6104,7 @@ layout:
                         Position([0.0, 10.0]),
                         Size([SizeValue::fixed(40.0), SizeValue::fixed(8.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
                     color: None,
@@ -6122,6 +6157,7 @@ layout:
                     Position([0.0, 6.0]),
                     Size([SizeValue::fixed(60.0), SizeValue::fixed(8.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 color: None,
@@ -6204,6 +6240,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -6272,6 +6309,7 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(40.0), SizeValue::fixed(10.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     color: None,
@@ -6343,6 +6381,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(40.0), SizeValue::fixed(20.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -6501,7 +6540,7 @@ layout:
     fn compile_probe(source: &str) -> super::PagedDocument {
         let engine = super::TypstEngine::builder()
             .main_file(source.to_string())
-            .search_fonts_with(super::typst_font_options())
+            .fonts(crate::fonts::inventory().fonts.clone())
             .build();
         let warned = engine.compile::<super::PagedDocument>();
         assert!(
@@ -6520,8 +6559,8 @@ layout:
             .map(|_| "Hxy")
             .collect::<Vec<_>>()
             .join("#linebreak()");
-        let leading =
-            super::helpers::derived_leading_pt(400, size, line_spacing).expect("derived leading");
+        let leading = super::helpers::derived_leading_pt("Inter", 400, size, line_spacing)
+            .expect("derived leading");
         let source = format!(
             "#set page(width: 200mm, height: auto, margin: 0mm)\n#set text(font: \"Inter\", size: {size}pt)\n#set par(leading: {leading}pt)\n{body}"
         );
@@ -7517,6 +7556,35 @@ layout:
                 "\u{4E2D}",
             );
 
+            let inter = crate::fonts::inventory().select("Inter", 400).unwrap();
+            let mono = crate::fonts::inventory()
+                .select("JetBrains Mono", 400)
+                .unwrap();
+            let inter = crate::render::helpers::font_instance(inter, 400, 20.0).unwrap();
+            let mono = crate::render::helpers::font_instance(mono, 400, 20.0).unwrap();
+            let differing = (33..0x3000)
+                .filter_map(char::from_u32)
+                .find(|&c| {
+                    inter.glyph_index(c).is_some()
+                        && mono.glyph_index(c).is_none()
+                        && !c.is_control()
+                })
+                .expect("the shipped faces have different coverage");
+            for policy in ["fail", "ellipsis"] {
+                let extra = format!("    font: JetBrains Mono\n    overflow: {policy}\n");
+                assert_unmapped(
+                    &label(&differing.to_string(), "top", "20", "content", &extra),
+                    &differing.to_string(),
+                );
+            }
+            assert_contained(&label(
+                &differing.to_string(),
+                "top",
+                "20",
+                "content",
+                "    font: Inter\n",
+            ));
+
             let supported = label("ok\nnext\ttab\u{200B}", "top", "20", "content", "");
             crate::render::render_single_label(
                 &supported,
@@ -7533,9 +7601,187 @@ layout:
         /// source captured on the commit before #392 (`bf6d58a`).
         #[test]
         fn a_centred_item_with_headroom_is_unaffected() {
-            const BEFORE_392: &str = "#set page(width: 120mm, height: 80mm, margin: 0mm)\n#set text(font: \"Inter\")\n#place(top + left, dx: 10mm, dy: 50mm)[#box(width: 100mm, height: 20mm, clip: true)[#align(horizon + left)[#text(size: 14pt, overhang: false)[#set par(leading: 6.6144543pt)\n#text(\"Widget\u{a0}42\")]]]]\n";
+            const BEFORE_392: &str = "#set page(width: 120mm, height: 80mm, margin: 0mm)\n#set text(font: \"Inter\")\n#place(top + left, dx: 10mm, dy: 50mm)[#box(width: 100mm, height: 20mm, clip: true)[#align(horizon + left)[#text(size: 14pt, font: \"Inter\", overhang: false)[#set par(leading: 6.6144543pt)\n#text(\"Widget\u{a0}42\")]]]]\n";
             let t = label("Widget 42", "center", "{ min: 8, max: 14 }", "20", "");
             assert_eq!(compiled(&t).expect("compile").source, BEFORE_392);
+        }
+
+        // A measured boundary distinguishes the alternate face in fitting and actual emission.
+        #[test]
+        fn selected_families_control_fitting_and_emitted_ink() {
+            let value = "WWWWWWWWWWWW";
+            let advance = |family: &str| {
+                typst_line_metrics(&laid_out(&label(
+                    value,
+                    "top",
+                    "20",
+                    "content",
+                    &format!("    font: {family}\n"),
+                )))
+                .0
+            };
+            let inter = advance("Inter");
+            let roboto = advance("Roboto");
+            assert!(roboto < inter - 10.0, "Roboto {roboto}, Inter {inter}");
+            let boundary = (roboto + inter) / 2.0 * 25.4 / 72.0;
+            let narrow = |family: &str, size: &str, policy: &str| {
+                let mut t = label(
+                    value,
+                    "top",
+                    size,
+                    "content",
+                    &format!("    font: {family}\n    overflow: {policy}\n"),
+                );
+                let crate::models::Layout::Items(items) = &mut t.layout else {
+                    unreachable!()
+                };
+                let crate::models::LayoutItem::Text { placement, .. } = &mut items[0] else {
+                    unreachable!()
+                };
+                placement.extent = crate::models::Extent::Size(crate::models::Size([
+                    crate::models::SizeValue::fixed(boundary as f32),
+                    crate::models::SizeValue::content(),
+                ]));
+                t
+            };
+            assert_eq!(
+                compiled(&narrow("Inter", "20", "fail"))
+                    .err().expect("Inter must overflow")
+                    .reason(),
+                Some("text_does_not_fit")
+            );
+            assert_contained(&narrow("Roboto", "20", "fail"));
+            for family in ["Inter", "Roboto", "Source Sans 3", "JetBrains Mono"] {
+                let t = narrow(family, "{ min: 8, max: 20 }", "fail");
+                assert_contained(&t);
+                if family == "Inter" {
+                    assert!(fitted_pt(&compiled(&t).unwrap().source) < 20.0);
+                } else if family == "Roboto" {
+                    assert_eq!(fitted_pt(&compiled(&t).unwrap().source), 20.0);
+                }
+                let shortened = narrow(family, "20", "ellipsis");
+                assert_contained(&shortened);
+                let lines = emitted_lines(&compiled(&shortened).unwrap().source);
+                if family == "Inter" {
+                    assert!(lines[0].ends_with("..."));
+                }
+                if family == "Roboto" {
+                    assert_eq!(lines, [value]);
+                }
+                for weight in [400, 700] {
+                    let selected = crate::fonts::inventory().select(family, weight).unwrap();
+                    let face =
+                        crate::render::helpers::font_instance(selected, weight, 20.0).unwrap();
+                    let sample = "Égypt";
+                    let measured = crate::render::helpers::measure_lines(&face, &[sample], 20.0)[0];
+                    let t = label(
+                        sample,
+                        "top",
+                        "20",
+                        "content",
+                        &format!("    font: {family}\n    font_weight: {weight}\n"),
+                    );
+                    let (advance, left, right) = typst_line_metrics(&laid_out(&t));
+                    assert!(
+                        (advance - f64::from(measured.advance)).abs() < 0.01,
+                        "{family} {weight}"
+                    );
+                    assert!((left - f64::from(measured.left)).abs() < 0.01);
+                    assert!((right - f64::from(measured.right)).abs() < 0.01);
+                    assert_contained(&t);
+                }
+            }
+            let implicit = label("Widget 42", "top", "20", "content", "");
+            let explicit = label("Widget 42", "top", "20", "content", "    font: Inter\n");
+            let png = |t: &TemplateContent| {
+                crate::render::render_single_label(
+                    t,
+                    &HashMap::new(),
+                    &no_settings(),
+                    &no_datetime(),
+                )
+                .unwrap()
+            };
+            assert_eq!(png(&implicit), png(&explicit));
+        }
+
+        #[test]
+        fn custom_static_fonts_validate_fit_and_survive_removal() {
+            const CHILD: &str = "LABELER_CUSTOM_FONT_TEST";
+            if std::env::var_os(CHILD).is_none() {
+                let config = std::path::PathBuf::from(format!(
+                    ".agent-runs/custom-fonts-{}",
+                    std::process::id()
+                ));
+                let fonts = config.join("fonts");
+                std::fs::create_dir_all(&fonts).unwrap();
+                for font in typst_assets::fonts().flat_map(|bytes| {
+                    typst::text::Font::iter(typst::foundations::Bytes::new(bytes))
+                }) {
+                    if font.info().family == "Libertinus Serif"
+                        && font.info().variant.style == typst::text::FontStyle::Normal
+                        && [400, 700].contains(&font.info().variant.weight.to_number())
+                    {
+                        std::fs::write(
+                            fonts.join(format!("{}.otf", font.info().variant.weight.to_number())),
+                            font.data(),
+                        )
+                        .unwrap();
+                    }
+                }
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "render::tests::measured_ink::custom_static_fonts_validate_fit_and_survive_removal", "--nocapture"])
+                    .env(CHILD, "1").env("LABELER_CONFIG_DIR", &config).status().unwrap();
+                std::fs::remove_dir_all(config).unwrap();
+                assert!(status.success());
+                return;
+            }
+            let font = "lIbErTiNuS sErIf";
+            for weight in [400, 700] {
+                let selected = crate::fonts::inventory().select(font, weight).unwrap();
+                assert_eq!(selected.info().variant.weight.to_number(), weight);
+                let face = crate::render::helpers::font_instance(selected, weight, 20.0).unwrap();
+                assert!(face.variation_axes().is_empty());
+                let t = label(
+                    "Égypt",
+                    "top",
+                    "20",
+                    "content",
+                    &format!("    font: {font}\n    font_weight: {weight}\n"),
+                );
+                let measured = crate::render::helpers::measure_lines(&face, &["Égypt"], 20.0)[0];
+                let (advance, left, right) = typst_line_metrics(&laid_out(&t));
+                assert!((advance - f64::from(measured.advance)).abs() < 0.01);
+                assert!((left - f64::from(measured.left)).abs() < 0.01);
+                assert!((right - f64::from(measured.right)).abs() < 0.01);
+                assert_contained(&t);
+            }
+            // The documented custom-family example travels through normal validation and rendering.
+            let guide = include_str!("../../docs/AUTHORING.md");
+            let yaml = guide
+                .split("<!-- custom-font-example -->\n```yaml\n")
+                .nth(1)
+                .unwrap()
+                .split("\n```")
+                .next()
+                .unwrap();
+            let t = parse_and_validate(yaml).unwrap();
+            let png = || {
+                crate::render::render_single_label(
+                    &t,
+                    &HashMap::new(),
+                    &no_settings(),
+                    &no_datetime(),
+                )
+                .unwrap()
+            };
+            let before = png();
+            std::fs::remove_dir_all(
+                std::path::Path::new(&std::env::var_os("LABELER_CONFIG_DIR").unwrap())
+                    .join("fonts"),
+            )
+            .unwrap();
+            assert_eq!(before, png());
         }
 
         // ---- 9.5. The #124 raster tests, restated for the measured reservation ----
@@ -7897,6 +8143,7 @@ layout:
                             Position([0.0, 0.0]),
                             Size([SizeValue::fixed(100.0), SizeValue::content()]),
                         ),
+                        font: "Inter".into(),
                         font_size: FontSize::Fixed(20.0),
                         font_weight: None,
                         color: None,
@@ -7922,8 +8169,9 @@ layout:
                     "authored {lines} line(s) at pitch {spacing}: predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
                     drift * 100.0
                 );
-                let expected_leading = super::helpers::derived_leading_pt(400, 20.0, Some(spacing))
-                    .expect("derived leading");
+                let expected_leading =
+                    super::helpers::derived_leading_pt("Inter", 400, 20.0, Some(spacing))
+                        .expect("derived leading");
                 assert!(
                     compiled
                         .source
@@ -7964,7 +8212,7 @@ layout:
         );
         let engine = super::TypstEngine::builder()
             .main_file(source)
-            .search_fonts_with(super::typst_font_options())
+            .fonts(crate::fonts::inventory().fonts.clone())
             .build();
         let warned = engine.compile::<super::PagedDocument>();
         assert!(
@@ -8015,6 +8263,7 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(100.0), SizeValue::fixed(60.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(20.0),
                     font_weight: None,
                     color: None,
@@ -8082,6 +8331,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(100.0), SizeValue::fixed(16.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Range {
                     min: 8.0,
                     max: 24.0,
@@ -8136,6 +8386,7 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(60.0), SizeValue::fixed(20.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(12.0),
                     font_weight: None,
                     color: None,
@@ -8255,6 +8506,7 @@ layout:
                 Position([-20.0, 0.0]),
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             color: None,
@@ -8315,6 +8567,7 @@ layout:
                         Position([0.0, 0.0]),
                         Size([SizeValue::content(), SizeValue::fixed(6.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     color: None,
@@ -8603,6 +8856,7 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -8702,6 +8956,7 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -10078,6 +10333,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -11238,6 +11494,7 @@ layout:
                 Position([0.0, 0.0]),
                 Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: Some(crate::models::Color::from_str("red").unwrap()),
@@ -11260,6 +11517,7 @@ layout:
                 Position([0.0, 0.0]),
                 Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: Some(crate::models::Color::from_str("#ff4136").unwrap()),
@@ -11282,6 +11540,7 @@ layout:
                 Position([0.0, 0.0]),
                 Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
             color: None,
@@ -11353,6 +11612,7 @@ layout:
                 Position([2.0, 3.0]),
                 Size([SizeValue::content(), SizeValue::fixed(15.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Range {
                 min: 8.0,
                 max: 24.0,
@@ -11492,6 +11752,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 color: Some(name.parse().unwrap()),
@@ -11517,6 +11778,7 @@ layout:
                 Position([0.0, 0.0]),
                 Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
             ),
+            font: "Inter".into(),
             font_size: FontSize::Fixed(12.0),
             font_weight: None,
             color: None,

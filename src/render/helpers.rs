@@ -11,8 +11,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
-use std::sync::OnceLock;
-use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 use unicode_script::{Script, UnicodeScript as _};
 
 /// In-place global luminance threshold of premultiplied-RGBA bytes to pure black/white (slice 1: no
@@ -353,16 +351,6 @@ pub(super) fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32
     (point.x, page_height_units - point.y)
 }
 
-pub(super) fn typst_font_options() -> TypstKitFontOptions {
-    let dir = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts");
-    // Exclude host system fonts so render output depends only on the bundled fonts and is identical
-    // across dev, CI, and the deployed container; a system-installed face must never shadow the
-    // bundled Inter. See #100. (`include_embedded_fonts` stays on for Typst's default fallback faces.)
-    TypstKitFontOptions::default()
-        .include_system_fonts(false)
-        .include_dirs([dir])
-}
-
 /// The box a fit has to land inside, in template units. Grouped because the width, the height and
 /// the unit they are expressed in are one fact, and passing them as three parallel floats pushed the
 /// fitting entry points past a sane argument count.
@@ -376,53 +364,28 @@ pub(super) struct FitBox<'a> {
 const WGHT: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"wght");
 const OPSZ: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"opsz");
 
-/// Parse a face and confirm it carries the axes the fitter varies. Byte-taking and free of the cache
-/// so a test can hand it any font without depending on which font some earlier test loaded first.
-fn load_face(bytes: &[u8]) -> Result<ttf_parser::Face<'_>, AppError> {
-    let face = ttf_parser::Face::parse(bytes, 0)
+/// Instance the selected bytes with the same supported axes and clamping as Typst.
+pub(super) fn font_instance(
+    font: &typst::text::Font,
+    weight: u16,
+    size_pt: f32,
+) -> Result<rustybuzz::Face<'_>, AppError> {
+    let mut face = ttf_parser::Face::parse(font.data().as_slice(), font.index())
         .map_err(|err| AppError::internal(format!("failed to parse font: {err}")))?;
-    // `set_variation` reports success for any variable face even when no axis matches the tag, so it
-    // cannot serve as the check. Verify up front: a font without these axes would measure silently
-    // unweighted, which is the bug this measurement path exists to remove (#96).
-    for tag in [WGHT, OPSZ] {
-        if !face
-            .variation_axes()
-            .into_iter()
-            .any(|axis| axis.tag == tag)
-        {
-            return Err(AppError::internal(format!(
-                "measurement font lacks the '{tag}' variation axis"
-            )));
-        }
-    }
-    Ok(face)
-}
-
-fn font_bytes() -> Result<&'static [u8], AppError> {
-    static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
-    if let Some(bytes) = BYTES.get() {
-        return Ok(bytes);
-    }
-    let path = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts")
-        .join("InterVariable.ttf");
-    let bytes = std::fs::read(&path)
-        .map_err(|err| AppError::internal(format!("failed to read font: {err}")))?;
-    load_face(&bytes)?;
-    // A concurrent caller may win the race to populate the cache; either value is valid, so fall
-    // back to the stored bytes rather than treating the lost race as an error.
-    let _ = BYTES.set(bytes);
-    Ok(BYTES.get().expect("font bytes initialized"))
-}
-
-/// The face instanced the way Typst will render it: `wght` from the item's weight, `opsz` from the
-/// font size. Typst sets both automatically (typst-library `text/font/variations.rs`), and measuring
-/// the default instance instead is what made bold text overflow and large text shrink needlessly.
-/// Out-of-range values normalise against the axis, so this clamps as Typst's do.
-pub(super) fn instance(weight: u16, size_pt: f32) -> Result<rustybuzz::Face<'static>, AppError> {
-    let mut face = load_face(font_bytes()?)?;
     face.set_variation(WGHT, f32::from(weight));
     face.set_variation(OPSZ, size_pt);
     Ok(rustybuzz::Face::from_face(face))
+}
+
+#[cfg(test)]
+pub(super) fn instance(weight: u16, size_pt: f32) -> Result<rustybuzz::Face<'static>, AppError> {
+    font_instance(
+        crate::fonts::inventory()
+            .select("Inter", weight)
+            .expect("Inter"),
+        weight,
+        size_pt,
+    )
 }
 
 fn break_lines(
@@ -552,7 +515,7 @@ fn text_fits(
 pub(super) fn largest_fitting_font(
     segments: &[&str],
     wrap: bool,
-    weight: u16,
+    face: &mut rustybuzz::Face<'_>,
     line_spacing: Option<f32>,
     alignment: &Alignment,
     range: (f32, f32),
@@ -561,18 +524,12 @@ pub(super) fn largest_fitting_font(
     let (min_size, max_size) = range;
     let width_pt = units_to_pt(fit.width_units, fit.unit);
     let height_pt = units_to_pt(fit.height_units, fit.unit);
-    // Parse once, mutate per candidate: the loop runs up to ~76 times at 0.5pt steps, and
-    // `set_variation` only rewrites normalised coordinates.
-    let mut face = match instance(weight, max_size) {
-        Ok(face) => face,
-        Err(_) => return min_size,
-    };
     let mut size = max_size;
     while size >= min_size - f32::EPSILON {
         // opsz tracks the size Typst would render this candidate at, and the ink moves with it.
         face.set_variation(OPSZ, size);
         if text_fits(
-            &face,
+            face,
             segments,
             wrap,
             size,
@@ -608,6 +565,7 @@ pub struct TextFit {
 #[derive(Debug, Clone)]
 pub(super) struct TextLayoutItem<'a> {
     pub raw_text: &'a str,
+    pub font: &'a str,
     pub font_size: &'a FontSize,
     pub font_weight: Option<u16>,
     pub wrap: bool,
@@ -634,7 +592,10 @@ pub(super) fn layout_text(
     let normalized = item.raw_text.replace("\r\n", "\n").replace('\r', "\n");
     let segments: Vec<&str> = normalized.split('\n').collect();
 
-    let measurement_face = load_face(font_bytes()?)?;
+    let font = crate::fonts::inventory()
+        .select(item.font, weight)
+        .ok_or_else(|| AppError::internal(format!("unknown font family '{}'", item.font)))?;
+    let measurement_face = font_instance(font, weight, 12.0)?;
     if let Some(character) = normalized
         .chars()
         .find(|&c| requires_glyph(c) && measurement_face.glyph_index(c).is_none())
@@ -644,12 +605,12 @@ pub(super) fn layout_text(
 
     // Step 2: Shrink font_size if range
     let (chosen_size, face) = match item.font_size {
-        FontSize::Fixed(s) => (*s, instance(weight, *s)?),
+        FontSize::Fixed(s) => (*s, font_instance(font, weight, *s)?),
         FontSize::Range { min, max } => {
             let fitted = largest_fitting_font(
                 &segments,
                 item.wrap,
-                weight,
+                &mut font_instance(font, weight, *max)?,
                 item.line_spacing,
                 &alignment,
                 (*min, *max),
@@ -659,7 +620,7 @@ pub(super) fn layout_text(
                     unit,
                 },
             );
-            (fitted, instance(weight, fitted)?)
+            (fitted, font_instance(font, weight, fitted)?)
         }
     };
 
@@ -1695,11 +1656,15 @@ pub(super) fn derived_leading(face: &ttf_parser::Face, size: f32, line_spacing: 
 }
 
 pub(super) fn derived_leading_pt(
+    font: &str,
     weight: u16,
     size: f32,
     line_spacing: Option<f32>,
 ) -> Result<f32, AppError> {
-    let face = instance(weight, size)?;
+    let selected = crate::fonts::inventory()
+        .select(font, weight)
+        .ok_or_else(|| AppError::internal(format!("unknown font family '{font}'")))?;
+    let face = font_instance(selected, weight, size)?;
     Ok(derived_leading(
         &face,
         size,
@@ -2041,7 +2006,7 @@ mod tests {
 
 #[cfg(test)]
 mod helpers_tests {
-    use super::{largest_fitting_font, layout_text, FitBox};
+    use super::{instance, largest_fitting_font, layout_text, FitBox};
     use crate::errors::AppError;
     use crate::models::{Alignment, FontSize, HorizontalAlign, Overflow, VerticalAlign};
 
@@ -2051,7 +2016,7 @@ mod helpers_tests {
             largest_fitting_font(
                 &["Hi"],
                 false,
-                400,
+                &mut instance(400, 12.0).unwrap(),
                 None,
                 &Alignment {
                     horizontal: HorizontalAlign::Left,
@@ -2070,7 +2035,7 @@ mod helpers_tests {
             largest_fitting_font(
                 &["A long label that cannot fit"],
                 false,
-                400,
+                &mut instance(400, 12.0).unwrap(),
                 None,
                 &Alignment {
                     horizontal: HorizontalAlign::Left,
@@ -2097,6 +2062,7 @@ mod helpers_tests {
     ) -> Result<super::TextFit, AppError> {
         layout_text(
             super::TextLayoutItem {
+                font: "Inter",
                 raw_text: text,
                 font_size,
                 font_weight: None,
@@ -2870,6 +2836,7 @@ mod helpers_tests {
         let metric = cap_pt(10.0) + 9_999.0 * 5.0;
         let fit = layout_text(
             super::TextLayoutItem {
+                font: "Inter",
                 raw_text: &value,
                 font_size: &FontSize::Fixed(10.0),
                 font_weight: None,
@@ -3208,7 +3175,6 @@ mod interpolate_tests {
     use super::interpolate;
     use serde_json::json;
     use std::collections::{BTreeMap, HashMap};
-    use std::sync::OnceLock;
 
     fn data() -> HashMap<String, serde_json::Value> {
         HashMap::from([
@@ -3222,7 +3188,7 @@ mod interpolate_tests {
     }
 
     fn no_datetime() -> crate::datetime_fmt::DateTimeResolver<'static> {
-        static EMPTY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+        static EMPTY: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
         let formats = EMPTY.get_or_init(BTreeMap::new);
         crate::datetime_fmt::DateTimeResolver {
             formats,
@@ -3363,9 +3329,9 @@ mod interpolate_tests {
 #[cfg(test)]
 mod measurement_tests {
     use super::{
-        cap_height, glyph_ink, instance, largest_fitting_font, line_pitch, load_face,
-        measure_block_ink, resolve_line_spacing, shape_line_ink, text_width, typo_ascender,
-        units_to_pt, BlockInk, FitBox,
+        cap_height, glyph_ink, instance, largest_fitting_font, line_pitch, measure_block_ink,
+        resolve_line_spacing, shape_line_ink, text_width, typo_ascender, units_to_pt, BlockInk,
+        FitBox,
     };
     use crate::models::{Alignment, HorizontalAlign, VerticalAlign};
 
@@ -3432,7 +3398,7 @@ mod measurement_tests {
             largest_fitting_font(
                 &["Hxy"],
                 false,
-                400,
+                &mut instance(400, 12.0).unwrap(),
                 None,
                 &Alignment {
                     horizontal: HorizontalAlign::Left,
@@ -3554,26 +3520,6 @@ mod measurement_tests {
         assert!(
             l < s,
             "opsz 32 must measure narrower than opsz 14 (got {s:.2} vs {l:.2})"
-        );
-    }
-
-    #[test]
-    fn a_font_without_the_axes_is_rejected() {
-        // A real static face, not corrupt bytes: the check under test is "valid font, no wght/opsz",
-        // and a parse failure would satisfy the assertion for the wrong reason.
-        let bytes = typst_assets::fonts()
-            .find(|bytes| {
-                ttf_parser::Face::parse(bytes, 0)
-                    .map(|face| face.variation_axes().is_empty())
-                    .unwrap_or(false)
-            })
-            .expect("typst-assets must embed at least one static face");
-        let err = load_face(bytes).expect_err("a static font must be rejected");
-        // AppError is not Display; its Debug carries the message.
-        let rendered = format!("{err:?}");
-        assert!(
-            rendered.contains("variation axis"),
-            "unexpected error: {rendered}"
         );
     }
 

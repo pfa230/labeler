@@ -320,6 +320,8 @@ where
 #[serde(deny_unknown_fields)]
 pub struct TextRaw {
     pub value: String,
+    #[serde(default)]
+    pub font: Option<String>,
     pub font_size: FontSize,
     #[serde(default)]
     pub font_weight: Option<Dynamic<u16>>,

@@ -158,6 +158,48 @@ A cap bounds a `content` or `fill` extent; on a number you wrote, or on a `to`, 
 
 A long message is laid out against a 30mm box, so it shrinks to 8pt and is shortened with `...` instead of running the tape out to 150mm. The cap does not become the width: the label ends where the shortened text ends. Governing spec: [extent sources](../openspec/specs/layout/spec.md#requirement-an-extent-comes-from-the-author-the-content-or-the-frame).
 
+### Font families
+
+A text item's literal `font` selects a family, case-insensitively. Omit it to use
+`Inter`. The shipped selectors are `Inter`, `Source Sans 3`, `JetBrains Mono` and
+`Roboto`; `Roboto` selects the shipped Roboto Condensed font. Use the renderer's
+normalized family name, without a variable-font suffix such as `Variable` or `VF`,
+not a filename. Family names do not interpolate.
+
+To use a custom family, place its TrueType or OpenType files in
+`{LABELER_CONFIG_DIR}/fonts` (`/config/fonts` in Docker) and restart the service.
+For example, after installing the regular and bold Libertinus Serif faces:
+
+<!-- custom-font-example -->
+```yaml
+name: Custom font
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 20]
+    items:
+      - type: text
+        value: "Widget 42"
+        at: [2, 2]
+        size: [56, 16]
+        font: Libertinus Serif
+        font_size: 16
+        font_weight: 700
+```
+
+Fitting uses the chosen face's metrics, including static faces and variable fonts
+without an optical-size axis. An unknown family refuses the template at its
+`font` path. A drawable character missing from the selected face refuses rendering
+with `text_character_unmapped`, even if shortening would remove it.
+
+Fonts and their bytes stay loaded until restart. Adding, replacing or removing a
+file has no effect on a running service; after restart, templates naming a removed
+family are quarantined. Bundled families take precedence over custom files with
+the same normalized name. Host and renderer-embedded fonts are not available.
+
 ### Text fitting and overflow
 
 A text is laid out against the box it will get. A `font_size` range shrinks in 0.5pt steps until every line fits; a fixed size skips that step. Whatever still does not fit goes to `overflow`. The default, `ellipsis`, drops trailing lines and trims over-wide lines ending them in `...`; `overflow: fail` refuses the label with `text_does_not_fit` rather than print a shortened value, which is what you want for asset ids and anything scanned. Neither ever clips: when even `...` cannot fit, both fail.

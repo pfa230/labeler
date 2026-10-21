@@ -991,6 +991,7 @@ fn instantiate_item_defaults(
         LayoutItem::Text {
             value,
             placement,
+            font,
             font_size,
             font_weight,
             color,
@@ -1002,6 +1003,7 @@ fn instantiate_item_defaults(
         } => LayoutItem::Text {
             value: value.clone(),
             placement: inst_placement(placement),
+            font: font.clone(),
             font_size: font_size.clone(),
             font_weight: font_weight.clone(),
             color: color.clone(),
@@ -1288,12 +1290,16 @@ fn validate_layout_item(
         LayoutItem::Text {
             value,
             placement,
+            font,
             font_size,
             font_weight,
             ..
         } => {
             if value.trim().is_empty() {
                 return Err(at_key("value", "text value must not be empty"));
+            }
+            if crate::fonts::inventory().select(font, 400).is_none() {
+                return Err(at_key("font", &format!("unknown font family '{font}'")));
             }
             validate_font_weight(font_weight.as_ref())
                 .map_err(|msg| at_key("font_weight", &msg))?;
@@ -2906,6 +2912,7 @@ layout: []
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: Some(DynamicValue::Literal(350)),
                 color: None,
@@ -2960,6 +2967,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 color: None,
@@ -3130,6 +3138,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(8.0), SizeValue::fixed(6.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -3209,6 +3218,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(8.0), SizeValue::fixed(6.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -3247,6 +3257,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(8.0), SizeValue::fixed(6.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,
@@ -3282,6 +3293,7 @@ layout:
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(40.0), SizeValue::fixed(6.0)]),
                 ),
+                font: "Inter".into(),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 color: None,

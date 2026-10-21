@@ -817,6 +817,7 @@ pub enum Condition {
 pub enum LayoutItem {
     Text {
         value: String,
+        font: String,
         placement: Placement,
         font_size: FontSize,
         font_weight: Option<DynamicValue<u16>>,

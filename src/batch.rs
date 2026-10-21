@@ -246,6 +246,7 @@ mod tests {
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
                     ),
+                    font: "Inter".into(),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
                     color: None,
