@@ -18,7 +18,7 @@ Each completed invocation of template create, replace, delete or explicit regist
 
 ### Requirement: Activity attribution and result
 
-An entry SHALL expose `id`, `time` in UTC, `actor_id`, `actor_name`, `action`, `target` and `outcome` (`success` or `failure`). Actor identity SHALL be the admitted user's id and username, including a token's owner, or `local` and `Local` with authentication disabled. The result SHALL describe the operation's response; a failure does not assert that no change occurred.
+An entry SHALL expose `id`, `time` in UTC, `actor_id`, `actor_name`, `action`, `target` and `outcome` (`success` or `failure`). Actor identity SHALL be the admitted user's id and username, including a token's owner, or `local` for both fields with authentication disabled. The result SHALL describe the operation's response; a failure does not assert that no change occurred.
 
 #### Scenario: A token acts as its owner
 
@@ -28,7 +28,7 @@ An entry SHALL expose `id`, `time` in UTC, `actor_id`, `actor_name`, `action`, `
 #### Scenario: A rejected template has a failed result
 
 - **WHEN** a local operator replaces a template with invalid YAML
-- **THEN** its entry identifies actor `local` and `Local` and outcome `failure`
+- **THEN** its entry identifies actor `local` and `local` and outcome `failure`
 
 ### Requirement: Activity failure detail
 

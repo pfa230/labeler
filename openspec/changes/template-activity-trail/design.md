@@ -4,7 +4,7 @@
 
 See proposal.md for motivation. `src/api/templates.rs` owns all four selected handlers. Create and replace parse YAML, publish files and reload the registry; delete removes a file, prunes favorites and reloads. A later step can fail after a file changes, so a failed response already does not mean an unchanged filesystem.
 
-`Store` owns SQLite and its sequential migrations. `Principal` already supplies the user id and username or the Local identity; tokens act as their owner. Existing `jobs` rows feed Recent templates. `AppError` exposes status, code and reason separately from its message and arbitrary details, which can contain submitted text. The UI uses BrowserRouter, a shared Shell, TanStack Query and `getJson`.
+`Store` owns SQLite and its sequential migrations. `Principal` already supplies the user id and username or the no-auth identity; tokens act as their owner. For no-auth activity, use `actor_id: local` and `actor_name: local`, matching the existing auth contract and `/api/auth/me`, rather than introducing a second spelling for that identity. Existing `jobs` rows feed Recent templates. `AppError` exposes status, code and reason separately from its message and arbitrary details, which can contain submitted text. The UI uses BrowserRouter, a shared Shell, TanStack Query and `getJson`.
 
 ## Goals / Non-Goals
 
