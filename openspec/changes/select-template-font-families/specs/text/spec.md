@@ -125,7 +125,7 @@ A text value containing a drawable character the selected face does not map SHAL
 
 ### Requirement: Available font families
 
-Inter, Source Sans 3, JetBrains Mono and Roboto Condensed SHALL be bundled with their licenses in `LABELER_FONTS_DIR` (default `fonts/`). Custom TrueType and OpenType font files in `{LABELER_CONFIG_DIR}/fonts` SHALL add selectable families without rebuilding the service. Bundled families SHALL take precedence over custom files declaring the same family. Host system fonts SHALL NOT be selected.
+Inter, Source Sans 3, JetBrains Mono and Roboto Condensed SHALL be bundled with their licenses in `LABELER_FONTS_DIR` (default `fonts/`), selectable as `Inter`, `Source Sans 3`, `JetBrains Mono` and `Roboto`, respectively. Custom TrueType and OpenType font files in `{LABELER_CONFIG_DIR}/fonts` SHALL add selectable families without rebuilding the service. Bundled families SHALL take precedence over custom files declaring the same family. No other family, host-installed or renderer-embedded, SHALL be selectable.
 
 The available fonts and their bytes SHALL be held for the process lifetime; adding, changing or removing a file SHALL take effect only on restart. An absent custom-font directory SHALL add no families.
 
