@@ -1,4 +1,7 @@
 import "@testing-library/jest-dom/vitest";
+import { beforeEach } from "vitest";
+
+beforeEach(() => sessionStorage.clear());
 
 if (!URL.createObjectURL) {
   // jsdom shim for blob preview/download tests

@@ -52,12 +52,12 @@ function stubFetch(
   });
 }
 
-function renderPage() {
+function renderPage(url = "/import") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter initialEntries={["/import"]}>
+        <MemoryRouter initialEntries={[url]}>
           <Import />
         </MemoryRouter>
       </ToastProvider>
@@ -102,6 +102,65 @@ describe("CSV Import screen", () => {
     expect(within(grid).getByDisplayValue("2")).toBeInTheDocument();
     expect(screen.getByText(/2 labels/i)).toBeInTheDocument();
     expect(within(grid).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["", "sku", "color", ""]);
+  });
+
+  it("hydrates edited rows and choices, submits them, and Reset still uses the loaded source", async () => {
+    const first = renderPage();
+    await loadTemplateAndCsv();
+    fireEvent.change(screen.getAllByLabelText("edit sku")[0], { target: { value: "edited" } });
+    fireEvent.click(screen.getByLabelText("preview row 2"));
+    fireEvent.change(screen.getByLabelText("copies"), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p1" } });
+    fireEvent.change(screen.getByLabelText("paste CSV"), { target: { value: "sku,color\nunloaded,red" } });
+    first.unmount();
+
+    const second = renderPage("/import?template=t1");
+    await screen.findByLabelText("copies");
+    expect(screen.getByLabelText("paste CSV")).toHaveValue("sku,color\nunloaded,red");
+    expect(screen.getByDisplayValue("edited")).toBeInTheDocument();
+    expect(screen.getByLabelText("preview row 2")).toBeChecked();
+    expect(screen.getByLabelText("copies")).toHaveValue(3);
+    await waitFor(() => expect(screen.getByLabelText("printer")).toHaveValue("p1"));
+    fireEvent.click(screen.getByRole("button", { name: /^print$/i }));
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    const submitted = JSON.parse(lastCall("/api/print")![1]!.body as string);
+    expect(submitted).toMatchObject({
+      template: "t1", printer: "p1",
+      labels: [{ data: { sku: "edited", color: "red" }, copies: 3 }, { data: { sku: "2", color: "blue" }, copies: 3 }],
+    });
+    await screen.findAllByText("ok");
+    second.unmount();
+
+    const third = renderPage("/import?template=t1");
+    await screen.findByLabelText("copies");
+    expect(screen.queryByText("ok")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /reset/i }));
+    expect(screen.getAllByLabelText("edit sku")[0]).toHaveValue("1");
+    expect(screen.queryByDisplayValue("edited")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("copies")).toHaveValue(1);
+    third.unmount();
+
+    renderPage("/import?template=t1");
+    await screen.findByLabelText("copies");
+    expect(screen.getAllByLabelText("edit sku")[0]).toHaveValue("1");
+    expect(screen.getByLabelText("copies")).toHaveValue(1);
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    expect(await screen.findByDisplayValue("unloaded")).toBeInTheDocument();
+  });
+
+  it("hydrates CSV parse issues and lets a new Load replace the refused source", async () => {
+    const first = renderPage();
+    fireEvent.change(screen.getByLabelText("paste CSV"), { target: { value: 'sku\n"open' } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    const issue = (await screen.findByText(/parse error/i)).textContent!;
+    first.unmount();
+    renderPage();
+    expect(screen.getByLabelText("paste CSV")).toHaveValue('sku\n"open');
+    expect(screen.getByText(issue)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("paste CSV"), { target: { value: "sku\nreplacement" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    expect(await screen.findByDisplayValue("replacement")).toBeInTheDocument();
+    expect(screen.queryByText(issue)).not.toBeInTheDocument();
   });
 
   it("loads a CSV from a selected file", async () => {
@@ -733,6 +792,40 @@ describe("issue-386: sheet preview", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("hydrates sheet options and headers, and keeps edited rows through template changes", async () => {
+    fetchMock = stubSheetFetch({ templateDetails: {
+      t1: { ...detail, params: [...detail.params, { name: "extra", type: "string", control: "text" }] },
+    } });
+    vi.stubGlobal("fetch", fetchMock);
+    const first = renderPage("/import?template=sheet-tpl");
+    fireEvent.change(screen.getByLabelText("paste CSV"), { target: { value: "extra,sku\nkeep,1\nheld,2" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText("start slot");
+    fireEvent.change(screen.getAllByLabelText("edit sku")[0], { target: { value: "sheet edit" } });
+    fireEvent.change(screen.getByLabelText("copies"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("start slot"), { target: { value: "4" } });
+    first.unmount();
+    renderPage("/import?template=sheet-tpl");
+    await screen.findByLabelText("start slot");
+    expect(screen.getByLabelText("start slot")).toHaveValue(4);
+    expect(screen.getByLabelText("copies")).toHaveValue(2);
+    expect(screen.getByDisplayValue("sheet edit")).toBeInTheDocument();
+    expect(screen.getAllByRole("columnheader").slice(0, 2).map((el) => el.textContent)).toEqual(["extra", "sku"]);
+    const previous = countCalls("/api/render");
+    fireEvent.click(screen.getByRole("button", { name: /download/i }));
+    await waitFor(() => expect(countCalls("/api/render")).toBeGreaterThan(previous));
+    expect(JSON.parse(lastCall("/api/render")![1]!.body as string)).toMatchObject({
+      template: "sheet-tpl", start_slot: 4,
+      labels: [{ data: { sku: "sheet edit" }, copies: 2 }, { data: { sku: "2" }, copies: 2 }],
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("template"), { target: { value: "t1" } });
+    await screen.findByLabelText("preview row 2");
+    expect(screen.getByDisplayValue("sheet edit")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("keep")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("held")).toBeInTheDocument();
   });
 
   it("5.1 Sheet template with 3 valid rows, copies 2 and start slot 4: one POST /api/render preview request with 3 entries in row order, each with copies: 2, and start_slot: 4; activating Download then sends a body whose labels and start_slot deep-equal the preview's and reports 6 labels", async () => {

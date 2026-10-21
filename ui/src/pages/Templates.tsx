@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   fetchTemplateSource,
@@ -16,6 +16,7 @@ import { EmptyTemplates } from "../components/EmptyTemplates";
 import { FormatBadge } from "../components/FormatBadge";
 import { TemplateThumbnail } from "../components/TemplateThumbnail";
 import type { TemplateSummary } from "../api/types";
+import { useMainScroll } from "../lib/tabViews";
 
 function compareCodePoints(a: string, b: string): number {
   const ca = Array.from(a);
@@ -253,12 +254,32 @@ export function Templates() {
   const { data, isLoading, isError, error } = useTemplates();
   const favs = useFavorites();
   const recents = useRecentTemplates();
+  const root = useMainScroll(Boolean(data && favs.data && recents.data));
   const setFav = useSetFavorite();
   const reload = useReloadTemplates();
   const { push } = useToast();
   const qc = useQueryClient();
-  const [query, setQuery] = useState("");
-  const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>(ALL_FILTER);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get("q") ?? "";
+  const selectedFilter = useMemo<CategoryFilter>(() => {
+    const category = searchParams.get("category");
+    if (category) return { kind: "category", name: category };
+    return searchParams.get("uncategorized") === "1" ? { kind: "uncategorized" } : ALL_FILTER;
+  }, [searchParams]);
+  const setQuery = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set("q", value);
+    else next.delete("q");
+    setSearchParams(next, { replace: true });
+  };
+  const setSelectedFilter = (filter: CategoryFilter) => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("category");
+    next.delete("uncategorized");
+    if (filter.kind === "category") next.set("category", filter.name);
+    if (filter.kind === "uncategorized") next.set("uncategorized", "1");
+    setSearchParams(next, { replace: true });
+  };
   const [editor, setEditor] = useState<{ id: string; source: string } | null>(null);
 
   const broken = data?.broken ?? [];
@@ -294,16 +315,21 @@ export function Templates() {
   // summaries rather than the snapshot captured when Save was clicked, so a choice whose last listing
   // template disappeared falls back to All even when concurrent saves each saw the other still there.
   const activeFilter = useMemo<CategoryFilter>(() => {
+    if (!data) return selectedFilter;
     if (selectedFilter.kind === "category" && !categories.includes(selectedFilter.name)) return ALL_FILTER;
     if (selectedFilter.kind === "uncategorized" && !hasUncategorized) return ALL_FILTER;
     return selectedFilter;
-  }, [selectedFilter, categories, hasUncategorized]);
+  }, [data, selectedFilter, categories, hasUncategorized]);
 
   // The fallback above only hides a vanished choice for this render. Reset the stored selection too, so
   // a later save that reintroduces that category does not silently reselect it.
-  if (activeFilter !== selectedFilter) {
-    setSelectedFilter(activeFilter);
-  }
+  useEffect(() => {
+    if (activeFilter === selectedFilter) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("category");
+    next.delete("uncategorized");
+    setSearchParams(next, { replace: true });
+  }, [activeFilter, selectedFilter, searchParams, setSearchParams]);
 
   const filtered = useMemo(() => {
     let list = data?.templates ?? [];
@@ -369,7 +395,7 @@ export function Templates() {
   );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div ref={root} className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">Labels</h1>
         <div className="flex flex-wrap items-center gap-2">

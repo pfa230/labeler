@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { rememberDestination, rememberedDestination } from "../lib/tabViews";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAuth, useLogout } from "../api/auth";
 
@@ -29,6 +30,10 @@ export function Shell() {
   const sidebarRef = useRef<HTMLElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
+  const { pathname, search } = useLocation();
+  useEffect(() => {
+    if (pathname === "/" || pathname === "/import") rememberDestination(pathname, search);
+  }, [pathname, search]);
   const { data: auth } = useAuth();
   const logout = useLogout();
 
@@ -74,7 +79,9 @@ export function Shell() {
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
               <NavLink
-                to={item.to}
+                to={item.to === "/" || item.to === "/import"
+                  ? pathname === item.to ? pathname + search : rememberedDestination(item.to)
+                  : item.to}
                 end={item.to === "/"}
                 onClick={closeDrawer}
                 className={navLinkClass}

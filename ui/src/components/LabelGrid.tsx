@@ -23,6 +23,7 @@ import "@svar-ui/react-grid/style.css";
 import type { LabelGridRow } from "../lib/labelGrid";
 import { blankOptionLabel, getOwnKey } from "../lib/labelInputs";
 import type { Param } from "../api/types";
+import { readViewScroll, saveViewScroll } from "../lib/tabViews";
 
 // Which rows an edit touched, by index. Import clears a prior run's annotation on exactly those
 // rows, so the shape outlives the grid library that first supplied it.
@@ -44,6 +45,7 @@ export interface LabelGridProps {
   disabled?: boolean; // read-only while a batch is in flight (no editing/duplicate/remove)
   selectedRowId?: string; // which row feeds the label preview
   onSelectRow?: (id: string) => void; // when provided, a leading radio column is rendered
+  scrollKey?: string; // Import's current URL, once its destination data has mounted
 }
 
 interface GridContextValue extends LabelGridProps {
@@ -450,7 +452,7 @@ function ActionsCell({ row }: ICellProps) {
 }
 
 export function LabelGrid(props: LabelGridProps) {
-  const { rows, fields, disabled, onSelectRow, cellInput, resultHeading } = props;
+  const { rows, fields, disabled, onSelectRow, cellInput, resultHeading, scrollKey } = props;
   const hasResults = rows.some((row) => row.annotation !== undefined);
 
   const latest = useRef(props);
@@ -536,6 +538,23 @@ export function LabelGrid(props: LabelGridProps) {
       }
     }
   }, [onSelectRow, disabled, rows]);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api || !scrollKey) return;
+    const position = readViewScroll("grid", scrollKey);
+    const frame = requestAnimationFrame(() => {
+      void api.exec("scroll-to", position);
+      api.on("scroll-to", () => {
+        const { scrollTop = 0, scrollLeft = 0 } = api.getState();
+        saveViewScroll("grid", scrollKey, { top: scrollTop, left: scrollLeft });
+      }, { tag: "import-scroll" });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      api.detach("import-scroll");
+    };
+  }, [scrollKey]);
 
   const contextValue = useMemo<GridContextValue>(() => ({
     ...props,

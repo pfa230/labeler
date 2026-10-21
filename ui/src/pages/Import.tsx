@@ -1,4 +1,6 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useSearchParams } from "react-router-dom";
+import { readImportDraft, saveImportDraft, useMainScroll } from "../lib/tabViews";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
 import {
   MAX_BATCH_LABELS,
@@ -43,8 +45,18 @@ export function Import() {
   const { data: printers } = usePrinters();
   const { push } = useToast();
 
-  const [templateId, setTemplateId] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const templateId = searchParams.get("template") ?? "";
+  const setTemplateId = (id: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (id) next.set("template", id);
+    else next.delete("template");
+    setSearchParams(next, { replace: true });
+  };
   const { data: detail, isPlaceholderData } = useTemplate(templateId);
+  const { pathname, search } = useLocation();
+  const ready = Boolean(templates && printers && !isPlaceholderData && (!templateId || detail));
+  const root = useMainScroll(ready);
 
   if (templatesFailed) {
     return (
@@ -65,7 +77,7 @@ export function Import() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div ref={root} className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">Import</h1>
       <label className="flex flex-col gap-1 max-w-sm">
         <span className="text-sm font-medium">Template</span>
@@ -78,7 +90,7 @@ export function Import() {
           ))}
         </select>
       </label>
-      <CsvEditor detail={detail} stale={isPlaceholderData} printers={printers ?? []} push={push} />
+      <CsvEditor detail={detail} stale={isPlaceholderData} printers={printers ?? []} push={push} scrollKey={ready ? pathname + search : undefined} />
     </div>
   );
 }
@@ -88,15 +100,18 @@ function CsvEditor({
   stale,
   printers,
   push,
+  scrollKey,
 }: {
   detail?: TemplateDetail;
   stale?: boolean;
   printers: { id: string; name: string }[];
   push: (t: { kind: "ok" | "error"; message: string }) => void;
+  scrollKey?: string;
 }) {
-  const [text, setText] = useState("");
-  const [loadedSource, setLoadedSource] = useState(""); // last successfully parsed CSV text (for Reset)
-  const [rows, setRows] = useState<LabelGridRow[]>([]);
+  const [draft] = useState(readImportDraft);
+  const [text, setText] = useState(draft?.text ?? "");
+  const [loadedSource, setLoadedSource] = useState(draft?.loadedSource ?? ""); // Reset source
+  const [rows, setRows] = useState<LabelGridRow[]>(draft?.rows ?? []);
   // A ref mirrors `rows` so event handlers (notably run(), which fires right after an edit's blur-commit)
   // read the latest rows synchronously, not a stale render closure. Every mutation goes through commitRows.
   const rowsRef = useRef(rows);
@@ -104,15 +119,19 @@ function CsvEditor({
     rowsRef.current = next;
     setRows(next);
   };
-  const [csvFields, setCsvFields] = useState<string[]>([]);
-  const [issues, setIssues] = useState<string[]>([]);
-  const [copies, setCopies] = useState(1);
-  const [startSlot, setStartSlot] = useState(0);
-  const [printer, setPrinter] = useState<string | undefined>(undefined);
+  const [csvFields, setCsvFields] = useState<string[]>(draft?.csvFields ?? []);
+  const [issues, setIssues] = useState<string[]>(draft?.issues ?? []);
+  const [copies, setCopies] = useState(draft?.copies ?? 1);
+  const [startSlot, setStartSlot] = useState(draft?.startSlot ?? 0);
+  const [printer, setPrinter] = useState<string | undefined>(draft?.printer);
   const [busy, setBusy] = useState(false);
   const [resultOperation, setResultOperation] = useState<"print" | "download">("print");
   const [formError, setFormError] = useState<string | null>(null);
-  const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
+  const [selectedRowId, setSelectedRowId] = useState<string | undefined>(draft?.selectedRowId);
+
+  useEffect(() => {
+    saveImportDraft({ text, loadedSource, rows, csvFields, issues, copies, startSlot, printer, selectedRowId });
+  }, [text, loadedSource, rows, csvFields, issues, copies, startSlot, printer, selectedRowId]);
 
   const isSheet = detail?.format.type === "sheet";
 
@@ -355,6 +374,7 @@ function CsvEditor({
             </p>
           )}
           <LabelGrid
+            scrollKey={scrollKey}
             rows={rows}
             fields={displayedFields}
             resultHeading={resultOperation === "print" ? "Print result" : "Download errors"}
