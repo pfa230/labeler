@@ -110,6 +110,7 @@ function CsvEditor({
   const [startSlot, setStartSlot] = useState(0);
   const [printer, setPrinter] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [resultOperation, setResultOperation] = useState<"print" | "download">("print");
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
@@ -229,6 +230,7 @@ function CsvEditor({
       return;
     }
     setBusy(true);
+    setResultOperation(mode);
     // Clear stale annotations from a previous run so a later validation failure cannot leave old results visible.
     commitRows(rowsRef.current.map((r) => ({ ...r, annotation: undefined })));
     // Snapshot the submitted rows' ids and the copies used, so a failure index maps to the right ROW
@@ -355,6 +357,7 @@ function CsvEditor({
           <LabelGrid
             rows={rows}
             fields={displayedFields}
+            resultHeading={resultOperation === "print" ? "Print result" : "Download errors"}
             cellInput={cellInput}
             onRowsChange={(next, { indexes }) => {
               // Rows may carry a prior run's annotation; clear it on the edited rows.

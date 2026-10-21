@@ -29,6 +29,7 @@ function sampleRows(): LabelGridRow[] {
 
 const defaultProps = {
   fields: ["sku", "notes"],
+  resultHeading: "Print result",
 };
 
 describe("LabelGrid selection and row actions", () => {
@@ -49,17 +50,18 @@ describe("LabelGrid selection and row actions", () => {
       { id: "a", data: { sku: "1" }, annotation: { status: "ok" } },
       { id: "b", data: { sku: "2" }, annotation: { status: "failed", message: "boom" } },
     ];
-    render(
-      <LabelGrid
-        rows={rowsWithStatus}
-        fields={["sku"]}
-        onRowsChange={() => {}}
-        onDuplicate={() => {}}
-        onRemove={() => {}}
-      />,
-    );
+    const props = { ...selectionBaseProps, fields: ["sku"], resultHeading: "Print result" };
+    const { rerender } = render(<LabelGrid {...props} rows={[]} />);
+    expect(screen.queryByRole("columnheader", { name: "Print result" })).toBeNull();
+    rerender(<LabelGrid {...props} rows={rowsWithStatus} />);
     expect(screen.getByText("ok")).toBeInTheDocument();
-    expect(screen.getByText(/failed: boom/)).toBeInTheDocument();
+    const failure = screen.getByRole("button", { name: "failed: boom" });
+    const details = document.getElementById(failure.getAttribute("popovertarget")!);
+    expect(details).toHaveAttribute("popover", "auto");
+    expect(details?.textContent).toBe("boom");
+    expect(screen.getByRole("columnheader", { name: "Print result" })).toBeInTheDocument();
+    rerender(<LabelGrid {...props} rows={rowsWithStatus.map((row) => ({ ...row, annotation: undefined }))} />);
+    expect(screen.queryByRole("columnheader", { name: "Print result" })).toBeNull();
   });
 
   it("calls onDuplicate and onRemove with the row id", () => {
@@ -703,7 +705,7 @@ describe("4.5 Regression checks on existing grid behavior", () => {
     );
 
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim());
-    // Excluding __annotation ("Status") and __actions ("")
+    // Check the data columns in their supplied order.
     expect(headers).toContain("sku");
     expect(headers).toContain("orientation");
     expect(headers).toContain("tags");

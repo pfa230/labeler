@@ -101,6 +101,7 @@ describe("CSV Import screen", () => {
     expect(within(grid).getByDisplayValue("1")).toBeInTheDocument();
     expect(within(grid).getByDisplayValue("2")).toBeInTheDocument();
     expect(screen.getByText(/2 labels/i)).toBeInTheDocument();
+    expect(within(grid).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["", "sku", "color", ""]);
   });
 
   it("loads a CSV from a selected file", async () => {
@@ -129,6 +130,9 @@ describe("CSV Import screen", () => {
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     renderPage();
     await loadTemplateAndCsv();
+    fireEvent.change(screen.getByLabelText(/printer/i), { target: { value: "p1" } });
+    fireEvent.click(screen.getByRole("button", { name: /^print$/i }));
+    expect(await screen.findByRole("columnheader", { name: "Print result" })).toBeInTheDocument();
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
@@ -141,6 +145,10 @@ describe("CSV Import screen", () => {
     // renderBatch read a binary blob and saved it via an object URL.
     await waitFor(() => expect(createUrl).toHaveBeenCalled());
     expect(body.start_slot).toBeUndefined(); // single template: start_slot omitted
+    expect(await screen.findAllByText("Downloaded 2 labels")).toHaveLength(1);
+    const grid = screen.getByRole("grid");
+    expect(within(grid).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["", "sku", "color", ""]);
+    expect(within(grid).queryByText("ok")).toBeNull();
   });
 
   it("submits CSV row data when the CSV omits optional columns", async () => {
@@ -198,6 +206,13 @@ describe("CSV Import screen", () => {
     expect(await screen.findByText("Sent 2 labels to Label Printer")).toBeInTheDocument();
     // both rows are annotated ok in the grid (regression guard for successful-row annotations)
     expect(await screen.findAllByText("ok")).toHaveLength(2);
+    expect(screen.getByRole("columnheader", { name: "Print result" })).toBeInTheDocument();
+    fireEvent.change(screen.getAllByLabelText("edit sku")[0], { target: { value: "edited first" } });
+    expect(screen.getAllByText("ok")).toHaveLength(1);
+    expect(screen.getByRole("columnheader", { name: "Print result" })).toBeInTheDocument();
+    fireEvent.change(screen.getAllByLabelText("edit sku")[1], { target: { value: "edited second" } });
+    expect(screen.queryByRole("columnheader", { name: "Print result" })).toBeNull();
+    expect(screen.queryByText("ok")).toBeNull();
   });
 
   it("sends each row once with copies, and marks only the row whose copies the printer refused", async () => {
@@ -210,9 +225,10 @@ describe("CSV Import screen", () => {
     fireEvent.change(screen.getByLabelText(/printer/i), { target: { value: "p1" } });
     fireEvent.click(await screen.findByRole("button", { name: /^print$/i }));
     // indices 3-5 with copies=3 are source row 2 (sku=2) only.
-    const failedRow = (await screen.findByText(/failed: boom/i)).closest('[role="row"]') as HTMLElement;
+    const failedRow = (await screen.findByRole("button", { name: "failed: boom; boom; boom" })).closest('[role="row"]') as HTMLElement;
     expect(within(failedRow).getByDisplayValue("2")).toBeInTheDocument();
-    expect(screen.getAllByText(/failed: boom/i)).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^failed:/ })).toHaveLength(1);
+    expect(screen.getByRole("columnheader", { name: "Print result" })).toBeInTheDocument();
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     expect(body.labels).toEqual([
       { data: { sku: "1", color: "red" }, copies: 3 },
@@ -220,22 +236,27 @@ describe("CSV Import screen", () => {
     ]);
   });
 
-  it("maps a 422 BatchInvalid failure to its row and shows a form error", async () => {
+  it.each([
+    ["Download", "Download errors"],
+    ["Print", "Print result"],
+  ])("maps a %s validation failure to its row under %s", async (operation, heading) => {
     fetchMock = stubFetch(() =>
       json(
-        { error: { code: "BatchInvalid", message: "row invalid", details: { failures: [{ index: 0, code: "InvalidRequest", message: "bad sku", details: { reason: "param_value_invalid", param: "sku" } }] } } },
+        { error: { code: "BatchInvalid", message: "row invalid", details: { failures: [{ index: 1, code: "InvalidRequest", message: "bad sku", details: { reason: "param_value_invalid", param: "sku" } }] } } },
         422,
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
     renderPage();
     await loadTemplateAndCsv();
-    const download = await screen.findByRole("button", { name: /download/i });
-    await waitFor(() => expect(download).not.toBeDisabled());
-    fireEvent.click(download);
-    // index 0 maps to the first CSV row (sku=1): the annotation lands on that row.
-    const failedRow = (await screen.findByText(/failed: bad sku/i)).closest('[role="row"]') as HTMLElement;
-    expect(within(failedRow).getByDisplayValue("1")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/printer/i), { target: { value: "p1" } });
+    const action = await screen.findByRole("button", { name: operation });
+    await waitFor(() => expect(action).toBeEnabled());
+    fireEvent.click(action);
+    // index 1 maps to the second CSV row (sku=2): the annotation lands on that row.
+    const failedRow = (await screen.findByRole("button", { name: "failed: bad sku" })).closest('[role="row"]') as HTMLElement;
+    expect(within(failedRow).getByDisplayValue("2")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: heading })).toBeInTheDocument();
     // a form-level error in the sticky action bar (not the row annotation, which reads "failed: bad sku").
     expect(screen.getByText("bad sku", { selector: "span" })).toBeInTheDocument();
   });

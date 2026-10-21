@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -35,6 +36,7 @@ export type GridCellParam = Pick<Param, "name" | "control" | "values" | "min" | 
 export interface LabelGridProps {
   rows: LabelGridRow[];
   fields: string[];
+  resultHeading?: string;
   cellInput?: (field: string) => GridCellParam | undefined;
   onRowsChange: (rows: LabelGridRow[], change: LabelGridRowsChange) => void;
   onDuplicate: (id: string) => void;
@@ -404,12 +406,31 @@ function PreviewCell({ row }: ICellProps) {
 
 function AnnotationCell({ row }: ICellProps) {
   const { annotation } = asRow(row);
+  const detailsId = useId();
   if (!annotation) return null;
-  const ok = annotation.status === "ok";
+  if (annotation.status === "ok") return <span style={{ color: "var(--ok, green)" }}>ok</span>;
   return (
-    <span style={{ color: ok ? "var(--ok, green)" : "var(--bad)" }}>
-      {ok ? "ok" : `failed: ${annotation.message ?? ""}`}
-    </span>
+    <>
+      <button
+        type="button"
+        popoverTarget={detailsId}
+        // The grid handles clicks natively; capture keeps focus on this button.
+        onClickCapture={handleClick}
+        onFocus={handleFocus}
+        className="max-w-full truncate text-left underline focus-visible:outline-hidden focus-visible:ring-2"
+        style={{ color: "var(--bad)" }}
+      >
+        failed: {annotation.message}
+      </button>
+      <div
+        id={detailsId}
+        popover="auto"
+        className="m-auto max-h-[calc(100vh-2rem)] w-[min(32rem,calc(100vw-2rem))] overflow-auto rounded-md border p-4 text-sm whitespace-pre-wrap [overflow-wrap:anywhere] shadow-lg"
+        style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+      >
+        {annotation.message}
+      </div>
+    </>
   );
 }
 
@@ -429,7 +450,8 @@ function ActionsCell({ row }: ICellProps) {
 }
 
 export function LabelGrid(props: LabelGridProps) {
-  const { rows, fields, disabled, onSelectRow, cellInput } = props;
+  const { rows, fields, disabled, onSelectRow, cellInput, resultHeading } = props;
+  const hasResults = rows.some((row) => row.annotation !== undefined);
 
   const latest = useRef(props);
   useEffect(() => {
@@ -465,9 +487,9 @@ export function LabelGrid(props: LabelGridProps) {
       getter: (row: IRow) => (getOwnKey(asRow(row).data, field) ?? "") as Value,
       cell: DataCell,
     })),
-    { id: ANNOTATION_COLUMN, header: "Status", flexgrow: 1, cell: AnnotationCell },
+    ...(hasResults ? [{ id: ANNOTATION_COLUMN, header: resultHeading, flexgrow: 1, cell: AnnotationCell }] : []),
     { id: ACTIONS_COLUMN, header: "", width: 110, cell: ActionsCell },
-  ], [fields, onSelectRow, cellInput]);
+  ], [fields, onSelectRow, cellInput, hasResults, resultHeading]);
 
   const init = useCallback((api: IApi) => {
     apiRef.current = api;
@@ -476,7 +498,7 @@ export function LabelGrid(props: LabelGridProps) {
       const target = ev.event?.target as HTMLElement | null;
       if (
         target &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.matches("button[popovertarget]"))
       ) {
         return false;
       }
