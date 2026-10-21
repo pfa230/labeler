@@ -97,7 +97,7 @@ Horizontal `left` alignment SHALL inset the advance block by `l` from the left e
 
 ### Requirement: Font selection
 
-A text item's `font` SHALL select a family by the renderer's normalized family name, case-insensitively. A name absent from the available families SHALL fail template validation at the item's `font` path (`templates`). Measurement and emission SHALL use the same selected face: normal style and normal stretch, with weight matched as by the renderer. Variable axes, when present, SHALL use the resolved `font_weight` for `wght` and candidate point size for `opsz`, clamped to the face's axis bounds; fonts lacking either axis SHALL remain usable.
+A text item's `font` SHALL select a family by the renderer's normalized family name, case-insensitively. A name absent from the available families SHALL fail template validation at the item's `font` path (`templates`). Measurement and emission SHALL use the face the renderer's matcher selects for the requested family at normal style, normal stretch and the item's weight. Variable axes, when present, SHALL use the resolved `font_weight` for `wght` and candidate point size for `opsz`, clamped to the face's axis bounds; fonts lacking either axis SHALL remain usable.
 
 A text value containing a drawable character the selected face does not map SHALL fail before fitting with `422 UnsupportedLayoutItem` reason `text_character_unmapped` (`errors`). Line breaks, tabs and Unicode default-ignorable characters SHALL NOT require a drawable glyph.
 
