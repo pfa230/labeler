@@ -8,7 +8,7 @@ Fixes #187
 
 ## What Changes
 
-- Add a literal `font` family name to text items, defaulting to Inter.
+- Add a literal `font` family name using the renderer's normalized names, defaulting to Inter; select the shipped Roboto Condensed font as `Roboto`.
 - Ship Source Sans 3, JetBrains Mono and Roboto Condensed, with their licenses.
 - Load custom fonts additively from `{LABELER_CONFIG_DIR}/fonts` on process restart, without host system fonts or an image rebuild.
 - Resolve family and weight consistently for measurement and emission, including static faces and variable fonts without optical-size axes.
@@ -24,4 +24,4 @@ Fixes #187
 
 ## Impact
 
-Text raw/domain/conversion models and template validation; `src/render/helpers.rs` and `src/render/mod.rs`; bundled font files and licenses; authoring and deployment guidance. The image already copies `fonts/`. No UI or discovery endpoint is needed. Coordinate after #254 so its unmapped-character check follows the selected face.
+Text raw/domain/conversion models and template validation; `src/render/helpers.rs` and `src/render/mod.rs`; bundled font files and licenses; authoring and deployment guidance. The image already copies `fonts/`. No UI or discovery endpoint is needed. Apply the existing unmapped-character check to the selected face.
