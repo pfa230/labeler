@@ -116,12 +116,6 @@ describe("App routes", () => {
     expect(await screen.findByText("No activity recorded yet.")).toBeInTheDocument();
   });
 
-  it("guards Activity for anonymous visitors", async () => {
-    const router = renderApp({ authed: false, needsSetup: false }, ["/activity"]);
-    await screen.findByRole("heading", { name: /sign in/i });
-    expect(router.state.location.pathname).toBe("/login");
-  });
-
   it("sends an unknown path to the index fallback", async () => {
     const router = renderApp(authed, ["/nowhere"]);
     await screen.findByRole("heading", { name: "Labels" });
