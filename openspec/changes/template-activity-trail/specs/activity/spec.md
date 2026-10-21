@@ -8,7 +8,7 @@ Defines which operator actions produce retained activity entries, the attributio
 
 ### Requirement: Selected template activity
 
-Each completed invocation of template create, replace, delete or explicit registry reload SHALL produce one activity entry, including an invocation returning an error. The actions SHALL be `template.create`, `template.replace`, `template.delete` and `template.reload`; their targets SHALL be the requested template id or, for reload, `registry`.
+Each completed invocation of template create, replace, delete or explicit registry reload SHALL produce one activity entry, including an invocation returning an error. Requests rejected before the selected handler runs by authentication, origin checks or request extraction SHALL produce no entry. The actions SHALL be `template.create`, `template.replace`, `template.delete` and `template.reload`; their targets SHALL be the requested template id or, for reload, `registry`.
 
 #### Scenario: A template lifecycle has distinct actions
 
