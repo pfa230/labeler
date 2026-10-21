@@ -4,7 +4,7 @@
 
 The template page SHALL hold the template's print form and preview, its dimensions, unit and DPI, the variables it reads, its YAML source with an editor that saves it (`templates`), and an action that deletes it (`templates`). A successful save SHALL leave the form's entered values in place, and the preview SHALL then show the saved template.
 
-Clone SHALL immediately read the template's source and create a copy through template create (`templates`), trying `<id>-copy` with name `<name> (copy)`, then `<id>-copy-2` with name `<name> (copy 2)` and successive integers when create reports a filename conflict. The copied source SHALL differ only at the `name` value; the original SHALL remain untouched. Success SHALL open the copy's detail page with its existing YAML editor active. Source or non-conflict create failures SHALL show an error on the original page without reporting success.
+Clone SHALL be unavailable while the YAML editor has unsaved changes. Clone SHALL immediately read the template's source and create a copy through template create (`templates`), trying `<id>-copy` with name `<name> (copy)`, then `<id>-copy-2` with name `<name> (copy 2)` and successive integers when create reports a filename conflict. The copied source SHALL differ only at the `name` value; the original SHALL remain untouched. Success SHALL open the copy's detail page with its existing YAML editor active. Source or non-conflict create failures SHALL show an error on the original page without reporting success.
 
 #### Scenario: A tokened default is shown by value
 
@@ -19,9 +19,14 @@ Clone SHALL immediately read the template's source and create a copy through tem
 
 #### Scenario: Clone starts an independent copy in the editor
 
-- **WHEN** the operator clones `pallet`, named Pallet, whose label text is the literal `HELIX`, and no copy id exists
-- **THEN** `pallet-copy` is created as Pallet (copy), its YAML editor is active, and its unedited label renders identically
+- **WHEN** the operator clones `pallet`, named Pallet, and no copy id exists
+- **THEN** `pallet-copy` is created as Pallet (copy), and its YAML editor is active
 - **AND** the original source and all copied source outside the name value, including the description and comments, remain unchanged
+
+#### Scenario: Unsaved YAML disables Clone
+
+- **WHEN** the original template's YAML editor has unsaved changes
+- **THEN** Clone is disabled
 
 #### Scenario: A taken copy id advances the suffix
 

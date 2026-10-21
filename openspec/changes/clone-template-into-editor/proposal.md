@@ -8,7 +8,7 @@ Fixes #144
 
 ## What Changes
 
-- Add immediate Clone to template detail, generating `<id>-copy`, then numbered suffixes on filename conflicts, with a corresponding distinct display name.
+- Add Clone to template detail, disabled while YAML edits are unsaved, generating `<id>-copy`, then numbered suffixes on filename conflicts, with a corresponding distinct display name.
 - Preserve the original and all copied source outside the display-name value, including the description and comments.
 - Create through the existing source/create endpoints, then open the copy's detail page with its YAML editor active; display source/create failures on the original page.
 
@@ -22,4 +22,4 @@ Fixes #144
 
 ## Impact
 
-`TemplateDetail.tsx`, the existing source/create queries and a name-value source edit using the yaml dependency planned in #406. No clone API, id schema, description rewrite or naming dialog.
+`TemplateDetail.tsx`, the existing source/create queries and a name-value source edit using the existing yaml dependency and BOM-preserving source decoding. No clone API, id schema, description rewrite or naming dialog.
