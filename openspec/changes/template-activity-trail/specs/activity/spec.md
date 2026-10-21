@@ -50,7 +50,7 @@ If recording an entry fails, the selected operation SHALL return `500 Internal` 
 
 ### Requirement: Retained activity pages
 
-All entries SHALL be retained across restarts. `GET /api/activity` SHALL expose shared history under the application's authentication rules, ordered by descending entry id, with at most 100 entries in `entries` and a nullable `next_before_id`. Passing that cursor as `before_id` SHALL return strictly older entries; it SHALL be null when none remain. A supplied cursor SHALL be a positive signed 64-bit integer; other values SHALL return `400 InvalidRequest` with reason `activity_cursor_invalid` (`errors`).
+All entries SHALL be retained across restarts. `GET /api/activity` SHALL expose shared history, ordered by descending entry id, with at most 100 entries in `entries` and a nullable `next_before_id`. Passing that cursor as `before_id` SHALL return strictly older entries; it SHALL be null when none remain. A supplied cursor SHALL be a positive signed 64-bit integer; other values SHALL return `400 InvalidRequest` with reason `activity_cursor_invalid` (`errors`).
 
 #### Scenario: Older history survives a restart
 

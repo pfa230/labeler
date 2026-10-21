@@ -4,12 +4,12 @@
 
 ### Requirement: Primary navigation
 
-Primary navigation SHALL list Labels (`/`), Import (`/import`), Activity (`/activity`) and Settings (`/settings`), in that order.
+Primary navigation SHALL list Labels (`/`), Import (`/import`), Print history (`/print-history`), Activity (`/activity`) and Settings (`/settings`), in that order.
 
 #### Scenario: Navigation sections
 
 - **WHEN** the operator opens the application shell
-- **THEN** primary navigation contains exactly Labels, Import, Activity and Settings, in that order
+- **THEN** primary navigation contains exactly Labels, Import, Print history, Activity and Settings, in that order
 
 ## ADDED Requirements
 

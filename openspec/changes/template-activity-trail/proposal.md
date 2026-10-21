@@ -30,4 +30,4 @@ Source issue: https://github.com/pfa230/labeler/issues/94
 
 Touches SQLite migrations and Store methods, the four template mutation handlers, API models and OpenAPI registration, and the UI router, shell, client and new Activity page. Uses existing SQLite, authentication and UI components without new dependencies.
 
-Non-goals: printer, settings, variable and authentication events are unselected candidates; print history belongs to #407. Existing print-job recording and Recent templates stay as they are. No retention cap, pruning job, audit configuration, filters or export.
+Non-goals: printer, settings, variable and authentication events are unselected candidates; print history already exists. Existing print-job recording and Recent templates stay as they are. No retention cap, pruning job, audit configuration, filters or export.
