@@ -2,9 +2,9 @@
 
 ## Context
 
-Main at `37ba4481` includes #495's preparation/emission split, #497's `resolver::FlowLine` and #498's `RenderContext::evaluate_marker_candidate`. Packed fill still takes the whole inner frame. `FlowLine` supplies `lead`, `wraps_before`, `add` and `remainder`; candidate evaluation currently measures against the whole frame and saves its measurement, leaving nested preparation for later. See the proposal for the behavior change.
+The historical main baseline at `37ba4481` includes #495's preparation/emission split, #497's `resolver::FlowLine` and #498's `RenderContext::evaluate_marker_candidate`. On that baseline, packed fill takes the whole inner frame. `FlowLine` supplies `lead`, `wraps_before`, `add` and `remainder`; candidate evaluation measures against the whole frame and saves its measurement, leaving nested preparation for later. See the proposal for the behavior change.
 
-Rebuild from this main baseline using the merged boundaries. The failed implementation at `d90b9420ae7dbac1dfcce209a91f7397e8c45060` is preserved on local branch `backup/issue-260-before-split`; the split plan is preserved at `0feaf730` on `backup/issue-260-before-497-498`. The earlier attempt remains on `backup/issue-260-before-495` at `6de1a72fcdd63e2e2cbd97e914784f61462bd0f2`. Use their focused reproductions without replaying the superseded implementation. Keep the current selected-face text fitter and matcher.
+The current implementation was built on that baseline; continue its focused repair below. The failed implementation at `d90b9420ae7dbac1dfcce209a91f7397e8c45060` is preserved on local branch `backup/issue-260-before-split`; the split plan is preserved at `0feaf730` on `backup/issue-260-before-497-498`. The earlier attempt remains on `backup/issue-260-before-495` at `6de1a72fcdd63e2e2cbd97e914784f61462bd0f2`. Use their focused reproductions without replaying the superseded implementation. Keep the current selected-face text fitter and matcher.
 
 ## Goals / Non-Goals
 
@@ -46,4 +46,4 @@ Source order now determines who gets primary-axis fill space. Uncapped fill norm
 
 ## Migration Plan
 
-The prerequisite refactors are merged. Review this revised plan on main at `37ba4481`, then implement and archive through the loop. Replace the old behavior without adding a compatibility spelling or configuration switch.
+Continue the existing implementation at `da87e18a` with the focused repair above, and run the checks against the resulting patch before archiving through the loop. Replace the old behavior without adding a compatibility spelling or configuration switch.

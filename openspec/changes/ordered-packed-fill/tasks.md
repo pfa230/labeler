@@ -1,6 +1,6 @@
 # Tasks
 
-Prerequisites #497 and #498 are merged at `37ba4481`. Apply the behavior change through their existing `FlowLine` and `evaluate_marker_candidate` paths, and run the checks on that baseline.
+Prerequisites #497 and #498 were merged at the historical baseline `37ba4481`. Continue the existing implementation at `da87e18a` with the focused repair in the design, and run the checks against the resulting patch.
 
 ## 1. Allocate ordered packed fill
 
