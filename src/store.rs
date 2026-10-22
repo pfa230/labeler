@@ -384,6 +384,12 @@ impl Store {
         Ok(())
     }
 
+    pub fn delete_variable(&self, key: &str) -> Result<(), StoreError> {
+        let conn = self.connection();
+        conn.execute("DELETE FROM variables WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
     pub fn all_variables(&self) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
         let conn = self.connection();
         let mut stmt = conn.prepare("SELECT key, value FROM variables ORDER BY key")?;

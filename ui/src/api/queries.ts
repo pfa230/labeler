@@ -180,6 +180,14 @@ export function useUpsertVariable() {
   });
 }
 
+export function useDeleteVariable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) => del(`/variables/${encodeURIComponent(key)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["variables"] }),
+  });
+}
+
 export function useSavePrinter() {
   const qc = useQueryClient();
   return useMutation({

@@ -19,7 +19,7 @@ use super::AppState;
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(get_variables))
-        .routes(routes!(put_variable))
+        .routes(routes!(put_variable, delete_variable))
         .routes(routes!(get_settings))
         .routes(routes!(put_setting, delete_setting))
         .routes(routes!(preview_datetime_format))
@@ -66,6 +66,23 @@ pub async fn put_variable(
     let _guard = state.write_lock.lock().await;
     state.store().set_variable(&key, &body.value)?;
     Ok(Json(body))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/variables/{key}",
+    tag = "api",
+    params(("key" = String, Path, description = "Variable key")),
+    responses((status = 204, description = "Variable removed"))
+)]
+pub async fn delete_variable(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    // idempotent: deleting a key that was never stored is already the desired state
+    state.store().delete_variable(&key)?;
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 /// A resolved application setting: its effective value and whether that is the in-code default.

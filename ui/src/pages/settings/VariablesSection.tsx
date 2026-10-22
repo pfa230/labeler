@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useVariables, useUpsertVariable } from "../../api/queries";
+import { useDeleteVariable, useVariables, useUpsertVariable } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 
 const SUGGESTED_KEYS = ["qr_base_url"]; // not auto-seeded by the store; shown so the user can fill them
@@ -11,7 +11,9 @@ const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50
 
 function VariableRow({ variableKey, value, suggested }: { variableKey: string; value: string; suggested: boolean }) {
   const [draft, setDraft] = useState(value);
+  const [confirming, setConfirming] = useState(false);
   const upsert = useUpsertVariable();
+  const remove = useDeleteVariable();
   const { push } = useToast();
   const dirty = draft !== value;
   return (
@@ -47,6 +49,33 @@ function VariableRow({ variableKey, value, suggested }: { variableKey: string; v
       >
         Save
       </button>
+      {!suggested &&
+        (confirming ? (
+          <>
+            <button
+              type="button"
+              aria-label={`confirm remove ${variableKey}`}
+              disabled={remove.isPending}
+              onClick={() =>
+                remove.mutate(variableKey, {
+                  onSuccess: () => push({ kind: "ok", message: `Removed ${variableKey}` }),
+                  onError: (err) => push({ kind: "error", message: err instanceof Error ? err.message : "Delete failed" }),
+                })
+              }
+              className={`${buttonBase} border`}
+              style={{ borderColor: "var(--border)", color: "var(--bad)" }}
+            >
+              Confirm
+            </button>
+            <button type="button" aria-label={`cancel remove ${variableKey}`} onClick={() => setConfirming(false)} className={buttonBase} style={{ color: "var(--muted)" }}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button type="button" aria-label={`remove ${variableKey}`} onClick={() => setConfirming(true)} className={buttonBase} style={{ color: "var(--bad)" }}>
+            Remove
+          </button>
+        ))}
     </div>
   );
 }

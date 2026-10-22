@@ -4478,6 +4478,41 @@ layout:
     }
 
     #[tokio::test]
+    async fn delete_variable_is_idempotent() {
+        let app = build_app();
+
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/variables/site",
+                json!({ "value": "example" }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        for _ in 0..2 {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("DELETE")
+                        .uri("/api/variables/site")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        }
+
+        let (status, variables) = get_json(&app, "/api/variables").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(variables.get("site").is_none(), "{variables}");
+    }
+
+    #[tokio::test]
     async fn printer_create_duplicate_returns_409() {
         let app = build_app();
         app.clone()

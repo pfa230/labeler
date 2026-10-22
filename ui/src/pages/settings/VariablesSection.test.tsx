@@ -14,6 +14,10 @@ function stubFetch(settings: Record<string, string>) {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith("/api/variables/")) {
       const key = decodeURIComponent(url.slice("/api/variables/".length));
+      if (init?.method === "DELETE") {
+        delete settings[key];
+        return new Response(null, { status: 204 });
+      }
       const value = JSON.parse(init!.body as string).value as string;
       settings[key] = value;
       return json({ value });
@@ -101,5 +105,20 @@ describe("VariablesSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /add variable/i }));
     expect(await screen.findByText(/already exists/i)).toBeInTheDocument();
     expect([...fetchMock.mock.calls].some(([u]) => String(u).startsWith("/api/variables/qr_base_url"))).toBe(false);
+  });
+
+  it("removes a stored variable only after Confirm", async () => {
+    fetchMock = stubFetch({ site: "example" });
+    vi.stubGlobal("fetch", fetchMock);
+    renderSection();
+    await screen.findByLabelText("site");
+
+    fireEvent.click(screen.getByRole("button", { name: "remove site" }));
+    expect([...fetchMock.mock.calls].some(([u]) => String(u) === "/api/variables/site")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "confirm remove site" }));
+    await waitFor(() => expect(lastCall("/api/variables/site")).toBeTruthy());
+    expect((lastCall("/api/variables/site")![1] as RequestInit).method).toBe("DELETE");
+    await waitFor(() => expect(screen.queryByLabelText("site")).not.toBeInTheDocument());
   });
 });
