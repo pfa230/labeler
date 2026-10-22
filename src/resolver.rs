@@ -514,6 +514,49 @@ pub struct FlowResult {
     pub assembled: (f32, f32),
 }
 
+/// The line a flow is filling: its occupied primary extent and whether a box occupies it.
+#[derive(Default)]
+pub struct FlowLine {
+    primary: f32,
+    occupied: bool,
+}
+
+impl FlowLine {
+    /// Where the next occupying child starts.
+    pub fn lead(&self, flow: &Flow) -> f32 {
+        if self.occupied {
+            self.primary + flow.gap
+        } else {
+            self.primary
+        }
+    }
+
+    /// Whether a wrapping flow starts a new line before a child of this primary extent.
+    pub fn wraps_before(&self, flow: &Flow, inner_primary: f32, extent: f32) -> bool {
+        flow.wrap
+            && extent > 0.0
+            && self.occupied
+            && self.primary + flow.gap + extent > inner_primary + BOUNDS_EPSILON
+    }
+
+    /// Add a child of this primary extent; a zero extent leaves the line unchanged.
+    pub fn add(&mut self, flow: &Flow, extent: f32) {
+        if extent > 0.0 {
+            if self.occupied {
+                self.primary += flow.gap;
+            }
+            self.primary += extent;
+            self.occupied = true;
+        }
+    }
+
+    /// The primary room left for the next occupying child, after the gap it would need.
+    pub fn remainder(&self, flow: &Flow, inner_primary: f32) -> f32 {
+        let pending_gap = if self.occupied { flow.gap } else { 0.0 };
+        (inner_primary - self.primary - pending_gap).max(0.0)
+    }
+}
+
 /// Compute the flow arrangement for packed children inside a padded inner box.
 /// Check accumulation in packing coordinates, then convert to drawing coordinates.
 pub fn arrange_flow(
@@ -531,36 +574,22 @@ pub fn arrange_flow(
     // when they are encountered; they never trigger a break and never move to the line a later
     // occupying child may start.
     let mut lines: Vec<Vec<usize>> = Vec::new();
-    let mut line_box_primary = 0.0_f32;
-    let mut line_has_occupying = false;
+    let mut flow_line = FlowLine::default();
     for (idx, child) in children.iter().enumerate() {
         let ext_p = if is_row {
             child.resolved_box.0
         } else {
             child.resolved_box.1
         };
-        let occupies = ext_p > 0.0;
-        let pending_gap = if line_has_occupying { flow.gap } else { 0.0 };
-        if flow.wrap
-            && occupies
-            && line_has_occupying
-            && line_box_primary + pending_gap + ext_p > inner_primary + BOUNDS_EPSILON
-        {
+        if flow_line.wraps_before(flow, inner_primary, ext_p) {
             lines.push(Vec::new());
-            line_box_primary = 0.0;
-            line_has_occupying = false;
+            flow_line = FlowLine::default();
         }
         if lines.is_empty() {
             lines.push(Vec::new());
         }
         lines.last_mut().expect("line exists").push(idx);
-        if occupies {
-            if line_has_occupying {
-                line_box_primary += flow.gap;
-            }
-            line_box_primary += ext_p;
-            line_has_occupying = true;
-        }
+        flow_line.add(flow, ext_p);
     }
 
     let mut rects = Vec::with_capacity(children.len());
@@ -584,7 +613,7 @@ pub fn arrange_flow(
             }
         }
 
-        let mut cursor = 0.0_f32;
+        let mut flow_line = FlowLine::default();
         let mut num_occupying = 0usize;
         let mut line_requirement_primary = 0.0_f32;
         let mut line_box_secondary = 0.0_f32;
@@ -616,15 +645,10 @@ pub fn arrange_flow(
             };
             let occupies = ext_p > 0.0;
 
-            let child_lead_primary = if occupies {
-                if num_occupying > 0 {
-                    cursor += flow.gap;
-                }
-                cursor
-            } else if num_occupying > 0 && has_occupying_after[line_pos] {
-                cursor + flow.gap
+            let child_lead_primary = if occupies || has_occupying_after[line_pos] {
+                flow_line.lead(flow)
             } else {
-                cursor
+                flow_line.primary
             };
 
             let violation = fits_frame(primary_axis, child_lead_primary, ext_p, inner_primary)
@@ -660,8 +684,8 @@ pub fn arrange_flow(
             drawn_on_line += 1;
             line_box_secondary = line_box_secondary.max(ext_s);
             line_requirement_secondary = line_requirement_secondary.max(req_s);
+            flow_line.add(flow, ext_p);
             if occupies {
-                cursor += ext_p;
                 num_occupying += 1;
                 line_requirement_primary += req_p;
             }
@@ -1550,6 +1574,23 @@ mod tests {
         let res = arrange_flow((20.0, 10.0), &flow, &children).expect("epsilon boundary");
         assert_eq!(res.rects[1].x, 10.0);
         assert_eq!(res.rects[1].y, 6.0, "child remains on the first line");
+    }
+
+    #[test]
+    fn flow_line_remainder_subtracts_the_pending_gap_and_clamps_at_zero() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 2.0,
+            wrap: false,
+            line_gap: 0.0,
+            overflow: FlowOverflow::Fail,
+        };
+        let mut line = FlowLine::default();
+        assert_eq!(line.remainder(&flow, 30.0), 30.0, "empty line");
+        line.add(&flow, 10.0);
+        assert_eq!(line.remainder(&flow, 30.0), 18.0, "after one child");
+        line.add(&flow, 18.0);
+        assert_eq!(line.remainder(&flow, 30.0), 0.0, "full line");
     }
 
     #[test]
