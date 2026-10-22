@@ -1149,13 +1149,13 @@ impl<'f> LimitLine<'f> {
 
 /// What the intrinsic dispatch needs to answer for one item: the box its content is measured
 /// against, which axes asked, and — for a container — what its children measured against the
-/// frame it gives them.
+/// frame it gives them, with that frame at the item's limit.
 struct IntrinsicInput<'a> {
     item: &'a LayoutItem,
     measure_box: (f32, f32),
     demands: [bool; 2],
     children: &'a [[Option<f32>; 2]],
-    child_frame: (f32, f32),
+    child_frame: Frames,
     geometry_values: &'a HashMap<String, f32>,
     path: &'a str,
     /// Whether the item measures at its limit, which classifies a check its own measurement fails.
@@ -1361,6 +1361,9 @@ struct MarkerCandidateArgs<'a, 'b> {
     pub inputs: &'a [crate::resolver::FlowChildInput],
     pub flow: &'a crate::models::Flow,
     pub frame: (f32, f32),
+    /// `frame` at the flow's limit: the whole inner box the enclosing candidate permits, or
+    /// `frame` itself outside one.
+    pub limit: (f32, f32),
     pub geometry_values: &'a HashMap<String, f32>,
 }
 
@@ -1831,14 +1834,18 @@ impl<'a> RenderContext<'a> {
                         .zip(child_frames.limit)
                         .and_then(|(limit_box, child_limit)| {
                             let children = limit_intrinsics(&children)?;
-                            intrinsic_in(limit_box, &children, child_limit, false)
+                            let child_frame = Frames {
+                                actual: child_limit,
+                                limit: None,
+                            };
+                            intrinsic_in(limit_box, &children, child_frame, false)
                                 .ok()
                                 .map(|(intrinsic, _)| intrinsic)
                         });
                 let (intrinsic, text) = intrinsic_in(
                     measure_box,
                     &intrinsics(&children),
-                    child_frames.actual,
+                    child_frames,
                     limit_intrinsic.is_some(),
                 )?;
 
@@ -2029,15 +2036,16 @@ impl<'a> RenderContext<'a> {
     /// Arrange a flow container's children. When `overflow: trim` discards the first instance of a
     /// repeat that declares a `trim_marker`, the marker is measured in that repeat's scope at each
     /// candidate prefix's remainder, and the longest prefix of the repeat's drawn instances that
-    /// leaves room for it is kept. `intrinsics` is what the children measured. A check the
-    /// arrangement fails is classified by `passes_at_limit`; a marker candidate's error keeps its
-    /// own classification.
+    /// leaves room for it is kept. `intrinsics` is what the children measured. `limit` is
+    /// `args.frame` at the container's limit, when it has one. A check the arrangement fails is
+    /// classified by `passes_at_limit`; a marker candidate's error keeps its own classification.
     fn arrange_flow_children<'b>(
         &self,
         expanded: &[ExpandedItem<'b>],
         intrinsics: &[[Option<f32>; 2]],
         flow: &crate::models::Flow,
         args: &FlowChildArgs<'_>,
+        limit: Option<(f32, f32)>,
         passes_at_limit: &dyn Fn() -> bool,
     ) -> Result<FlowArrangement<'b>, SizingError> {
         let FlowChildArgs {
@@ -2105,6 +2113,7 @@ impl<'a> RenderContext<'a> {
             inputs: &inputs,
             flow,
             frame,
+            limit: limit.unwrap_or(frame),
             geometry_values,
         };
         for kept in (0..=cut - group_start).rev() {
@@ -2123,9 +2132,9 @@ impl<'a> RenderContext<'a> {
 
     /// Evaluate the candidate that draws the first `prefix_len` expanded children followed by the
     /// repeat's trim marker, sized at the remainder the prefix leaves and fitted to its final box.
-    /// The marker's limit is the whole inner box, the most any prefix leaves it. `None` means the
-    /// candidate does not draw every child, or a check the marker fails passes at its limit, so a
-    /// shorter prefix may clear it; any other failure is the render's.
+    /// The marker's limit is the whole inner box at the flow's limit, the most any prefix leaves
+    /// it. `None` means the candidate does not draw every child, or a check the marker fails
+    /// passes at its limit, so a shorter prefix may clear it; any other failure is the render's.
     fn evaluate_marker_candidate<'b>(
         &self,
         args: &MarkerCandidateArgs<'_, 'b>,
@@ -2141,6 +2150,7 @@ impl<'a> RenderContext<'a> {
             inputs,
             flow,
             frame,
+            limit,
             geometry_values,
         } = *args;
         let mut marker_data = self.data.clone();
@@ -2156,7 +2166,7 @@ impl<'a> RenderContext<'a> {
         let size_marker = |marker_frame| {
             let frames = Frames {
                 actual: marker_frame,
-                limit: Some(frame),
+                limit: Some(limit),
             };
             let measured = marker_ctx.measure_item_instance(
                 item,
@@ -2357,10 +2367,11 @@ impl<'a> RenderContext<'a> {
                             children,
                             flow,
                             &FlowChildArgs {
-                                frame: child_frame,
+                                frame: child_frame.actual,
                                 geometry_values,
                                 path_prefix: &format!("{path}.items"),
                             },
+                            child_frame.limit,
                             &|| passes_at_limit,
                         )?
                         .result
@@ -2376,14 +2387,14 @@ impl<'a> RenderContext<'a> {
                             author.0 = author.0.max(item_ctx.item_axis_requirement(
                                 exp.item,
                                 0,
-                                child_frame,
+                                child_frame.actual,
                                 geometry_values,
                                 intrinsic,
                             ));
                             author.1 = author.1.max(item_ctx.item_axis_requirement(
                                 exp.item,
                                 1,
-                                child_frame,
+                                child_frame.actual,
                                 geometry_values,
                                 intrinsic,
                             ));
@@ -2453,6 +2464,7 @@ impl<'a> RenderContext<'a> {
                     &intrinsics(&fitted),
                     flow,
                     &child_args,
+                    None,
                     &|| false,
                 )?;
                 match &arrangement.marker {
@@ -2572,21 +2584,29 @@ impl<'a> RenderContext<'a> {
             Ok::<_, SizingError>(input)
         })?;
         if let Some(limit_inner) = limit_inner {
-            self.arrange_flow_children(expanded, &intrinsics(&fitted), flow, args, &|| {
-                limit_intrinsics(measured).is_some_and(|limit| {
-                    self.arrange_flow_children(
-                        expanded,
-                        &limit,
-                        flow,
-                        &FlowChildArgs {
-                            frame: limit_inner,
-                            ..*args
-                        },
-                        &|| false,
-                    )
-                    .is_ok()
-                })
-            })?;
+            self.arrange_flow_children(
+                expanded,
+                &intrinsics(&fitted),
+                flow,
+                args,
+                Some(limit_inner),
+                &|| {
+                    limit_intrinsics(measured).is_some_and(|limit| {
+                        self.arrange_flow_children(
+                            expanded,
+                            &limit,
+                            flow,
+                            &FlowChildArgs {
+                                frame: limit_inner,
+                                ..*args
+                            },
+                            None,
+                            &|| false,
+                        )
+                        .is_ok()
+                    })
+                },
+            )?;
         }
         Ok(fitted)
     }
@@ -12434,6 +12454,82 @@ layout:
             err.message_text()
                 .contains("layout[0].items[2].items[0].items[0].items[0]"),
             "the inner marker's text is named: {err:?}"
+        );
+    }
+
+    /// After an 8-wide box on line 2, a marker capped at 12 gets 8 after the 12-wide first
+    /// instance and 12 at the shorter prefix. Its nested trimming row of 4-wide instances cannot
+    /// fit its 10-wide inner marker in 8 but can in 12, the outer marker's limit, so the outer
+    /// search draws the shorter prefix.
+    #[test]
+    fn a_trim_marker_retries_a_nested_marker_its_allocation_failed() {
+        let yaml = r#"
+name: Nested Marker Retry
+unit: mm
+dpi: 200
+format: { type: single, width: 28, height: 7 }
+params:
+  - name: tags
+    type: list
+  - name: codes
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [28, 7]
+    flow: { direction: row, wrap: true, overflow: trim }
+    items:
+      - type: container
+        size: [28, 4]
+        items: []
+      - type: container
+        size: [8, 1]
+        items: []
+      - type: container
+        repeat: tags
+        trim_marker: "..."
+        size: [fill, content]
+        max_w: 12
+        items:
+          - type: container
+            when: { tags: "..." }
+            size: [fill, 1]
+            flow: { direction: row, overflow: trim }
+            items:
+              - type: container
+                repeat: codes
+                trim_marker: "+"
+                size: [content, 1]
+                items:
+                  - type: container
+                    size: [4, 1]
+                    items: []
+                  - type: container
+                    when: { codes: "+" }
+                    size: [10, 1]
+                    items: []
+          - type: container
+            when: { tags: "" }
+            size: [content, 5]
+            items: []
+"#;
+        let src = flow_source(
+            yaml,
+            (28.0, 7.0),
+            json!({ "tags": ["KEEP", ""], "codes": ["A", "B", "C", "D"] }),
+        )
+        .unwrap();
+        assert!(
+            src.contains("#place(top + left, dx: 8mm, dy: 4mm)[#box(width: 12mm,"),
+            "the outer marker takes the shorter prefix's 12 units: {src}"
+        );
+        assert!(
+            !src.contains("dx: 20mm"),
+            "the first instance gives way: {src}"
+        );
+        assert!(
+            src.contains("width: 10mm"),
+            "the inner marker is drawn: {src}"
         );
     }
 
