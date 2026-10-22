@@ -1215,6 +1215,20 @@ struct FlowChildArgs<'a> {
     pub path_prefix: &'a str,
 }
 
+/// What every trim-marker candidate of one flow shares.
+struct MarkerCandidateArgs<'a, 'b> {
+    pub item: &'b LayoutItem,
+    pub orig_idx: usize,
+    pub rep_name: &'a str,
+    pub marker: &'a str,
+    pub container_path: &'a str,
+    pub base: &'a crate::resolver::FlowResult,
+    pub inputs: &'a [crate::resolver::FlowChildInput],
+    pub flow: &'a crate::models::Flow,
+    pub frame: (f32, f32),
+    pub geometry_values: &'a HashMap<String, f32>,
+}
+
 pub(crate) struct ExpandedItem<'a> {
     pub orig_idx: usize,
     pub elem_idx: Option<usize>,
@@ -1709,7 +1723,6 @@ impl<'a> RenderContext<'a> {
             });
         };
 
-        let (rep_name, marker) = (rep_name.clone(), marker.clone());
         let orig_idx = expanded[cut].orig_idx;
         let mut group_start = cut;
         while group_start > 0
@@ -1719,10 +1732,51 @@ impl<'a> RenderContext<'a> {
             group_start -= 1;
         }
 
-        let item = expanded[cut].item;
         let container_path = format!("{children_prefix}[{orig_idx}]");
+        let args = MarkerCandidateArgs {
+            item: expanded[cut].item,
+            orig_idx,
+            rep_name,
+            marker,
+            container_path: &container_path,
+            base: &base,
+            inputs: &inputs,
+            flow,
+            frame,
+            geometry_values,
+        };
+        for kept in (0..=cut - group_start).rev() {
+            if let Some(arrangement) = self.evaluate_marker_candidate(&args, group_start + kept)? {
+                return Ok(arrangement);
+            }
+        }
+        Err(AppError::unsupported_layout_item(
+            Reason::ItemOutOfFrame,
+            format!("at {container_path}: item resolves outside frame bounds"),
+        ))
+    }
+
+    /// Evaluate the candidate that draws the first `prefix_len` expanded children followed by the
+    /// repeat's trim marker. `None` means the candidate does not draw every child.
+    fn evaluate_marker_candidate<'b>(
+        &self,
+        args: &MarkerCandidateArgs<'_, 'b>,
+        prefix_len: usize,
+    ) -> Result<Option<FlowArrangement<'b>>, AppError> {
+        let MarkerCandidateArgs {
+            item,
+            orig_idx,
+            rep_name,
+            marker,
+            container_path,
+            base,
+            inputs,
+            flow,
+            frame,
+            geometry_values,
+        } = *args;
         let mut marker_data = self.data.clone();
-        marker_data.insert(rep_name, JsonValue::String(marker));
+        marker_data.insert(rep_name.to_string(), JsonValue::String(marker.to_string()));
         let marker_expanded = ExpandedItem {
             orig_idx,
             elem_idx: None,
@@ -1735,51 +1789,39 @@ impl<'a> RenderContext<'a> {
             frame,
             [true, true],
             geometry_values,
-            &container_path,
+            container_path,
         )?;
         let marker_input = marker_ctx.flow_child_input(
             &marker_expanded,
             &marker_measured,
             frame,
             geometry_values,
-            &container_path,
+            container_path,
         )?;
 
-        let mut selected = None;
-        for kept in (0..=cut - group_start).rev() {
-            let mut candidate = inputs[..group_start + kept].to_vec();
-            candidate.push(marker_input);
-            let mut resolved =
-                crate::resolver::arrange_flow(frame, flow, &candidate).map_err(|_| {
-                    AppError::unsupported_layout_item(
-                        Reason::ItemOutOfFrame,
-                        format!("at {container_path}: item resolves outside frame bounds"),
-                    )
-                })?;
-            if resolved.rects.len() == candidate.len() {
-                let prefix_len = group_start + kept;
-                // The drawn prefix keeps the placements it already had, so adopting the marker
-                // does not move earlier siblings; only the marker is newly placed.
-                resolved.rects[..prefix_len].copy_from_slice(&base.rects[..prefix_len]);
-                selected = Some((resolved, prefix_len));
-                break;
-            }
+        let mut candidate = inputs[..prefix_len].to_vec();
+        candidate.push(marker_input);
+        let mut resolved =
+            crate::resolver::arrange_flow(frame, flow, &candidate).map_err(|_| {
+                AppError::unsupported_layout_item(
+                    Reason::ItemOutOfFrame,
+                    format!("at {container_path}: item resolves outside frame bounds"),
+                )
+            })?;
+        if resolved.rects.len() != candidate.len() {
+            return Ok(None);
         }
-
-        let (result, prefix_len) = selected.ok_or_else(|| {
-            AppError::unsupported_layout_item(
-                Reason::ItemOutOfFrame,
-                format!("at {container_path}: item resolves outside frame bounds"),
-            )
-        })?;
-        Ok(FlowArrangement {
-            result,
+        // The drawn prefix keeps the placements it already had, so adopting the marker does not
+        // move earlier siblings; only the marker is newly placed.
+        resolved.rects[..prefix_len].copy_from_slice(&base.rects[..prefix_len]);
+        Ok(Some(FlowArrangement {
+            result: resolved,
             marker: Some(MarkerInstance {
                 prefix_len,
                 expanded: marker_expanded,
                 measured: marker_measured,
             }),
-        })
+        }))
     }
 
     /// The one place item type is visible in sizing: the intrinsic extent an item's own content
