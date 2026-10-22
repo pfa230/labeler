@@ -36,9 +36,11 @@ Reviews of the preserved implementation found the following cases; port their fo
 
 ## Focused repair of the current implementation
 
-Continue the existing patch at `da87e18a`; this repair does not rebuild or extract its layout machinery. It already has `SizingError::{Allocation, Ordinary}`, but `intrinsic`, `arrange_flow_children` and `evaluate_marker_candidate` return plain `AppError`. A nested failure therefore loses its classification before a parent classifies an aggregate operation again. Preserve the existing `SizingError` through nested intrinsic sizing, arrangement and candidate evaluation, converting to the public error only when leaving the sizing/fitting path. Classify raw geometry or text checks where they fail; an error returned by a nested operation retains its existing classification. A successful larger subtree is not evidence that its smaller subtree's ordinary error was caused by allocation.
+Continue the existing patch at `aab0f654`, which preserves `SizingError::{Allocation, Ordinary}` through nested sizing and fitting. Its remaining failure loses the enclosing allocation limit: `intrinsic` and `fit_flow_children` pass arrangement only the current frame and a success boolean, then `evaluate_marker_candidate` uses that current frame as the marker's limit.
 
-The concrete regression is a nested trimming row with three 4-wide instances: at width 8 it uses a marker containing an unmapped character; at width 12 no marker is needed. An enclosing candidate must propagate the original `text_character_unmapped` error, even though a wider probe omits the invalid inner marker and succeeds. Demonstrate this failure on the current implementation before fixing it, then require the same error code and path afterward. Retain the previous allocation-retry and final-fitting regressions. Use the existing error type and resolver checks; neither a reason whitelist nor another renderer abstraction serves this repair.
+Carry the actual and limit frames, with the corresponding child measurements, through both intrinsic assembly and final nested arrangement into marker evaluation. A nested marker must retain the enclosing candidate's permitted allocation after authored sizes, caps, ordered remainders, rotation and padding; its current frame cannot replace that limit. Classify the raw failing geometry or text check against its corresponding limit and preserve nested errors' classifications and paths. A successful larger subtree that omits a failing inner marker is not evidence that the inner marker's ordinary error was caused by allocation. Use the existing frame pair, error type and resolver checks.
+
+First reproduce the review's nested retry failure on `aab0f654`: an outer candidate gives a nested trimming row 8 units, while a shorter outer prefix gives it 12; the row repeats four 4-wide content containers and its marker activates a 10-wide authored child. The 8-unit candidate must allow the outer search to try the shorter prefix and render the marker at 12. Record the failure before repairing the propagation through both callers and the shared selector, then assert the selected outer prefix and rendered marker. Retain the existing nested unmapped-character regression, including its original error and path, and the allocation-retry and final-fitting regressions.
 
 ## Risks / Trade-offs
 
@@ -46,4 +48,4 @@ Source order now determines who gets primary-axis fill space. Uncapped fill norm
 
 ## Migration Plan
 
-Continue the existing implementation at `da87e18a` with the focused repair above, and run the checks against the resulting patch before archiving through the loop. Replace the old behavior without adding a compatibility spelling or configuration switch.
+Continue the existing implementation at `aab0f654` with the focused repair above, and run the checks against the resulting patch before archiving through the loop. Replace the old behavior without adding a compatibility spelling or configuration switch.
