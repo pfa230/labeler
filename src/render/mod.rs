@@ -1144,8 +1144,9 @@ struct PlacedBox {
     pub frame: (f32, f32),
 }
 
-/// One item ready to draw: the item, its final box, and what its kind resolved, checked, fitted
-/// or loaded against that box. `prepare_items` builds it; `emit_items` draws it.
+/// One item ready to draw: the item, its final box, and what its kind resolved, checked or
+/// loaded against that box. A text item instead keeps the fit measured against its unmeasured
+/// box. `prepare_items` builds it; `emit_items` draws it.
 struct PreparedItem<'a> {
     item: &'a LayoutItem,
     pbox: PlacedBox,
