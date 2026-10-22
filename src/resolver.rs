@@ -324,7 +324,7 @@ impl Violation {
     }
 }
 
-fn frame_axis(frame: (f32, f32), axis: usize) -> f32 {
+pub fn frame_axis(frame: (f32, f32), axis: usize) -> f32 {
     if axis == 0 {
         frame.0
     } else {
@@ -550,6 +550,15 @@ impl FlowLine {
         }
     }
 
+    /// Add a child of this primary extent, first starting a new line when a wrapping flow
+    /// [`Self::wraps_before`] it.
+    pub fn push(&mut self, flow: &Flow, inner_primary: f32, extent: f32) {
+        if self.wraps_before(flow, inner_primary, extent) {
+            *self = FlowLine::default();
+        }
+        self.add(flow, extent);
+    }
+
     /// The primary room left for the next occupying child, after the gap it would need.
     pub fn remainder(&self, flow: &Flow, inner_primary: f32) -> f32 {
         let pending_gap = if self.occupied { flow.gap } else { 0.0 };
@@ -609,11 +618,7 @@ pub fn resolve_flow_children<E>(
     let mut inputs = Vec::with_capacity(n);
     for idx in 0..n {
         let input = resolve(idx, line.remainder(flow, inner_primary))?;
-        let extent = frame_axis(input.resolved_box, axis);
-        if line.wraps_before(flow, inner_primary, extent) {
-            line = FlowLine::default();
-        }
-        line.add(flow, extent);
+        line.push(flow, inner_primary, frame_axis(input.resolved_box, axis));
         inputs.push(input);
     }
     Ok(inputs)

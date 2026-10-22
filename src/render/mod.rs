@@ -1013,7 +1013,19 @@ pub struct Measured {
     pub text: Option<helpers::TextFit>,
     /// The box `text` was laid out against.
     pub laid_out_box: Option<(f32, f32)>,
+    /// What the item measures at its limit, when it has one and measures there.
+    pub limit_intrinsic: Option<[Option<f32>; 2]>,
     pub children: Vec<Measured>,
+}
+
+/// What each of `nodes` measured.
+fn intrinsics(nodes: &[Measured]) -> Vec<[Option<f32>; 2]> {
+    nodes.iter().map(|node| node.intrinsic).collect()
+}
+
+/// What each of `nodes` measures at its limit, if every one measures there.
+fn limit_intrinsics(nodes: &[Measured]) -> Option<Vec<[Option<f32>; 2]>> {
+    nodes.iter().map(|node| node.limit_intrinsic).collect()
 }
 
 /// The frame a packed `item` sizes against when its line has `remainder` left.
@@ -1039,14 +1051,110 @@ fn takes_remainder_of(
         .is_some_and(|placement| crate::resolver::takes_remainder(placement, flow, geometry_values))
 }
 
+/// A sizing or fitting failure, by whether the check that failed passes at the item's limit: the
+/// frame it has when the trim-marker candidate it belongs to takes the flow's whole inner box.
+/// Only an `Allocation` failure can clear at a shorter prefix. Outside a candidate an item has no
+/// limit, and every failure is `Ordinary`.
+enum SizingError {
+    Allocation(AppError),
+    Ordinary(AppError),
+}
+
+impl From<AppError> for SizingError {
+    fn from(err: AppError) -> Self {
+        SizingError::Ordinary(err)
+    }
+}
+
+impl From<SizingError> for AppError {
+    fn from(err: SizingError) -> Self {
+        match err {
+            SizingError::Allocation(err) | SizingError::Ordinary(err) => err,
+        }
+    }
+}
+
+/// A frame or box an item sizes in, and the same at the item's limit when it has one.
+#[derive(Clone, Copy)]
+struct Frames {
+    actual: (f32, f32),
+    limit: Option<(f32, f32)>,
+}
+
+impl Frames {
+    /// What `f` derives from both frames.
+    fn map(self, f: impl Fn((f32, f32)) -> (f32, f32)) -> Frames {
+        Frames {
+            actual: f(self.actual),
+            limit: self.limit.map(f),
+        }
+    }
+}
+
+/// `err` from a check, as an allocation failure when the same check `passes_at_limit`.
+fn classify(err: AppError, passes_at_limit: bool) -> SizingError {
+    if passes_at_limit {
+        SizingError::Allocation(err)
+    } else {
+        SizingError::Ordinary(err)
+    }
+}
+
+/// The line a flow fills at its children's limits, walked beside the line it fills at their
+/// actual frames. `inner` is the flow's inner box at its limit, `None` outside a trim-marker
+/// candidate or once a child resolves no box there.
+struct LimitLine<'f> {
+    flow: &'f crate::models::Flow,
+    inner: Option<(f32, f32)>,
+    line: crate::resolver::FlowLine,
+}
+
+impl<'f> LimitLine<'f> {
+    fn new(flow: &'f crate::models::Flow, inner: Option<(f32, f32)>) -> Self {
+        Self {
+            flow,
+            inner,
+            line: crate::resolver::FlowLine::default(),
+        }
+    }
+
+    /// The frame the next child, `item`, sizes against at its limit.
+    fn frame_of(
+        &self,
+        item: &LayoutItem,
+        geometry_values: &HashMap<String, f32>,
+    ) -> Option<(f32, f32)> {
+        let axis = crate::resolver::flow_primary_axis(self.flow);
+        self.inner.map(|inner| {
+            let remainder = self
+                .line
+                .remainder(self.flow, crate::resolver::frame_axis(inner, axis));
+            packed_frame_of(item, inner, self.flow, remainder, geometry_values)
+        })
+    }
+
+    /// Move past a child whose input at its limit is `input`.
+    fn push(&mut self, input: Option<crate::resolver::FlowChildInput>) {
+        let axis = crate::resolver::flow_primary_axis(self.flow);
+        match (self.inner, input) {
+            (Some(inner), Some(input)) => self.line.push(
+                self.flow,
+                crate::resolver::frame_axis(inner, axis),
+                crate::resolver::frame_axis(input.resolved_box, axis),
+            ),
+            _ => self.inner = None,
+        }
+    }
+}
+
 /// What the intrinsic dispatch needs to answer for one item: the box its content is measured
-/// against, which axes asked, and — for a container — the children already measured against the
+/// against, which axes asked, and — for a container — what its children measured against the
 /// frame it gives them.
 struct IntrinsicInput<'a> {
     item: &'a LayoutItem,
     measure_box: (f32, f32),
     demands: [bool; 2],
-    children: &'a [Measured],
+    children: &'a [[Option<f32>; 2]],
     child_frame: (f32, f32),
     geometry_values: &'a HashMap<String, f32>,
     path: &'a str,
@@ -1506,6 +1614,20 @@ impl<'a> RenderContext<'a> {
         Ok(())
     }
 
+    /// A line's endpoints from `at` to `to`, resolved and checked in `frame`.
+    fn resolve_line(
+        &self,
+        at: &Position,
+        to: &Position,
+        frame: (f32, f32),
+        path: &str,
+    ) -> Result<(Point, Point), AppError> {
+        let start = self.resolve_point(at, frame, path)?;
+        let end = self.resolve_point(to, frame, path)?;
+        self.check_line(&start, &end, frame, path)?;
+        Ok((start, end))
+    }
+
     pub fn measure_items(
         &self,
         items: &[LayoutItem],
@@ -1514,6 +1636,27 @@ impl<'a> RenderContext<'a> {
         geometry_values: &HashMap<String, f32>,
         path_prefix: &str,
     ) -> Result<(Vec<Measured>, f32), AppError> {
+        Ok(self.measure_items_within(
+            items,
+            Frames {
+                actual: frame,
+                limit: None,
+            },
+            axes_resolved,
+            geometry_values,
+            path_prefix,
+        )?)
+    }
+
+    /// [`Self::measure_items`] in `frames`.
+    fn measure_items_within(
+        &self,
+        items: &[LayoutItem],
+        frames: Frames,
+        axes_resolved: [bool; 2],
+        geometry_values: &HashMap<String, f32>,
+        path_prefix: &str,
+    ) -> Result<(Vec<Measured>, f32), SizingError> {
         let mut measured_nodes = Vec::new();
         let mut max_req_w = 0.0_f32;
 
@@ -1531,7 +1674,7 @@ impl<'a> RenderContext<'a> {
 
             let node = item_ctx.measure_item_instance(
                 exp.item,
-                frame,
+                frames,
                 axes_resolved,
                 geometry_values,
                 &path,
@@ -1540,9 +1683,9 @@ impl<'a> RenderContext<'a> {
             max_req_w = max_req_w.max(item_ctx.item_axis_requirement(
                 exp.item,
                 0,
-                frame,
+                frames.actual,
                 geometry_values,
-                &node,
+                node.intrinsic,
             ));
             measured_nodes.push(node);
         }
@@ -1556,50 +1699,65 @@ impl<'a> RenderContext<'a> {
     fn measure_item_instance(
         &self,
         item: &LayoutItem,
-        frame: (f32, f32),
+        frames: Frames,
         axes_resolved: [bool; 2],
         geometry_values: &HashMap<String, f32>,
         path: &str,
-    ) -> Result<Measured, AppError> {
+    ) -> Result<Measured, SizingError> {
         match item.placement() {
             // A `line` has endpoints rather than a box: nothing to size, nothing to measure.
             None => Ok(Measured {
                 intrinsic: [None, None],
                 text: None,
                 laid_out_box: None,
+                limit_intrinsic: frames.limit.map(|_| [None, None]),
                 children: vec![],
             }),
             Some(placement) => {
                 // The rules that do not depend on a measurement hold before one is taken, so a
                 // box a request has already invalidated is refused as such rather than as
                 // whatever its content then fails to do inside it.
-                let (measure_box, spec_0, spec_1) = if placement.at.is_none() {
-                    let (w, h) = crate::resolver::resolve_packed(
-                        placement,
-                        frame,
-                        geometry_values,
-                        [None, None],
-                    )
-                    .map_err(|violation| violation_error(violation, path))?;
-                    let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
-                    let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
-                    ((w, h), spec_0, spec_1)
-                } else {
-                    crate::resolver::precheck(placement, Some(frame), geometry_values)
-                        .map_err(|violation| violation_error(violation, path))?;
-
-                    let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
-                    let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
-                    let measure_box = (
-                        crate::resolver::resolve_unmeasured(&spec_0, frame.0, placement.max_w),
-                        crate::resolver::resolve_unmeasured(&spec_1, frame.1, placement.max_h),
-                    );
-                    (measure_box, spec_0, spec_1)
+                let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
+                let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
+                let box_in = |frame: (f32, f32)| {
+                    if placement.at.is_none() {
+                        crate::resolver::resolve_packed(
+                            placement,
+                            frame,
+                            geometry_values,
+                            [None, None],
+                        )
+                    } else {
+                        crate::resolver::precheck(placement, Some(frame), geometry_values).map(
+                            |()| {
+                                (
+                                    crate::resolver::resolve_unmeasured(
+                                        &spec_0,
+                                        frame.0,
+                                        placement.max_w,
+                                    ),
+                                    crate::resolver::resolve_unmeasured(
+                                        &spec_1,
+                                        frame.1,
+                                        placement.max_h,
+                                    ),
+                                )
+                            },
+                        )
+                    }
                 };
+                let limit_box = frames.limit.and_then(|limit| box_in(limit).ok());
+                let frames = Frames {
+                    limit: frames.limit.filter(|_| limit_box.is_some()),
+                    ..frames
+                };
+                let measure_box = box_in(frames.actual).map_err(|violation| {
+                    classify(violation_error(violation, path), limit_box.is_some())
+                })?;
 
                 // A container's children are measured against the frame it gives them, which
                 // is its own unmeasured box less rotation and padding.
-                let (children, child_frame) = match item {
+                let (children, child_frames) = match item {
                     LayoutItem::Container {
                         placement,
                         padding,
@@ -1607,27 +1765,34 @@ impl<'a> RenderContext<'a> {
                         items: child_items,
                         ..
                     } => {
-                        let geometry = crate::resolver::container_geometry(
-                            placement,
-                            padding,
-                            frame,
-                            axes_resolved,
-                            geometry_values,
-                        );
+                        let geometry_in = |frame| {
+                            crate::resolver::container_geometry(
+                                placement,
+                                padding,
+                                frame,
+                                axes_resolved,
+                                geometry_values,
+                            )
+                        };
+                        let geometry = geometry_in(frames.actual);
+                        let inner = Frames {
+                            actual: geometry.inner,
+                            limit: frames.limit.map(|limit| geometry_in(limit).inner),
+                        };
                         let children_prefix = format!("{path}.items");
                         let children = match flow {
                             Some(flow) => self.measure_flow_items(
                                 child_items,
                                 flow,
-                                geometry.inner,
+                                inner,
                                 geometry.child_axes_resolved,
                                 geometry_values,
                                 &children_prefix,
                             )?,
                             None => {
-                                self.measure_items(
+                                self.measure_items_within(
                                     child_items,
-                                    geometry.inner,
+                                    inner,
                                     geometry.child_axes_resolved,
                                     geometry_values,
                                     &children_prefix,
@@ -1635,25 +1800,46 @@ impl<'a> RenderContext<'a> {
                                 .0
                             }
                         };
-                        (children, geometry.inner)
+                        (children, inner)
                     }
-                    _ => (vec![], measure_box),
+                    _ => (
+                        vec![],
+                        Frames {
+                            actual: measure_box,
+                            limit: limit_box,
+                        },
+                    ),
                 };
 
-                let (intrinsic, text) = self.intrinsic(IntrinsicInput {
-                    item,
-                    measure_box,
-                    demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
-                    children: &children,
-                    child_frame,
-                    geometry_values,
-                    path,
-                })?;
+                let intrinsic_in = |measure_box, children: &[[Option<f32>; 2]], child_frame| {
+                    self.intrinsic(IntrinsicInput {
+                        item,
+                        measure_box,
+                        demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
+                        children,
+                        child_frame,
+                        geometry_values,
+                        path,
+                    })
+                };
+                let limit_intrinsic =
+                    limit_box
+                        .zip(child_frames.limit)
+                        .and_then(|(limit_box, child_limit)| {
+                            let children = limit_intrinsics(&children)?;
+                            intrinsic_in(limit_box, &children, child_limit)
+                                .ok()
+                                .map(|(intrinsic, _)| intrinsic)
+                        });
+                let (intrinsic, text) =
+                    intrinsic_in(measure_box, &intrinsics(&children), child_frames.actual)
+                        .map_err(|err| classify(err, limit_intrinsic.is_some()))?;
 
                 Ok(Measured {
                     intrinsic,
                     laid_out_box: text.as_ref().map(|_| measure_box),
                     text,
+                    limit_intrinsic,
                     children,
                 })
             }
@@ -1667,27 +1853,44 @@ impl<'a> RenderContext<'a> {
         &self,
         items: &[LayoutItem],
         flow: &crate::models::Flow,
-        inner: (f32, f32),
+        inner: Frames,
         axes_resolved: [bool; 2],
         geometry_values: &HashMap<String, f32>,
         path_prefix: &str,
-    ) -> Result<Vec<Measured>, AppError> {
+    ) -> Result<Vec<Measured>, SizingError> {
         let expanded = self.expand_items(items)?;
         let mut measured = Vec::with_capacity(expanded.len());
-        crate::resolver::resolve_flow_children(flow, inner, expanded.len(), |idx, remainder| {
-            let exp = &expanded[idx];
-            let frame = packed_frame_of(exp.item, inner, flow, remainder, geometry_values);
-            let node = self.scoped(exp).measure_item_instance(
-                exp.item,
-                frame,
-                axes_resolved,
-                geometry_values,
-                &exp.path(path_prefix),
-            )?;
-            let input = self.flow_child_input(exp, &node, frame, geometry_values, path_prefix)?;
-            measured.push(node);
-            Ok::<_, AppError>(input)
-        })?;
+        let mut limit_line = LimitLine::new(flow, inner.limit);
+        crate::resolver::resolve_flow_children(
+            flow,
+            inner.actual,
+            expanded.len(),
+            |idx, remainder| {
+                let exp = &expanded[idx];
+                let frames = Frames {
+                    actual: packed_frame_of(
+                        exp.item,
+                        inner.actual,
+                        flow,
+                        remainder,
+                        geometry_values,
+                    ),
+                    limit: limit_line.frame_of(exp.item, geometry_values),
+                };
+                let node = self.scoped(exp).measure_item_instance(
+                    exp.item,
+                    frames,
+                    axes_resolved,
+                    geometry_values,
+                    &exp.path(path_prefix),
+                )?;
+                let (input, limit_input) =
+                    self.flow_child_input_at(exp, &node, frames, geometry_values, path_prefix)?;
+                limit_line.push(limit_input);
+                measured.push(node);
+                Ok::<_, SizingError>(input)
+            },
+        )?;
         Ok(measured)
     }
 
@@ -1699,7 +1902,7 @@ impl<'a> RenderContext<'a> {
         axis: usize,
         frame: (f32, f32),
         geometry_values: &HashMap<String, f32>,
-        measured: &Measured,
+        intrinsic: [Option<f32>; 2],
     ) -> f32 {
         let frame_extent = if axis == 0 { frame.0 } else { frame.1 };
         match item {
@@ -1717,19 +1920,19 @@ impl<'a> RenderContext<'a> {
                     axis,
                     frame_extent,
                     geometry_values,
-                    measured.intrinsic[axis],
+                    intrinsic[axis],
                 ),
                 None => 0.0,
             },
         }
     }
 
-    /// The flow input one expanded child contributes: its packed box and its requirement on each
-    /// axis, in the child's own data scope.
+    /// The flow input one expanded child that measured `intrinsic` contributes: its packed box
+    /// and its requirement on each axis, in the child's own data scope.
     fn flow_child_input(
         &self,
         exp: &ExpandedItem<'_>,
-        measured: &Measured,
+        intrinsic: [Option<f32>; 2],
         frame: (f32, f32),
         geometry_values: &HashMap<String, f32>,
         children_prefix: &str,
@@ -1743,14 +1946,12 @@ impl<'a> RenderContext<'a> {
             None => format!("{children_prefix}[{}]", exp.orig_idx),
         };
         let (req_0, req_1) = (
-            child_ctx.item_axis_requirement(exp.item, 0, frame, geometry_values, measured),
-            child_ctx.item_axis_requirement(exp.item, 1, frame, geometry_values, measured),
+            child_ctx.item_axis_requirement(exp.item, 0, frame, geometry_values, intrinsic),
+            child_ctx.item_axis_requirement(exp.item, 1, frame, geometry_values, intrinsic),
         );
         let resolved_box = match exp.item.placement() {
-            Some(p) => {
-                crate::resolver::resolve_packed(p, frame, geometry_values, measured.intrinsic)
-                    .map_err(|v| violation_error(v, &child_path))?
-            }
+            Some(p) => crate::resolver::resolve_packed(p, frame, geometry_values, intrinsic)
+                .map_err(|v| violation_error(v, &child_path))?,
             None => (0.0, 0.0),
         };
         Ok(crate::resolver::FlowChildInput {
@@ -1759,12 +1960,48 @@ impl<'a> RenderContext<'a> {
         })
     }
 
+    /// [`Self::flow_child_input`] in `frames`, with a failure classified by whether the child
+    /// resolves at its limit, and the input there when it does.
+    fn flow_child_input_at(
+        &self,
+        exp: &ExpandedItem<'_>,
+        measured: &Measured,
+        frames: Frames,
+        geometry_values: &HashMap<String, f32>,
+        children_prefix: &str,
+    ) -> Result<
+        (
+            crate::resolver::FlowChildInput,
+            Option<crate::resolver::FlowChildInput>,
+        ),
+        SizingError,
+    > {
+        let limit_input =
+            frames
+                .limit
+                .zip(measured.limit_intrinsic)
+                .and_then(|(limit, intrinsic)| {
+                    self.flow_child_input(exp, intrinsic, limit, geometry_values, children_prefix)
+                        .ok()
+                });
+        let input = self
+            .flow_child_input(
+                exp,
+                measured.intrinsic,
+                frames.actual,
+                geometry_values,
+                children_prefix,
+            )
+            .map_err(|err| classify(err, limit_input.is_some()))?;
+        Ok((input, limit_input))
+    }
+
     /// Resolve a flow container's children in template order against `frame`, each primary-axis
-    /// `fill` at the remainder its line has left, from what they measured.
+    /// `fill` at the remainder its line has left, from what they measured, `intrinsics`.
     fn flow_child_inputs(
         &self,
         expanded: &[ExpandedItem<'_>],
-        measured: &[Measured],
+        intrinsics: &[[Option<f32>; 2]],
         flow: &crate::models::Flow,
         frame: (f32, f32),
         geometry_values: &HashMap<String, f32>,
@@ -1774,7 +2011,7 @@ impl<'a> RenderContext<'a> {
             let exp = &expanded[idx];
             self.flow_child_input(
                 exp,
-                &measured[idx],
+                intrinsics[idx],
                 packed_frame_of(exp.item, frame, flow, remainder, geometry_values),
                 geometry_values,
                 children_prefix,
@@ -1785,11 +2022,11 @@ impl<'a> RenderContext<'a> {
     /// Arrange a flow container's children. When `overflow: trim` discards the first instance of a
     /// repeat that declares a `trim_marker`, the marker is measured in that repeat's scope at each
     /// candidate prefix's remainder, and the longest prefix of the repeat's drawn instances that
-    /// leaves room for it is kept.
+    /// leaves room for it is kept. `intrinsics` is what the children measured.
     fn arrange_flow_children<'b>(
         &self,
         expanded: &[ExpandedItem<'b>],
-        measured: &[Measured],
+        intrinsics: &[[Option<f32>; 2]],
         flow: &crate::models::Flow,
         frame: (f32, f32),
         geometry_values: &HashMap<String, f32>,
@@ -1797,7 +2034,7 @@ impl<'a> RenderContext<'a> {
     ) -> Result<FlowArrangement<'b>, AppError> {
         let inputs = self.flow_child_inputs(
             expanded,
-            measured,
+            intrinsics,
             flow,
             frame,
             geometry_values,
@@ -1868,9 +2105,9 @@ impl<'a> RenderContext<'a> {
 
     /// Evaluate the candidate that draws the first `prefix_len` expanded children followed by the
     /// repeat's trim marker, sized at the remainder the prefix leaves and fitted to its final box.
-    /// `None` means the candidate does not draw every child, or the marker fails at this
-    /// allocation but sizes and fits at the whole inner box, so a shorter prefix may clear it. A
-    /// marker that fails even there fails with that error.
+    /// The marker's limit is the whole inner box, the most any prefix leaves it. `None` means the
+    /// candidate does not draw every child, or a check the marker fails passes at its limit, so a
+    /// shorter prefix may clear it; any other failure is the render's.
     fn evaluate_marker_candidate<'b>(
         &self,
         args: &MarkerCandidateArgs<'_, 'b>,
@@ -1899,29 +2136,36 @@ impl<'a> RenderContext<'a> {
         let marker_ctx = self.scoped(&marker_expanded);
         // The marker measured, resolved and fitted in `marker_frame`.
         let size_marker = |marker_frame| {
+            let frames = Frames {
+                actual: marker_frame,
+                limit: Some(frame),
+            };
             let measured = marker_ctx.measure_item_instance(
                 item,
-                marker_frame,
+                frames,
                 [true, true],
                 geometry_values,
                 container_path,
             )?;
-            let input = marker_ctx.flow_child_input(
+            let (input, limit_input) = marker_ctx.flow_child_input_at(
                 &marker_expanded,
                 &measured,
-                marker_frame,
+                frames,
                 geometry_values,
                 container_path,
             )?;
             let fitted = marker_ctx.fit_item(
                 item,
                 &measured,
-                input.resolved_box,
+                Frames {
+                    actual: input.resolved_box,
+                    limit: limit_input.map(|input| input.resolved_box),
+                },
                 takes_remainder_of(item, flow, geometry_values),
                 geometry_values,
                 container_path,
             )?;
-            Ok::<_, AppError>((fitted, input))
+            Ok::<_, SizingError>((fitted, input))
         };
 
         let mut marker_fitted = None;
@@ -1941,12 +2185,13 @@ impl<'a> RenderContext<'a> {
                     geometry_values,
                 ))?;
                 marker_fitted = Some(fitted);
-                Ok::<_, AppError>(input)
+                Ok(input)
             },
         );
         let candidate = match candidate {
             Ok(candidate) => candidate,
-            Err(_) => return size_marker(frame).map(|_| None),
+            Err(SizingError::Allocation(_)) => return Ok(None),
+            Err(SizingError::Ordinary(err)) => return Err(err),
         };
         let mut resolved =
             crate::resolver::arrange_flow(frame, flow, &candidate).map_err(|_| {
@@ -2099,7 +2344,7 @@ impl<'a> RenderContext<'a> {
                     }
                     None => {
                         let mut author = (0.0_f32, 0.0_f32);
-                        for (exp, measured) in expanded_children.iter().zip(children.iter()) {
+                        for (exp, &intrinsic) in expanded_children.iter().zip(children) {
                             let item_ctx = match &exp.data {
                                 Some(d) => self.with_data(d),
                                 None => self.with_data(self.data),
@@ -2109,14 +2354,14 @@ impl<'a> RenderContext<'a> {
                                 0,
                                 child_frame,
                                 geometry_values,
-                                measured,
+                                intrinsic,
                             ));
                             author.1 = author.1.max(item_ctx.item_axis_requirement(
                                 exp.item,
                                 1,
                                 child_frame,
                                 geometry_values,
-                                measured,
+                                intrinsic,
                             ));
                         }
                         author
@@ -2178,10 +2423,10 @@ impl<'a> RenderContext<'a> {
                 };
                 // Every child is fitted to its final box before trimming can discard it.
                 let fitted =
-                    self.fit_flow_children(&expanded, measured, flow, &child_args, false)?;
+                    self.fit_flow_children(&expanded, measured, flow, &child_args, None, false)?;
                 let arrangement = self.arrange_flow_children(
                     &expanded,
-                    &fitted,
+                    &intrinsics(&fitted),
                     flow,
                     frame,
                     geometry_values,
@@ -2257,68 +2502,89 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Fit a flow container's children to the boxes the ordered walk gives them in `args.frame`.
-    /// `allocated` says the container's own box came from a line's remainder.
+    /// `limit_inner` is that frame at the container's limit, if it has one. `allocated` says the
+    /// container's own box came from a line's remainder.
     fn fit_flow_children(
         &self,
         expanded: &[ExpandedItem<'_>],
         measured: &[Measured],
         flow: &crate::models::Flow,
         args: &FlowChildArgs<'_>,
+        limit_inner: Option<(f32, f32)>,
         allocated: bool,
-    ) -> Result<Vec<Measured>, AppError> {
+    ) -> Result<Vec<Measured>, SizingError> {
         let FlowChildArgs {
             frame,
             geometry_values,
             path_prefix,
         } = *args;
-        let inputs = self.flow_child_inputs(
-            expanded,
-            measured,
-            flow,
-            frame,
-            geometry_values,
-            path_prefix,
-        )?;
-        expanded
-            .iter()
-            .zip(measured)
-            .zip(&inputs)
-            .map(|((exp, node), input)| {
-                self.scoped(exp).fit_item(
-                    exp.item,
-                    node,
-                    input.resolved_box,
-                    allocated || takes_remainder_of(exp.item, flow, geometry_values),
-                    geometry_values,
-                    &exp.path(path_prefix),
-                )
-            })
-            .collect()
+        let mut fitted = Vec::with_capacity(expanded.len());
+        let mut limit_line = LimitLine::new(flow, limit_inner);
+        crate::resolver::resolve_flow_children(flow, frame, expanded.len(), |idx, remainder| {
+            let exp = &expanded[idx];
+            let frames = Frames {
+                actual: packed_frame_of(exp.item, frame, flow, remainder, geometry_values),
+                limit: limit_line.frame_of(exp.item, geometry_values),
+            };
+            let (input, limit_input) = self.flow_child_input_at(
+                exp,
+                &measured[idx],
+                frames,
+                geometry_values,
+                path_prefix,
+            )?;
+            limit_line.push(limit_input);
+            fitted.push(self.scoped(exp).fit_item(
+                exp.item,
+                &measured[idx],
+                Frames {
+                    actual: input.resolved_box,
+                    limit: limit_input.map(|input| input.resolved_box),
+                },
+                allocated || takes_remainder_of(exp.item, flow, geometry_values),
+                geometry_values,
+                &exp.path(path_prefix),
+            )?);
+            Ok::<_, SizingError>(input)
+        })?;
+        Ok(fitted)
     }
 
-    /// What `item` measured, carried to its final `size`. A text whose box a line's remainder
+    /// What `item` measured, carried to its final box `size`. A text whose box a line's remainder
     /// (`allocated`, its own or an ancestor's) shrank below the box it was laid out against is
-    /// fitted again against `size`; a container's children are fitted in the inner box `size`
-    /// gives them. Intrinsic sizes stay as measured, so no ancestor is resized.
+    /// fitted again against that box; a container's children are fitted in the inner box it gives
+    /// them. Intrinsic sizes stay as measured, so no ancestor is resized. When the item has a
+    /// limit, its lines' endpoints are checked here as well, so a failure the allocation causes is
+    /// classified before preparation draws the item.
     fn fit_item(
         &self,
         item: &LayoutItem,
         measured: &Measured,
-        size: (f32, f32),
+        size: Frames,
         allocated: bool,
         geometry_values: &HashMap<String, f32>,
         path: &str,
-    ) -> Result<Measured, AppError> {
+    ) -> Result<Measured, SizingError> {
         let mut fitted = measured.clone();
         match item {
             LayoutItem::Text { .. } => {
                 let shrank = measured.laid_out_box.is_some_and(|laid_out| {
-                    size.0 < laid_out.0 - crate::resolver::BOUNDS_EPSILON
-                        || size.1 < laid_out.1 - crate::resolver::BOUNDS_EPSILON
+                    size.actual.0 < laid_out.0 - crate::resolver::BOUNDS_EPSILON
+                        || size.actual.1 < laid_out.1 - crate::resolver::BOUNDS_EPSILON
                 });
                 if allocated && shrank {
-                    fitted.text = Some(self.layout_text_item(item, size, path)?);
-                    fitted.laid_out_box = Some(size);
+                    let text = self
+                        .layout_text_item(item, size.actual, path)
+                        .map_err(|err| {
+                            classify(
+                                err,
+                                size.limit.is_some_and(|limit| {
+                                    self.layout_text_item(item, limit, path).is_ok()
+                                }),
+                            )
+                        })?;
+                    fitted.text = Some(text);
+                    fitted.laid_out_box = Some(size.actual);
                 }
             }
             LayoutItem::Container {
@@ -2329,7 +2595,8 @@ impl<'a> RenderContext<'a> {
                 ..
             } => {
                 let rotation = crate::resolver::rotation_of(placement);
-                let (_, inner) = crate::resolver::container_frames(size, rotation, padding);
+                let inner =
+                    size.map(|size| crate::resolver::container_frames(size, rotation, padding).1);
                 let expanded = self.expand_items(child_items)?;
                 let children_prefix = format!("{path}.items");
                 fitted.children = match flow {
@@ -2338,38 +2605,24 @@ impl<'a> RenderContext<'a> {
                         &measured.children,
                         flow,
                         &FlowChildArgs {
-                            frame: inner,
+                            frame: inner.actual,
                             geometry_values,
                             path_prefix: &children_prefix,
                         },
+                        inner.limit,
                         allocated,
                     )?,
                     None => expanded
                         .iter()
                         .zip(&measured.children)
                         .map(|(exp, node)| {
-                            let item_ctx = self.scoped(exp);
-                            let child_path = exp.path(&children_prefix);
-                            let child_size = match exp.item.placement() {
-                                Some(placement) => {
-                                    let pbox = item_ctx.resolve_placement_box(
-                                        placement,
-                                        inner,
-                                        geometry_values,
-                                        node.intrinsic,
-                                        &child_path,
-                                    )?;
-                                    (pbox.w, pbox.h)
-                                }
-                                None => (0.0, 0.0),
-                            };
-                            item_ctx.fit_item(
+                            self.scoped(exp).fit_absolute_child(
                                 exp.item,
                                 node,
-                                child_size,
+                                inner,
                                 allocated,
                                 geometry_values,
-                                &child_path,
+                                &exp.path(&children_prefix),
                             )
                         })
                         .collect::<Result<_, _>>()?,
@@ -2378,6 +2631,51 @@ impl<'a> RenderContext<'a> {
             _ => {}
         }
         Ok(fitted)
+    }
+
+    /// [`Self::fit_item`] for a child of a container without a flow, in its parent's inner box
+    /// `frame`.
+    fn fit_absolute_child(
+        &self,
+        item: &LayoutItem,
+        measured: &Measured,
+        frame: Frames,
+        allocated: bool,
+        geometry_values: &HashMap<String, f32>,
+        path: &str,
+    ) -> Result<Measured, SizingError> {
+        match item {
+            LayoutItem::Line { at, to, .. } => {
+                if let Some(limit) = frame.limit {
+                    self.resolve_line(at, to, frame.actual, path)
+                        .map_err(|err| {
+                            classify(err, self.resolve_line(at, to, limit, path).is_ok())
+                        })?;
+                }
+                Ok(measured.clone())
+            }
+            _ => {
+                let placement = item.placement().expect("only a line has no placement");
+                let size_in = |frame, intrinsic| {
+                    self.resolve_placement_box(placement, frame, geometry_values, intrinsic, path)
+                        .map(|pbox| (pbox.w, pbox.h))
+                };
+                let limit = frame
+                    .limit
+                    .zip(measured.limit_intrinsic)
+                    .and_then(|(limit, intrinsic)| size_in(limit, intrinsic).ok());
+                let actual = size_in(frame.actual, measured.intrinsic)
+                    .map_err(|err| classify(err, limit.is_some()))?;
+                self.fit_item(
+                    item,
+                    measured,
+                    Frames { actual, limit },
+                    allocated,
+                    geometry_values,
+                    path,
+                )
+            }
+        }
     }
 
     /// Prepare one arranged flow child at its placed box.
@@ -2419,9 +2717,7 @@ impl<'a> RenderContext<'a> {
     ) -> Result<PreparedItem<'b>, AppError> {
         let content = match args.item {
             LayoutItem::Line { at, to, .. } => {
-                let start = self.resolve_point(at, args.frame, args.path)?;
-                let end = self.resolve_point(to, args.frame, args.path)?;
-                self.check_line(&start, &end, args.frame, args.path)?;
+                let (start, end) = self.resolve_line(at, to, args.frame, args.path)?;
                 PreparedContent::Line { start, end }
             }
             LayoutItem::Text { font_weight, .. } => {
@@ -11816,6 +12112,53 @@ layout:
                 src.contains("width: 4mm"),
                 "{child}: the marker is drawn: {src}"
             );
+            assert!(
+                !src.contains("width: 2mm"),
+                "{child}: the first instance gives way: {src}"
+            );
+        }
+    }
+
+    /// A marker's line endpoints and nested arrangements are judged against each candidate's
+    /// allocation. A line anchored 4 and 1 from the far edge fails at the longest prefix's zero
+    /// remainder and fits the 8 units a shorter prefix leaves. A marker capped at 4 gets 2 at the
+    /// longest prefix, where a nested fill row cannot arrange two 1.5-wide boxes that each fit,
+    /// and 4 at the shorter one, where it can.
+    #[test]
+    fn a_trim_marker_retries_nested_geometry_its_allocation_failed() {
+        for (size, child, drawn) in [
+            (
+                "[fill, content]",
+                "type: line\n            at: [-4.0, 0]\n            to: [-1.0, 1]\n            stroke: { thickness: 0.2 }",
+                "#line(",
+            ),
+            (
+                "[fill, content]\n        max_w: 4",
+                "type: container\n            size: [fill, 1]\n            flow: { direction: row }\n            items:\n              - type: container\n                size: [1.5, 1]\n                items: []\n              - type: container\n                size: [1.5, 1]\n                items: []",
+                "width: 1.5mm",
+            ),
+        ] {
+            let yaml = marker_row(
+                "...",
+                size,
+                &format!(
+                    r#"
+        items:
+          - {child}
+            when: {{ tags: "..." }}
+          - type: container
+            when: {{ tags: "KEEP" }}
+            size: [2, 1]
+            items: []
+          - type: container
+            when: {{ tags: "" }}
+            size: [content, 5]
+            items: []"#
+                ),
+            );
+            let src = flow_source(&yaml, (30.0, 7.0), json!({ "tags": ["KEEP", ""] }))
+                .unwrap_or_else(|err| panic!("{child}: {err:?}"));
+            assert!(src.contains(drawn), "{child}: the marker is drawn: {src}");
             assert!(
                 !src.contains("width: 2mm"),
                 "{child}: the first instance gives way: {src}"
