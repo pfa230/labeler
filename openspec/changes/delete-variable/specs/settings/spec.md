@@ -27,3 +27,8 @@ The Settings page SHALL show Variables, Datetime formats, then Printers (`printi
 
 - **WHEN** the user presses Remove on the stored `site` row
 - **THEN** nothing is deleted until the user presses Confirm on that row, after which `site` is deleted and its row disappears
+
+#### Scenario: Remove a suggested key
+
+- **WHEN** the user removes the stored `qr_base_url`
+- **THEN** its row returns as the "(suggested)" row with an empty value
