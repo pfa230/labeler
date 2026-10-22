@@ -2502,8 +2502,9 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Fit a flow container's children to the boxes the ordered walk gives them in `args.frame`.
-    /// `limit_inner` is that frame at the container's limit, if it has one. `allocated` says the
-    /// container's own box came from a line's remainder.
+    /// `limit_inner` is that frame at the container's limit, if it has one; the fitted children are
+    /// then also arranged, so a failure the allocation causes is classified before preparation
+    /// arranges them. `allocated` says the container's own box came from a line's remainder.
     fn fit_flow_children(
         &self,
         expanded: &[ExpandedItem<'_>],
@@ -2547,6 +2548,32 @@ impl<'a> RenderContext<'a> {
             )?);
             Ok::<_, SizingError>(input)
         })?;
+        if let Some(limit_inner) = limit_inner {
+            self.arrange_flow_children(
+                expanded,
+                &intrinsics(&fitted),
+                flow,
+                frame,
+                geometry_values,
+                path_prefix,
+            )
+            .map_err(|err| {
+                classify(
+                    err,
+                    limit_intrinsics(measured).is_some_and(|limit| {
+                        self.arrange_flow_children(
+                            expanded,
+                            &limit,
+                            flow,
+                            limit_inner,
+                            geometry_values,
+                            path_prefix,
+                        )
+                        .is_ok()
+                    }),
+                )
+            })?;
+        }
         Ok(fitted)
     }
 
@@ -12168,7 +12195,7 @@ layout:
 
     /// A marker failure no allocation can clear is reported as itself rather than as the search
     /// running out of candidates: an unmapped character, a text in a fixed 10×4 marker even
-    /// through a nested row, a text its own cap fixes, a fill text whose cap no candidate's 8
+    /// through a nested row, a nested row the same marker cannot arrange, a text its own cap fixes, a fill text whose cap no candidate's 8
     /// units reach, a fill text an uncapped sibling fill leaves no room, hard lines taller than
     /// an authored height, and an authored text box after an edge-relative child whose failure
     /// at the zero remainder a shorter prefix clears.
@@ -12211,6 +12238,24 @@ layout:
                 json!({ "tags": ["K"] }),
                 "text_does_not_fit",
                 "items[0]",
+            ),
+            (
+                marker_row(
+                    "...",
+                    "[10, 4]",
+                    r#"
+        flow: { direction: row }
+        items:
+          - type: container
+            size: [6, 1]
+            items: []
+          - type: container
+            size: [6, 1]
+            items: []"#,
+                ),
+                json!({ "tags": ["K"] }),
+                "item_out_of_frame",
+                "items[1]",
             ),
             (
                 marker_row(
@@ -12431,6 +12476,78 @@ layout:
             src.matches("#text(\"WW\")").count(),
             2,
             "the final fit wraps the title: {src}"
+        );
+    }
+
+    /// A marker whose wrapping row measures two lines of 3-high claims at the longest prefix's 16
+    /// units, but whose `fill` boxes capped at 6 then need 12 of the row's 6, is retried at the
+    /// shorter prefix's 24, where both boxes share one 3-high line.
+    #[test]
+    fn a_trim_marker_retries_a_nested_arrangement_only_its_final_boxes_fail() {
+        let yaml = r#"
+name: Final Arrangement Marker
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 14 }
+params:
+  - name: tags
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 14]
+    flow: { direction: row, wrap: true, overflow: trim }
+    items:
+      - type: container
+        size: [60, 4]
+        items: []
+      - type: container
+        size: [20, 1]
+        items: []
+      - type: container
+        repeat: tags
+        trim_marker: "..."
+        size: [fill, content]
+        max_w: 24
+        items:
+          - type: container
+            when: { tags: "..." }
+            size: [fill, fill]
+            flow: { direction: row, wrap: true }
+            items:
+              - type: container
+                size: [10, fill]
+                max_h: 6
+                items:
+                  - type: container
+                    at: [0, 0]
+                    size: [10, 3]
+                    items: []
+              - type: container
+                size: [10, fill]
+                max_h: 6
+                items:
+                  - type: container
+                    at: [0, 0]
+                    size: [10, 3]
+                    items: []
+          - type: container
+            when: { tags: "" }
+            size: [content, 11]
+            items: []
+"#;
+        let src = flow_source(yaml, (60.0, 14.0), json!({ "tags": ["K", ""] })).unwrap();
+        assert!(
+            src.contains("#place(top + left, dx: 20mm, dy: 4mm)[#box(width: 24mm, height: 3mm"),
+            "the marker takes the shorter prefix's 24 units after the 20-wide box: {src}"
+        );
+        assert!(
+            !src.contains("dx: 44mm"),
+            "the first instance gives way: {src}"
+        );
+        assert!(
+            src.contains("#place(top + left, dx: 10mm, dy: 0mm)[#box(width: 10mm, height: 3mm"),
+            "the second box shares the first line: {src}"
         );
     }
 
