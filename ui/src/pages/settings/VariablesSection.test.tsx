@@ -121,4 +121,20 @@ describe("VariablesSection", () => {
     expect((lastCall("/api/variables/site")![1] as RequestInit).method).toBe("DELETE");
     await waitFor(() => expect(screen.queryByLabelText("site")).not.toBeInTheDocument());
   });
+
+  it("turns a removed suggested key back into a clean suggested row", async () => {
+    fetchMock = stubFetch({ qr_base_url: "https://old" });
+    vi.stubGlobal("fetch", fetchMock);
+    renderSection();
+    expect(await screen.findByLabelText("qr_base_url")).toHaveValue("https://old");
+
+    fireEvent.click(screen.getByRole("button", { name: "remove qr_base_url" }));
+    fireEvent.click(screen.getByRole("button", { name: "confirm remove qr_base_url" }));
+    await waitFor(() => expect(lastCall("/api/variables/qr_base_url")).toBeTruthy());
+    expect((lastCall("/api/variables/qr_base_url")![1] as RequestInit).method).toBe("DELETE");
+
+    await waitFor(() => expect(screen.getByLabelText("qr_base_url")).toHaveValue(""));
+    expect(screen.getByRole("button", { name: /save qr_base_url/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "confirm remove qr_base_url" })).not.toBeInTheDocument();
+  });
 });

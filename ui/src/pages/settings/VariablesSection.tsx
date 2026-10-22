@@ -89,7 +89,7 @@ export function VariablesSection() {
   const [keyError, setKeyError] = useState<string | null>(null);
 
   // Render rows only once variables have loaded: VariableRow seeds its draft from `value` on mount and is
-  // keyed by the stable variable key, so mounting a row before the real value arrives would strand it at "".
+  // keyed by its key and stored-ness, so mounting a row before the real value arrives would strand it at "".
   if (variables === undefined) {
     return (
       <section className="flex flex-col gap-4">
@@ -134,7 +134,12 @@ export function VariablesSection() {
       <h2 className="text-lg font-semibold">Variables</h2>
       <div className="flex flex-col gap-3">
         {keys.map((key) => (
-          <VariableRow key={key} variableKey={key} value={stored[key] ?? ""} suggested={!(key in stored)} />
+          <VariableRow
+            key={`${key}:${key in stored}`}
+            variableKey={key}
+            value={stored[key] ?? ""}
+            suggested={!(key in stored)}
+          />
         ))}
       </div>
 
