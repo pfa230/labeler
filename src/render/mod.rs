@@ -1144,8 +1144,41 @@ struct PlacedBox {
     pub frame: (f32, f32),
 }
 
-struct SingleItemRenderArgs<'a> {
-    pub item: &'a LayoutItem,
+/// One item ready to draw: the item, its final box, and what its kind resolved, checked, fitted
+/// or loaded against that box. `prepare_items` builds it; `emit_items` draws it.
+struct PreparedItem<'a> {
+    item: &'a LayoutItem,
+    pbox: PlacedBox,
+    content: PreparedContent<'a>,
+}
+
+enum PreparedContent<'a> {
+    Text {
+        font_weight: Option<u16>,
+        text_fit: helpers::TextFit,
+    },
+    /// `None` for an empty payload, which draws nothing.
+    Qr {
+        svg: Option<String>,
+    },
+    /// `None` when the source resolves to the empty string (layout spec, "The image item": such
+    /// an image draws nothing).
+    Image {
+        image: Option<(Vec<u8>, helpers::ImageFmt)>,
+    },
+    Line {
+        start: Point,
+        end: Point,
+    },
+    /// A flow container's children are its drawn prefix followed by its trim marker, if any.
+    Container {
+        children: Vec<PreparedItem<'a>>,
+        canvas: (f32, f32),
+    },
+}
+
+struct PrepareItemArgs<'a, 'b> {
+    pub item: &'b LayoutItem,
     pub measured_node: &'a Measured,
     pub pbox: PlacedBox,
     pub frame: (f32, f32),
@@ -1160,12 +1193,9 @@ struct ContainerRenderArgs<'a> {
     pub background: &'a Option<crate::models::Color>,
     pub rounded: &'a Option<f32>,
     pub padding: &'a crate::models::Padding,
-    pub flow: &'a Option<crate::models::Flow>,
-    pub items: &'a [LayoutItem],
-    pub children_measured: &'a [Measured],
+    pub children: Vec<PreparedItem<'a>>,
+    pub canvas: (f32, f32),
     pub pbox: PlacedBox,
-    pub geometry_values: &'a HashMap<String, f32>,
-    pub path: &'a str,
 }
 
 struct TextRenderArgs<'a> {
@@ -1178,7 +1208,7 @@ struct TextRenderArgs<'a> {
     pub text_fit: &'a helpers::TextFit,
 }
 
-struct FlowDrawArgs<'a> {
+struct FlowChildArgs<'a> {
     pub frame: (f32, f32),
     pub geometry_values: &'a HashMap<String, f32>,
     pub path_prefix: &'a str,
@@ -1917,7 +1947,23 @@ impl<'a> RenderContext<'a> {
         flow: Option<&crate::models::Flow>,
         path_prefix: &str,
     ) -> Result<String, AppError> {
-        let mut out = String::new();
+        let prepared =
+            self.prepare_items(items, measured, frame, geometry_values, flow, path_prefix)?;
+        self.emit_items(prepared)
+    }
+
+    /// Resolve every active item's final box and run each check and lookup that can refuse it,
+    /// depth-first in document order, without drawing anything.
+    fn prepare_items<'b>(
+        &self,
+        items: &'b [LayoutItem],
+        measured: &[Measured],
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        flow: Option<&crate::models::Flow>,
+        path_prefix: &str,
+    ) -> Result<Vec<PreparedItem<'b>>, AppError> {
+        let mut prepared = Vec::new();
         let expanded = self.expand_items(items)?;
 
         match flow {
@@ -1930,7 +1976,7 @@ impl<'a> RenderContext<'a> {
                     geometry_values,
                     path_prefix,
                 )?;
-                let draw_args = FlowDrawArgs {
+                let child_args = FlowChildArgs {
                     frame,
                     geometry_values,
                     path_prefix,
@@ -1938,31 +1984,28 @@ impl<'a> RenderContext<'a> {
                 match &arrangement.marker {
                     Some(marker) => {
                         for i in 0..marker.prefix_len {
-                            self.render_flow_child(
-                                &mut out,
+                            prepared.push(self.prepare_flow_child(
                                 arrangement.result.rects[i],
                                 &expanded[i],
                                 &measured[i],
-                                &draw_args,
-                            )?;
+                                &child_args,
+                            )?);
                         }
-                        self.render_flow_child(
-                            &mut out,
+                        prepared.push(self.prepare_flow_child(
                             arrangement.result.rects[marker.prefix_len],
                             &marker.expanded,
                             &marker.measured,
-                            &draw_args,
-                        )?;
+                            &child_args,
+                        )?);
                     }
                     None => {
                         for (i, placed) in arrangement.result.rects.iter().enumerate() {
-                            self.render_flow_child(
-                                &mut out,
+                            prepared.push(self.prepare_flow_child(
                                 *placed,
                                 &expanded[i],
                                 &measured[i],
-                                &draw_args,
-                            )?;
+                                &child_args,
+                            )?);
                         }
                     }
                 }
@@ -1993,32 +2036,28 @@ impl<'a> RenderContext<'a> {
                             frame,
                         },
                     };
-                    item_ctx.render_single_item(
-                        &mut out,
-                        SingleItemRenderArgs {
-                            item: exp.item,
-                            measured_node,
-                            pbox,
-                            frame,
-                            geometry_values,
-                            path: &path,
-                        },
-                    )?;
+                    prepared.push(item_ctx.prepare_item(PrepareItemArgs {
+                        item: exp.item,
+                        measured_node,
+                        pbox,
+                        frame,
+                        geometry_values,
+                        path: &path,
+                    })?);
                 }
             }
         }
-        Ok(out)
+        Ok(prepared)
     }
 
-    /// Draw one arranged flow child at its placed box.
-    fn render_flow_child(
+    /// Prepare one arranged flow child at its placed box.
+    fn prepare_flow_child<'b>(
         &self,
-        out: &mut String,
         placed: crate::resolver::Placed,
-        exp: &ExpandedItem<'_>,
+        exp: &ExpandedItem<'b>,
         measured_node: &Measured,
-        args: &FlowDrawArgs<'_>,
-    ) -> Result<(), AppError> {
+        args: &FlowChildArgs<'_>,
+    ) -> Result<PreparedItem<'b>, AppError> {
         let item_ctx = match &exp.data {
             Some(d) => self.with_data(d),
             None => self.with_data(self.data),
@@ -2034,104 +2073,200 @@ impl<'a> RenderContext<'a> {
             h: placed.h,
             frame: args.frame,
         };
-        item_ctx.render_single_item(
-            out,
-            SingleItemRenderArgs {
-                item: exp.item,
-                measured_node,
-                pbox,
-                frame: args.frame,
-                geometry_values: args.geometry_values,
-                path: &path,
-            },
-        )
+        item_ctx.prepare_item(PrepareItemArgs {
+            item: exp.item,
+            measured_node,
+            pbox,
+            frame: args.frame,
+            geometry_values: args.geometry_values,
+            path: &path,
+        })
     }
 
-    fn render_single_item(
+    fn prepare_item<'b>(
         &self,
-        out: &mut String,
-        args: SingleItemRenderArgs<'_>,
-    ) -> Result<(), AppError> {
-        match args.item {
-            LayoutItem::Line { at, to, stroke, .. } => {
-                self.render_line_item(out, at, to, stroke, args.frame, args.path)?;
+        args: PrepareItemArgs<'_, 'b>,
+    ) -> Result<PreparedItem<'b>, AppError> {
+        let content = match args.item {
+            LayoutItem::Line { at, to, .. } => {
+                let start = self.resolve_point(at, args.frame, args.path)?;
+                let end = self.resolve_point(to, args.frame, args.path)?;
+                self.check_line(&start, &end, args.frame, args.path)?;
+                PreparedContent::Line { start, end }
             }
-            LayoutItem::Text {
-                placement,
-                font,
-                font_weight,
-                color,
-                alignment,
-                ..
-            } => {
-                let resolved_weight = self.resolve_font_weight(font_weight.as_ref())?;
+            LayoutItem::Text { font_weight, .. } => {
+                let font_weight = self.resolve_font_weight(font_weight.as_ref())?;
                 self.check_stock(args.pbox, args.path)?;
-                self.render_text_item(
-                    out,
-                    TextRenderArgs {
-                        font,
-                        placement,
-                        font_weight: resolved_weight,
-                        color: color.as_ref(),
-                        alignment,
-                        pbox: args.pbox,
-                        text_fit: args.measured_node.text.as_ref().unwrap(),
-                    },
-                )?;
+                PreparedContent::Text {
+                    font_weight,
+                    text_fit: args.measured_node.text.clone().unwrap(),
+                }
             }
             LayoutItem::Qr {
                 value,
-                placement,
                 error_correction,
                 quiet_zone,
                 ..
             } => {
                 let payload = self.resolve_item_text(value)?;
                 self.check_stock(args.pbox, args.path)?;
-                if !payload.is_empty() {
-                    let svg_xml = build_qr_svg(payload.as_bytes(), *error_correction, *quiet_zone)?;
-                    self.render_qr_item(out, svg_xml, placement, args.pbox)?;
-                }
+                let svg = if payload.is_empty() {
+                    None
+                } else {
+                    Some(build_qr_svg(
+                        payload.as_bytes(),
+                        *error_correction,
+                        *quiet_zone,
+                    )?)
+                };
+                PreparedContent::Qr { svg }
             }
-            LayoutItem::Image {
-                src,
-                placement,
-                fit,
-                ..
-            } => {
-                self.render_image_item(out, src, placement, fit, args.pbox, args.path)?;
+            LayoutItem::Image { src, .. } => {
+                let resolved_src = self.resolve_item_text(src)?;
+                let image = if resolved_src.is_empty() {
+                    None
+                } else if resolved_src.starts_with("data:") {
+                    Some(parse_image_data_uri(&resolved_src, args.path)?)
+                } else {
+                    Some(resolve_image_asset(
+                        &assets_root(),
+                        &resolved_src,
+                        args.path,
+                    )?)
+                };
+                PreparedContent::Image { image }
             }
             LayoutItem::Container {
                 placement,
-                shape,
-                stroke,
-                background,
-                rounded,
                 padding,
                 flow: child_flow,
                 items: child_items,
                 ..
             } => {
-                self.render_container_item(
-                    out,
-                    ContainerRenderArgs {
-                        placement,
-                        shape: *shape,
-                        stroke,
-                        background,
-                        rounded,
-                        padding,
-                        flow: child_flow,
-                        items: child_items,
-                        children_measured: &args.measured_node.children,
-                        pbox: args.pbox,
-                        geometry_values: args.geometry_values,
-                        path: args.path,
-                    },
+                let rotation = crate::resolver::rotation_of(placement);
+                let (canvas, inner) = crate::resolver::container_frames(
+                    (args.pbox.w, args.pbox.h),
+                    rotation,
+                    padding,
+                );
+
+                let child_ctx = match &self.stock {
+                    Some(slot) => {
+                        let placed = crate::resolver::Placed {
+                            x: args.pbox.x,
+                            y: args.pbox.y,
+                            w: args.pbox.w,
+                            h: args.pbox.h,
+                        };
+                        let local = crate::resolver::container_child_map(placed, padding, rotation);
+                        self.with_slot(
+                            crate::resolver::SlotMap::compose(&slot.map, &local),
+                            slot.outline,
+                        )
+                    }
+                    None => self.with_data(self.data),
+                };
+
+                let children = child_ctx.prepare_items(
+                    child_items,
+                    &args.measured_node.children,
+                    inner,
+                    args.geometry_values,
+                    child_flow.as_ref(),
+                    &format!("{}.items", args.path),
                 )?;
+                PreparedContent::Container { children, canvas }
             }
+        };
+        Ok(PreparedItem {
+            item: args.item,
+            pbox: args.pbox,
+            content,
+        })
+    }
+
+    /// Write the Typst markup for prepared items, in order.
+    fn emit_items(&self, prepared: Vec<PreparedItem<'_>>) -> Result<String, AppError> {
+        let mut out = String::new();
+        for node in prepared {
+            self.emit_item(&mut out, node)?;
         }
-        Ok(())
+        Ok(out)
+    }
+
+    fn emit_item(&self, out: &mut String, node: PreparedItem<'_>) -> Result<(), AppError> {
+        let PreparedItem {
+            item,
+            pbox,
+            content,
+        } = node;
+        match (item, content) {
+            (LayoutItem::Line { stroke, .. }, PreparedContent::Line { start, end }) => {
+                self.render_line_item(out, &start, &end, stroke, pbox.frame)
+            }
+            (
+                LayoutItem::Text {
+                    placement,
+                    font,
+                    color,
+                    alignment,
+                    ..
+                },
+                PreparedContent::Text {
+                    font_weight,
+                    text_fit,
+                },
+            ) => self.render_text_item(
+                out,
+                TextRenderArgs {
+                    font,
+                    placement,
+                    font_weight,
+                    color: color.as_ref(),
+                    alignment,
+                    pbox,
+                    text_fit: &text_fit,
+                },
+            ),
+            (LayoutItem::Qr { placement, .. }, PreparedContent::Qr { svg }) => match svg {
+                Some(svg_xml) => self.render_qr_item(out, svg_xml, placement, pbox),
+                None => Ok(()),
+            },
+            (LayoutItem::Image { placement, fit, .. }, PreparedContent::Image { image }) => {
+                match image {
+                    Some((bytes, fmt)) => {
+                        self.render_image_item(out, bytes, fmt, placement, fit, pbox)
+                    }
+                    None => Ok(()),
+                }
+            }
+            (
+                LayoutItem::Container {
+                    placement,
+                    shape,
+                    stroke,
+                    background,
+                    rounded,
+                    padding,
+                    ..
+                },
+                PreparedContent::Container { children, canvas },
+            ) => self.render_container_item(
+                out,
+                ContainerRenderArgs {
+                    placement,
+                    shape: *shape,
+                    stroke,
+                    background,
+                    rounded,
+                    padding,
+                    children,
+                    canvas,
+                    pbox,
+                },
+            ),
+            _ => unreachable!("prepare_item builds the content of its item's kind"),
+        }
     }
 
     /// Refuse a resolved text or QR box whose four mapped corners leave the sheet stock outline.
@@ -2283,26 +2418,15 @@ impl<'a> RenderContext<'a> {
         Ok(())
     }
 
-    /// The image an item names, or `None` when its source resolves to the empty string (layout spec,
-    /// "The image item": such an image draws nothing).
     fn render_image_item(
         &self,
         out: &mut String,
-        src: &str,
+        bytes: Vec<u8>,
+        fmt: helpers::ImageFmt,
         placement: &Placement,
         fit: &Fit,
         pbox: PlacedBox,
-        path: &str,
     ) -> Result<(), AppError> {
-        let resolved_src = self.resolve_item_text(src)?;
-        if resolved_src.is_empty() {
-            return Ok(());
-        }
-        let (bytes, fmt) = if resolved_src.starts_with("data:") {
-            parse_image_data_uri(&resolved_src, path)?
-        } else {
-            resolve_image_asset(&assets_root(), &resolved_src, path)?
-        };
         let top = pbox.y + pbox.h;
         let vpath = self.images.borrow_mut().add(fmt.ext(), bytes);
         let dx = format_length(pbox.x, self.unit)?;
@@ -2328,17 +2452,13 @@ impl<'a> RenderContext<'a> {
     fn render_line_item(
         &self,
         out: &mut String,
-        at: &Position,
-        to: &Position,
+        start: &Point,
+        end: &Point,
         stroke: &Stroke,
         frame: (f32, f32),
-        path: &str,
     ) -> Result<(), AppError> {
-        let start_point = self.resolve_point(at, frame, path)?;
-        let end_point = self.resolve_point(to, frame, path)?;
-        self.check_line(&start_point, &end_point, frame, path)?;
-        let (start_x, start_y) = to_page_coords(&start_point, frame.1);
-        let (end_x, end_y) = to_page_coords(&end_point, frame.1);
+        let (start_x, start_y) = to_page_coords(start, frame.1);
+        let (end_x, end_y) = to_page_coords(end, frame.1);
         let dx = end_x - start_x;
         let dy = end_y - start_y;
         let start_x = format_length(start_x, self.unit)?;
@@ -2374,34 +2494,8 @@ impl<'a> RenderContext<'a> {
         let box_width = format_length(args.pbox.w, self.unit)?;
         let box_height = format_length(args.pbox.h, self.unit)?;
 
-        let ((canvas_w, canvas_h), inner) =
-            crate::resolver::container_frames((args.pbox.w, args.pbox.h), rotation, args.padding);
-
-        let child_ctx = match &self.stock {
-            Some(slot) => {
-                let placed = crate::resolver::Placed {
-                    x: args.pbox.x,
-                    y: args.pbox.y,
-                    w: args.pbox.w,
-                    h: args.pbox.h,
-                };
-                let local = crate::resolver::container_child_map(placed, args.padding, rotation);
-                self.with_slot(
-                    crate::resolver::SlotMap::compose(&slot.map, &local),
-                    slot.outline,
-                )
-            }
-            None => self.with_data(self.data),
-        };
-
-        let child_source = child_ctx.render_items(
-            args.items,
-            args.children_measured,
-            inner,
-            args.geometry_values,
-            args.flow.as_ref(),
-            &format!("{}.items", args.path),
-        )?;
+        let (canvas_w, canvas_h) = args.canvas;
+        let child_source = self.emit_items(args.children)?;
 
         let inner = if args.padding == &crate::models::Padding::ZERO {
             child_source
