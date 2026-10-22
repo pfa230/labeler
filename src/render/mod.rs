@@ -1158,6 +1158,8 @@ struct IntrinsicInput<'a> {
     child_frame: (f32, f32),
     geometry_values: &'a HashMap<String, f32>,
     path: &'a str,
+    /// Whether the item measures at its limit, which classifies a check its own measurement fails.
+    passes_at_limit: bool,
 }
 
 /// How render words a resolver [`crate::resolver::Violation`]. Render reports reason slugs, so the
@@ -1811,29 +1813,34 @@ impl<'a> RenderContext<'a> {
                     ),
                 };
 
-                let intrinsic_in = |measure_box, children: &[[Option<f32>; 2]], child_frame| {
-                    self.intrinsic(IntrinsicInput {
-                        item,
-                        measure_box,
-                        demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
-                        children,
-                        child_frame,
-                        geometry_values,
-                        path,
-                    })
-                };
+                let intrinsic_in =
+                    |measure_box, children: &[[Option<f32>; 2]], child_frame, passes_at_limit| {
+                        self.intrinsic(IntrinsicInput {
+                            item,
+                            measure_box,
+                            demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
+                            children,
+                            child_frame,
+                            geometry_values,
+                            path,
+                            passes_at_limit,
+                        })
+                    };
                 let limit_intrinsic =
                     limit_box
                         .zip(child_frames.limit)
                         .and_then(|(limit_box, child_limit)| {
                             let children = limit_intrinsics(&children)?;
-                            intrinsic_in(limit_box, &children, child_limit)
+                            intrinsic_in(limit_box, &children, child_limit, false)
                                 .ok()
                                 .map(|(intrinsic, _)| intrinsic)
                         });
-                let (intrinsic, text) =
-                    intrinsic_in(measure_box, &intrinsics(&children), child_frames.actual)
-                        .map_err(|err| classify(err, limit_intrinsic.is_some()))?;
+                let (intrinsic, text) = intrinsic_in(
+                    measure_box,
+                    &intrinsics(&children),
+                    child_frames.actual,
+                    limit_intrinsic.is_some(),
+                )?;
 
                 Ok(Measured {
                     intrinsic,
@@ -2022,24 +2029,32 @@ impl<'a> RenderContext<'a> {
     /// Arrange a flow container's children. When `overflow: trim` discards the first instance of a
     /// repeat that declares a `trim_marker`, the marker is measured in that repeat's scope at each
     /// candidate prefix's remainder, and the longest prefix of the repeat's drawn instances that
-    /// leaves room for it is kept. `intrinsics` is what the children measured.
+    /// leaves room for it is kept. `intrinsics` is what the children measured. A check the
+    /// arrangement fails is classified by `passes_at_limit`; a marker candidate's error keeps its
+    /// own classification.
     fn arrange_flow_children<'b>(
         &self,
         expanded: &[ExpandedItem<'b>],
         intrinsics: &[[Option<f32>; 2]],
         flow: &crate::models::Flow,
-        frame: (f32, f32),
-        geometry_values: &HashMap<String, f32>,
-        children_prefix: &str,
-    ) -> Result<FlowArrangement<'b>, AppError> {
-        let inputs = self.flow_child_inputs(
-            expanded,
-            intrinsics,
-            flow,
+        args: &FlowChildArgs<'_>,
+        passes_at_limit: &dyn Fn() -> bool,
+    ) -> Result<FlowArrangement<'b>, SizingError> {
+        let FlowChildArgs {
             frame,
             geometry_values,
-            children_prefix,
-        )?;
+            path_prefix: children_prefix,
+        } = *args;
+        let inputs = self
+            .flow_child_inputs(
+                expanded,
+                intrinsics,
+                flow,
+                frame,
+                geometry_values,
+                children_prefix,
+            )
+            .map_err(|err| classify(err, passes_at_limit()))?;
 
         let base =
             crate::resolver::arrange_flow(frame, flow, &inputs).map_err(|(act_idx, v)| {
@@ -2048,7 +2063,7 @@ impl<'a> RenderContext<'a> {
                     Some(e_idx) => format!("{children_prefix}[{}]#{e_idx}", exp.orig_idx),
                     None => format!("{children_prefix}[{}]", exp.orig_idx),
                 };
-                violation_error(v, &child_path)
+                classify(violation_error(v, &child_path), passes_at_limit())
             })?;
 
         let cut = base.rects.len();
@@ -2097,9 +2112,12 @@ impl<'a> RenderContext<'a> {
                 return Ok(arrangement);
             }
         }
-        Err(AppError::unsupported_layout_item(
-            Reason::ItemOutOfFrame,
-            format!("at {container_path}: item resolves outside frame bounds"),
+        Err(classify(
+            AppError::unsupported_layout_item(
+                Reason::ItemOutOfFrame,
+                format!("at {container_path}: item resolves outside frame bounds"),
+            ),
+            passes_at_limit(),
         ))
     }
 
@@ -2112,7 +2130,7 @@ impl<'a> RenderContext<'a> {
         &self,
         args: &MarkerCandidateArgs<'_, 'b>,
         prefix_len: usize,
-    ) -> Result<Option<FlowArrangement<'b>>, AppError> {
+    ) -> Result<Option<FlowArrangement<'b>>, SizingError> {
         let MarkerCandidateArgs {
             item,
             orig_idx,
@@ -2191,7 +2209,7 @@ impl<'a> RenderContext<'a> {
         let candidate = match candidate {
             Ok(candidate) => candidate,
             Err(SizingError::Allocation(_)) => return Ok(None),
-            Err(SizingError::Ordinary(err)) => return Err(err),
+            Err(err) => return Err(err),
         };
         let mut resolved =
             crate::resolver::arrange_flow(frame, flow, &candidate).map_err(|_| {
@@ -2264,7 +2282,7 @@ impl<'a> RenderContext<'a> {
     fn intrinsic(
         &self,
         input: IntrinsicInput<'_>,
-    ) -> Result<([Option<f32>; 2], Option<helpers::TextFit>), AppError> {
+    ) -> Result<([Option<f32>; 2], Option<helpers::TextFit>), SizingError> {
         let IntrinsicInput {
             item,
             measure_box,
@@ -2273,6 +2291,7 @@ impl<'a> RenderContext<'a> {
             child_frame,
             geometry_values,
             path,
+            passes_at_limit,
         } = input;
         let per_axis = |extents: (f32, f32)| {
             [
@@ -2285,7 +2304,9 @@ impl<'a> RenderContext<'a> {
             LayoutItem::Text { .. } => {
                 // The layout pass is unconditional: the emitted lines are the render payload
                 // whether or not either axis asked for an intrinsic.
-                let text_fit = self.layout_text_item(item, measure_box, path)?;
+                let text_fit = self
+                    .layout_text_item(item, measure_box, path)
+                    .map_err(|err| classify(err, passes_at_limit))?;
 
                 let extents = (text_fit.width_units, text_fit.height_units);
                 Ok((per_axis(extents), Some(text_fit)))
@@ -2335,9 +2356,12 @@ impl<'a> RenderContext<'a> {
                             &expanded_children,
                             children,
                             flow,
-                            child_frame,
-                            geometry_values,
-                            &format!("{path}.items"),
+                            &FlowChildArgs {
+                                frame: child_frame,
+                                geometry_values,
+                                path_prefix: &format!("{path}.items"),
+                            },
+                            &|| passes_at_limit,
                         )?
                         .result
                         .assembled
@@ -2428,9 +2452,8 @@ impl<'a> RenderContext<'a> {
                     &expanded,
                     &intrinsics(&fitted),
                     flow,
-                    frame,
-                    geometry_values,
-                    path_prefix,
+                    &child_args,
+                    &|| false,
                 )?;
                 match &arrangement.marker {
                     Some(marker) => {
@@ -2549,29 +2572,20 @@ impl<'a> RenderContext<'a> {
             Ok::<_, SizingError>(input)
         })?;
         if let Some(limit_inner) = limit_inner {
-            self.arrange_flow_children(
-                expanded,
-                &intrinsics(&fitted),
-                flow,
-                frame,
-                geometry_values,
-                path_prefix,
-            )
-            .map_err(|err| {
-                classify(
-                    err,
-                    limit_intrinsics(measured).is_some_and(|limit| {
-                        self.arrange_flow_children(
-                            expanded,
-                            &limit,
-                            flow,
-                            limit_inner,
-                            geometry_values,
-                            path_prefix,
-                        )
-                        .is_ok()
-                    }),
-                )
+            self.arrange_flow_children(expanded, &intrinsics(&fitted), flow, args, &|| {
+                limit_intrinsics(measured).is_some_and(|limit| {
+                    self.arrange_flow_children(
+                        expanded,
+                        &limit,
+                        flow,
+                        &FlowChildArgs {
+                            frame: limit_inner,
+                            ..*args
+                        },
+                        &|| false,
+                    )
+                    .is_ok()
+                })
             })?;
         }
         Ok(fitted)
@@ -12373,6 +12387,54 @@ layout:
                 "{yaml}: the marker's own text is named: {err:?}"
             );
         }
+    }
+
+    /// A marker whose nested trimming row gets 8 units draws two of its three 4-wide instances
+    /// and then its own marker, which has an unmapped character. At the marker's 12-unit cap all
+    /// three fit and no inner marker is drawn, but that wider success does not make the inner
+    /// marker's error an allocation failure: it is reported as itself.
+    #[test]
+    fn a_trim_marker_keeps_a_nested_markers_error_a_wider_probe_avoids() {
+        let yaml = marker_row(
+            "...",
+            "[fill, content]\n        max_w: 12",
+            r#"
+        items:
+          - type: container
+            when: { tags: "..." }
+            size: [fill, 1]
+            flow: { direction: row, overflow: trim }
+            items:
+              - type: container
+                repeat: codes
+                trim_marker: "中"
+                size: [4, 1]
+                items:
+                  - type: text
+                    value: "{codes}"
+                    size: [fill, fill]
+                    font_size: 2
+          - type: container
+            when: { tags: "" }
+            size: [content, 5]
+            items: []"#,
+        )
+        .replace(
+            "    type: list\nlayout:",
+            "    type: list\n  - name: codes\n    type: list\nlayout:",
+        );
+        let err = flow_source(
+            &yaml,
+            (30.0, 7.0),
+            json!({ "tags": [""], "codes": ["A", "B", "C"] }),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("text_character_unmapped"), "{err:?}");
+        assert!(
+            err.message_text()
+                .contains("layout[0].items[2].items[0].items[0].items[0]"),
+            "the inner marker's text is named: {err:?}"
+        );
     }
 
     /// A marker text whose authored height fails because the zero remainder wraps it onto two
