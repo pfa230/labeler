@@ -27,6 +27,8 @@ None.
 
 ## Impact
 
-Touches `src/resolver.rs`, measurement and emission in `src/render/mod.rs`, existing flow/text tests, and flow guidance in `docs/AUTHORING.md`. No new template keys or dependencies.
+#497 and #498 are merged in main at `37ba4481`, providing the shared `FlowLine` rules and `evaluate_marker_candidate` boundary. This change supplies the new allocation and fitting behavior through those existing paths.
+
+Touches `src/resolver.rs`, measurement and preparation in `src/render/mod.rs`, existing flow/text tests, and flow guidance in `docs/AUTHORING.md`. No new template keys or dependencies.
 
 Non-goals: flex weights, sibling reservation, equal sharing, changing `content` to consume a line remainder, an iterative sizing solver, and changing text or flow overflow policies.
