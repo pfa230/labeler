@@ -68,7 +68,7 @@ Every extent on each axis SHALL take its behavior from its **source**:
 
 A boxed item pairing an edge-relative `at` with a non-negative `to` on the same axis SHALL be refused at load.
 
-The **available extent** on an axis SHALL be `frame − resolve(at) − inset`, where `inset` is the magnitude of an edge-relative `to` or zero. An item with no anchor (a packed child) SHALL have the whole frame extent available.
+The **available extent** on an axis SHALL be `frame − resolve(at) − inset`, where `inset` is the magnitude of an edge-relative `to` or zero. An item with no anchor SHALL use the availability defined by "Packed children".
 
 1. An authored extent SHALL be checked: one that does not fit its frame is refused (at load when written in the template; at render with `item_out_of_frame` when it comes from a request value). A content or frame extent SHALL be `min(source value, max_w/max_h, available)` and so never overflows.
 2. Only content and frame extents SHALL demand an intrinsic size.
@@ -366,12 +366,22 @@ A missing or unknown `direction`, a negative or non-finite `gap`/`line_gap`, or 
 
 ### Requirement: Packed children
 
-A **packed child** is a direct child of a flow container. It SHALL NOT carry `at` or `to`, and SHALL NOT be a `line`; each is refused at load naming the child's path. It SHALL be sized against the padded inner box as an anchorless item, exactly as the same item at `[0, 0]` in an absolutely arranged container. An uncapped `fill` child therefore takes the whole inner extent on that axis: alone it fills the container, and beside a sibling it overflows.
+A **packed child** is a direct child of a flow container. It SHALL NOT carry `at` or `to`, and SHALL NOT be a `line`; each is refused at load naming the child's path. For `fill` on the primary axis, its available extent SHALL be the current line's remaining extent after earlier occupying boxes and their gaps, less the pending gap before this child, clamped at zero. Other extents SHALL use the whole padded inner box. Initial measurement SHALL use this allocation, in template order.
 
 #### Scenario: A capped fill child fits beside a sibling
 
 - **WHEN** a `row` flow container with inner width 30 and `gap: 2` holds a 10-wide child then a `size: [fill, 4]` child with `max_w: 8`
 - **THEN** the second box is 8 wide at x = 12 and both boxes fit
+
+#### Scenario: A fill title takes the remainder of a row
+
+- **WHEN** a `row` flow container with inner width 30 and `gap: 2` holds a 10-wide child then a `size: [fill, 4]` child
+- **THEN** the second box is 18 wide at x = 12 and both boxes fit
+
+#### Scenario: A column consumes remaining height
+
+- **WHEN** a `column` flow container with inner height 30 and `gap: 2` holds a 10-tall child then a `size: [4, fill]` child
+- **THEN** the second box is 18 tall and starts 2 below the first child's bottom edge
 
 ### Requirement: Packing order, lines and occupancy
 
@@ -396,7 +406,7 @@ A gated-off child SHALL occupy, draw and contribute nothing. An active child wit
 
 ### Requirement: The assembled extent of a flow container
 
-A flow container's intrinsic size SHALL be its padding plus its **assembled extent**: on the primary axis the largest line total (sum of occupying children's requirements plus gaps between them); on the secondary axis the sum of line extents (each the largest requirement on that line) plus `line_gap`s between lines. With no occupying or drawn child it SHALL be zero on both axes, which renders an empty box. Flow containers SHALL nest and SHALL pack identically on every format.
+A flow container's intrinsic size SHALL be its padding plus its **assembled extent**: on the primary axis the largest line total (sum of occupying children's requirements plus gaps between them); on the secondary axis the sum of line extents (each the largest requirement on that line) plus `line_gap`s between lines. With no occupying or drawn child it SHALL be zero on both axes, which renders an empty box. Flow containers SHALL nest and SHALL pack identically on every format. Intrinsic assembly SHALL be determined against the initial sizing frame; final smaller-box text fitting SHALL NOT recompute that assembly or resize ancestors.
 
 #### Scenario: A content-sized flow container hugs
 
