@@ -1011,7 +1011,32 @@ fn select_layout_items(template: &TemplateContent) -> Result<&[LayoutItem], AppE
 pub struct Measured {
     pub intrinsic: [Option<f32>; 2],
     pub text: Option<helpers::TextFit>,
+    /// The box `text` was laid out against.
+    pub laid_out_box: Option<(f32, f32)>,
     pub children: Vec<Measured>,
+}
+
+/// The frame a packed `item` sizes against when its line has `remainder` left.
+fn packed_frame_of(
+    item: &LayoutItem,
+    inner: (f32, f32),
+    flow: &crate::models::Flow,
+    remainder: f32,
+    geometry_values: &HashMap<String, f32>,
+) -> (f32, f32) {
+    item.placement().map_or(inner, |placement| {
+        crate::resolver::packed_frame(placement, inner, flow, remainder, geometry_values)
+    })
+}
+
+/// Whether a packed `item`'s primary-axis box is its line's remainder.
+fn takes_remainder_of(
+    item: &LayoutItem,
+    flow: &crate::models::Flow,
+    geometry_values: &HashMap<String, f32>,
+) -> bool {
+    item.placement()
+        .is_some_and(|placement| crate::resolver::takes_remainder(placement, flow, geometry_values))
 }
 
 /// What the intrinsic dispatch needs to answer for one item: the box its content is measured
@@ -1236,6 +1261,16 @@ pub(crate) struct ExpandedItem<'a> {
     pub data: Option<HashMap<String, JsonValue>>,
 }
 
+impl ExpandedItem<'_> {
+    /// This instance's layout path under `prefix`.
+    fn path(&self, prefix: &str) -> String {
+        match self.elem_idx {
+            Some(e_idx) => format!("{prefix}[{}]#{e_idx}", self.orig_idx),
+            None => format!("{prefix}[{}]", self.orig_idx),
+        }
+    }
+}
+
 /// A flow arrangement plus, when a `trim_marker` was selected, the synthetic instance that ends it.
 /// `prefix_len` counts the expanded children drawn before the marker.
 struct FlowArrangement<'b> {
@@ -1278,6 +1313,11 @@ impl<'a> RenderContext<'a> {
             instants: self.instants,
             stock: self.stock,
         }
+    }
+
+    /// A context in `exp`'s data scope: its repeat element's, or this one's.
+    fn scoped<'b>(&'b self, exp: &'b ExpandedItem<'_>) -> RenderContext<'b> {
+        self.with_data(exp.data.as_ref().unwrap_or(self.data))
     }
 
     /// A context like this one but whose frame maps into slot coordinates through `map`.
@@ -1526,6 +1566,7 @@ impl<'a> RenderContext<'a> {
             None => Ok(Measured {
                 intrinsic: [None, None],
                 text: None,
+                laid_out_box: None,
                 children: vec![],
             }),
             Some(placement) => {
@@ -1562,6 +1603,7 @@ impl<'a> RenderContext<'a> {
                     LayoutItem::Container {
                         placement,
                         padding,
+                        flow,
                         items: child_items,
                         ..
                     } => {
@@ -1572,13 +1614,27 @@ impl<'a> RenderContext<'a> {
                             axes_resolved,
                             geometry_values,
                         );
-                        let (children, _) = self.measure_items(
-                            child_items,
-                            geometry.inner,
-                            geometry.child_axes_resolved,
-                            geometry_values,
-                            &format!("{path}.items"),
-                        )?;
+                        let children_prefix = format!("{path}.items");
+                        let children = match flow {
+                            Some(flow) => self.measure_flow_items(
+                                child_items,
+                                flow,
+                                geometry.inner,
+                                geometry.child_axes_resolved,
+                                geometry_values,
+                                &children_prefix,
+                            )?,
+                            None => {
+                                self.measure_items(
+                                    child_items,
+                                    geometry.inner,
+                                    geometry.child_axes_resolved,
+                                    geometry_values,
+                                    &children_prefix,
+                                )?
+                                .0
+                            }
+                        };
                         (children, geometry.inner)
                     }
                     _ => (vec![], measure_box),
@@ -1596,11 +1652,43 @@ impl<'a> RenderContext<'a> {
 
                 Ok(Measured {
                     intrinsic,
+                    laid_out_box: text.as_ref().map(|_| measure_box),
                     text,
                     children,
                 })
             }
         }
+    }
+
+    /// Measure a flow container's children in template order, each against the frame its line's
+    /// remainder gives it in `inner`, so a primary-axis `fill` lays out against the room earlier
+    /// children leave.
+    fn measure_flow_items(
+        &self,
+        items: &[LayoutItem],
+        flow: &crate::models::Flow,
+        inner: (f32, f32),
+        axes_resolved: [bool; 2],
+        geometry_values: &HashMap<String, f32>,
+        path_prefix: &str,
+    ) -> Result<Vec<Measured>, AppError> {
+        let expanded = self.expand_items(items)?;
+        let mut measured = Vec::with_capacity(expanded.len());
+        crate::resolver::resolve_flow_children(flow, inner, expanded.len(), |idx, remainder| {
+            let exp = &expanded[idx];
+            let frame = packed_frame_of(exp.item, inner, flow, remainder, geometry_values);
+            let node = self.scoped(exp).measure_item_instance(
+                exp.item,
+                frame,
+                axes_resolved,
+                geometry_values,
+                &exp.path(path_prefix),
+            )?;
+            let input = self.flow_child_input(exp, &node, frame, geometry_values, path_prefix)?;
+            measured.push(node);
+            Ok::<_, AppError>(input)
+        })?;
+        Ok(measured)
     }
 
     /// What an item requires of its frame on `axis`. A `line` claims its endpoints; everything else
@@ -1671,9 +1759,33 @@ impl<'a> RenderContext<'a> {
         })
     }
 
+    /// Resolve a flow container's children in template order against `frame`, each primary-axis
+    /// `fill` at the remainder its line has left, from what they measured.
+    fn flow_child_inputs(
+        &self,
+        expanded: &[ExpandedItem<'_>],
+        measured: &[Measured],
+        flow: &crate::models::Flow,
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        children_prefix: &str,
+    ) -> Result<Vec<crate::resolver::FlowChildInput>, AppError> {
+        crate::resolver::resolve_flow_children(flow, frame, expanded.len(), |idx, remainder| {
+            let exp = &expanded[idx];
+            self.flow_child_input(
+                exp,
+                &measured[idx],
+                packed_frame_of(exp.item, frame, flow, remainder, geometry_values),
+                geometry_values,
+                children_prefix,
+            )
+        })
+    }
+
     /// Arrange a flow container's children. When `overflow: trim` discards the first instance of a
-    /// repeat that declares a `trim_marker`, the marker is measured in that repeat's scope and the
-    /// longest prefix of the repeat's drawn instances that leaves room for it is kept.
+    /// repeat that declares a `trim_marker`, the marker is measured in that repeat's scope at each
+    /// candidate prefix's remainder, and the longest prefix of the repeat's drawn instances that
+    /// leaves room for it is kept.
     fn arrange_flow_children<'b>(
         &self,
         expanded: &[ExpandedItem<'b>],
@@ -1683,16 +1795,14 @@ impl<'a> RenderContext<'a> {
         geometry_values: &HashMap<String, f32>,
         children_prefix: &str,
     ) -> Result<FlowArrangement<'b>, AppError> {
-        let mut inputs = Vec::with_capacity(expanded.len());
-        for (exp, node) in expanded.iter().zip(measured) {
-            inputs.push(self.flow_child_input(
-                exp,
-                node,
-                frame,
-                geometry_values,
-                children_prefix,
-            )?);
-        }
+        let inputs = self.flow_child_inputs(
+            expanded,
+            measured,
+            flow,
+            frame,
+            geometry_values,
+            children_prefix,
+        )?;
 
         let base =
             crate::resolver::arrange_flow(frame, flow, &inputs).map_err(|(act_idx, v)| {
@@ -1757,7 +1867,10 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Evaluate the candidate that draws the first `prefix_len` expanded children followed by the
-    /// repeat's trim marker. `None` means the candidate does not draw every child.
+    /// repeat's trim marker, sized at the remainder the prefix leaves and fitted to its final box.
+    /// `None` means the candidate does not draw every child, or the marker fails at this
+    /// allocation but sizes and fits at the whole inner box, so a shorter prefix may clear it. A
+    /// marker that fails even there fails with that error.
     fn evaluate_marker_candidate<'b>(
         &self,
         args: &MarkerCandidateArgs<'_, 'b>,
@@ -1783,24 +1896,58 @@ impl<'a> RenderContext<'a> {
             item,
             data: Some(marker_data),
         };
-        let marker_ctx = self.with_data(marker_expanded.data.as_ref().expect("marker data is set"));
-        let marker_measured = marker_ctx.measure_item_instance(
-            item,
-            frame,
-            [true, true],
-            geometry_values,
-            container_path,
-        )?;
-        let marker_input = marker_ctx.flow_child_input(
-            &marker_expanded,
-            &marker_measured,
-            frame,
-            geometry_values,
-            container_path,
-        )?;
+        let marker_ctx = self.scoped(&marker_expanded);
+        // The marker measured, resolved and fitted in `marker_frame`.
+        let size_marker = |marker_frame| {
+            let measured = marker_ctx.measure_item_instance(
+                item,
+                marker_frame,
+                [true, true],
+                geometry_values,
+                container_path,
+            )?;
+            let input = marker_ctx.flow_child_input(
+                &marker_expanded,
+                &measured,
+                marker_frame,
+                geometry_values,
+                container_path,
+            )?;
+            let fitted = marker_ctx.fit_item(
+                item,
+                &measured,
+                input.resolved_box,
+                takes_remainder_of(item, flow, geometry_values),
+                geometry_values,
+                container_path,
+            )?;
+            Ok::<_, AppError>((fitted, input))
+        };
 
-        let mut candidate = inputs[..prefix_len].to_vec();
-        candidate.push(marker_input);
+        let mut marker_fitted = None;
+        let candidate = crate::resolver::resolve_flow_children(
+            flow,
+            frame,
+            prefix_len + 1,
+            |idx, remainder| {
+                if idx < prefix_len {
+                    return Ok(inputs[idx]);
+                }
+                let (fitted, input) = size_marker(packed_frame_of(
+                    item,
+                    frame,
+                    flow,
+                    remainder,
+                    geometry_values,
+                ))?;
+                marker_fitted = Some(fitted);
+                Ok::<_, AppError>(input)
+            },
+        );
+        let candidate = match candidate {
+            Ok(candidate) => candidate,
+            Err(_) => return size_marker(frame).map(|_| None),
+        };
         let mut resolved =
             crate::resolver::arrange_flow(frame, flow, &candidate).map_err(|_| {
                 AppError::unsupported_layout_item(
@@ -1819,9 +1966,48 @@ impl<'a> RenderContext<'a> {
             marker: Some(MarkerInstance {
                 prefix_len,
                 expanded: marker_expanded,
-                measured: marker_measured,
+                measured: marker_fitted.expect("the walk sizes the marker"),
             }),
         }))
+    }
+
+    /// Lay a `text` item out against `box_size` with its wrapping, font range and overflow policy.
+    fn layout_text_item(
+        &self,
+        item: &LayoutItem,
+        box_size: (f32, f32),
+        path: &str,
+    ) -> Result<helpers::TextFit, AppError> {
+        let LayoutItem::Text {
+            value,
+            font,
+            font_size,
+            font_weight,
+            wrap,
+            line_spacing,
+            alignment,
+            overflow,
+            ..
+        } = item
+        else {
+            unreachable!("only a text item is laid out as text");
+        };
+        let text = self.resolve_item_text(value)?;
+        helpers::layout_text(
+            helpers::TextLayoutItem {
+                raw_text: &text,
+                font,
+                font_size,
+                font_weight: self.resolve_font_weight(font_weight.as_ref())?,
+                wrap: *wrap,
+                line_spacing: *line_spacing,
+                alignment: alignment.clone(),
+                overflow: *overflow,
+            },
+            box_size,
+            self.unit,
+            path,
+        )
     }
 
     /// The one place item type is visible in sizing: the intrinsic extent an item's own content
@@ -1851,36 +2037,10 @@ impl<'a> RenderContext<'a> {
         };
 
         match item {
-            LayoutItem::Text {
-                value,
-                font,
-                font_size,
-                font_weight,
-                wrap,
-                line_spacing,
-                alignment,
-                overflow,
-                ..
-            } => {
-                let text = self.resolve_item_text(value)?;
-
+            LayoutItem::Text { .. } => {
                 // The layout pass is unconditional: the emitted lines are the render payload
                 // whether or not either axis asked for an intrinsic.
-                let text_fit = helpers::layout_text(
-                    helpers::TextLayoutItem {
-                        raw_text: &text,
-                        font,
-                        font_size,
-                        font_weight: self.resolve_font_weight(font_weight.as_ref())?,
-                        wrap: *wrap,
-                        line_spacing: *line_spacing,
-                        alignment: alignment.clone(),
-                        overflow: *overflow,
-                    },
-                    measure_box,
-                    self.unit,
-                    path,
-                )?;
+                let text_fit = self.layout_text_item(item, measure_box, path)?;
 
                 let extents = (text_fit.width_units, text_fit.height_units);
                 Ok((per_axis(extents), Some(text_fit)))
@@ -2011,26 +2171,29 @@ impl<'a> RenderContext<'a> {
 
         match flow {
             Some(flow) => {
-                let arrangement = self.arrange_flow_children(
-                    &expanded,
-                    measured,
-                    flow,
-                    frame,
-                    geometry_values,
-                    path_prefix,
-                )?;
                 let child_args = FlowChildArgs {
                     frame,
                     geometry_values,
                     path_prefix,
                 };
+                // Every child is fitted to its final box before trimming can discard it.
+                let fitted =
+                    self.fit_flow_children(&expanded, measured, flow, &child_args, false)?;
+                let arrangement = self.arrange_flow_children(
+                    &expanded,
+                    &fitted,
+                    flow,
+                    frame,
+                    geometry_values,
+                    path_prefix,
+                )?;
                 match &arrangement.marker {
                     Some(marker) => {
                         for i in 0..marker.prefix_len {
                             prepared.push(self.prepare_flow_child(
                                 arrangement.result.rects[i],
                                 &expanded[i],
-                                &measured[i],
+                                &fitted[i],
                                 &child_args,
                             )?);
                         }
@@ -2046,7 +2209,7 @@ impl<'a> RenderContext<'a> {
                             prepared.push(self.prepare_flow_child(
                                 *placed,
                                 &expanded[i],
-                                &measured[i],
+                                &fitted[i],
                                 &child_args,
                             )?);
                         }
@@ -2091,6 +2254,130 @@ impl<'a> RenderContext<'a> {
             }
         }
         Ok(prepared)
+    }
+
+    /// Fit a flow container's children to the boxes the ordered walk gives them in `args.frame`.
+    /// `allocated` says the container's own box came from a line's remainder.
+    fn fit_flow_children(
+        &self,
+        expanded: &[ExpandedItem<'_>],
+        measured: &[Measured],
+        flow: &crate::models::Flow,
+        args: &FlowChildArgs<'_>,
+        allocated: bool,
+    ) -> Result<Vec<Measured>, AppError> {
+        let FlowChildArgs {
+            frame,
+            geometry_values,
+            path_prefix,
+        } = *args;
+        let inputs = self.flow_child_inputs(
+            expanded,
+            measured,
+            flow,
+            frame,
+            geometry_values,
+            path_prefix,
+        )?;
+        expanded
+            .iter()
+            .zip(measured)
+            .zip(&inputs)
+            .map(|((exp, node), input)| {
+                self.scoped(exp).fit_item(
+                    exp.item,
+                    node,
+                    input.resolved_box,
+                    allocated || takes_remainder_of(exp.item, flow, geometry_values),
+                    geometry_values,
+                    &exp.path(path_prefix),
+                )
+            })
+            .collect()
+    }
+
+    /// What `item` measured, carried to its final `size`. A text whose box a line's remainder
+    /// (`allocated`, its own or an ancestor's) shrank below the box it was laid out against is
+    /// fitted again against `size`; a container's children are fitted in the inner box `size`
+    /// gives them. Intrinsic sizes stay as measured, so no ancestor is resized.
+    fn fit_item(
+        &self,
+        item: &LayoutItem,
+        measured: &Measured,
+        size: (f32, f32),
+        allocated: bool,
+        geometry_values: &HashMap<String, f32>,
+        path: &str,
+    ) -> Result<Measured, AppError> {
+        let mut fitted = measured.clone();
+        match item {
+            LayoutItem::Text { .. } => {
+                let shrank = measured.laid_out_box.is_some_and(|laid_out| {
+                    size.0 < laid_out.0 - crate::resolver::BOUNDS_EPSILON
+                        || size.1 < laid_out.1 - crate::resolver::BOUNDS_EPSILON
+                });
+                if allocated && shrank {
+                    fitted.text = Some(self.layout_text_item(item, size, path)?);
+                    fitted.laid_out_box = Some(size);
+                }
+            }
+            LayoutItem::Container {
+                placement,
+                padding,
+                flow,
+                items: child_items,
+                ..
+            } => {
+                let rotation = crate::resolver::rotation_of(placement);
+                let (_, inner) = crate::resolver::container_frames(size, rotation, padding);
+                let expanded = self.expand_items(child_items)?;
+                let children_prefix = format!("{path}.items");
+                fitted.children = match flow {
+                    Some(flow) => self.fit_flow_children(
+                        &expanded,
+                        &measured.children,
+                        flow,
+                        &FlowChildArgs {
+                            frame: inner,
+                            geometry_values,
+                            path_prefix: &children_prefix,
+                        },
+                        allocated,
+                    )?,
+                    None => expanded
+                        .iter()
+                        .zip(&measured.children)
+                        .map(|(exp, node)| {
+                            let item_ctx = self.scoped(exp);
+                            let child_path = exp.path(&children_prefix);
+                            let child_size = match exp.item.placement() {
+                                Some(placement) => {
+                                    let pbox = item_ctx.resolve_placement_box(
+                                        placement,
+                                        inner,
+                                        geometry_values,
+                                        node.intrinsic,
+                                        &child_path,
+                                    )?;
+                                    (pbox.w, pbox.h)
+                                }
+                                None => (0.0, 0.0),
+                            };
+                            item_ctx.fit_item(
+                                exp.item,
+                                node,
+                                child_size,
+                                allocated,
+                                geometry_values,
+                                &child_path,
+                            )
+                        })
+                        .collect::<Result<_, _>>()?,
+                };
+            }
+            _ => {}
+        }
+        Ok(fitted)
     }
 
     /// Prepare one arranged flow child at its placed box.
@@ -11015,32 +11302,77 @@ layout:
             render_single_label(&t_alone, &HashMap::new(), &BTreeMap::new(), &resolver());
         assert!(res_alone.is_ok());
 
-        // Uncapped fill child beside sibling: overruns because fill claims full 80mm
-        let yaml_overrun = r#"
-name: Fill Overrun
+        // An uncapped fill child after a sibling takes the line's remainder: 30 less the 10-wide
+        // sibling and the gap of 2. A whole-inner allocation overruns; a wrong gap moves the box
+        // or changes its width.
+        let yaml_row = r#"
+name: Fill Remainder Row
 unit: mm
 dpi: 200
-format: { type: single, width: 80, height: 20 }
+format: { type: single, width: 30, height: 10 }
 layout:
   - type: container
     at: [0, 0]
-    size: [80, 20]
-    flow: { direction: row, gap: 5 }
+    size: [30, 10]
+    flow: { direction: row, gap: 2 }
     items:
       - type: text
-        value: "First"
-        size: [20, 10]
+        value: "A"
+        size: [10, 4]
         font_size: 8
       - type: text
-        value: "Second"
-        size: [fill, 10]
+        value: "B"
+        size: [fill, 4]
         font_size: 8
 "#;
-        let t_overrun = parse_and_validate(yaml_overrun).unwrap();
-        let err_overrun =
-            render_single_label(&t_overrun, &HashMap::new(), &BTreeMap::new(), &resolver())
-                .unwrap_err();
-        assert_eq!(err_overrun.reason(), Some("item_out_of_frame"));
+        let t_row = parse_and_validate(yaml_row).unwrap();
+        let src_row = render_test_items(
+            match &t_row.layout {
+                Layout::Items(items) => items,
+            },
+            (30.0, 10.0),
+        )
+        .expect("render");
+        assert!(
+            src_row
+                .contains("#place(top + left, dx: 12mm, dy: 0mm)[#box(width: 18mm, height: 4mm,"),
+            "expected an 18-wide box at x = 12 in: {src_row}"
+        );
+
+        // A column consumes the remaining height the same way, 2 below the first child.
+        let yaml_col = r#"
+name: Fill Remainder Column
+unit: mm
+dpi: 200
+format: { type: single, width: 10, height: 30 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [10, 30]
+    flow: { direction: column, gap: 2 }
+    items:
+      - type: text
+        value: "A"
+        size: [4, 10]
+        font_size: 8
+      - type: text
+        value: "B"
+        size: [4, fill]
+        font_size: 8
+"#;
+        let t_col = parse_and_validate(yaml_col).unwrap();
+        let src_col = render_test_items(
+            match &t_col.layout {
+                Layout::Items(items) => items,
+            },
+            (10.0, 30.0),
+        )
+        .expect("render");
+        assert!(
+            src_col
+                .contains("#place(top + left, dx: 0mm, dy: 12mm)[#box(width: 4mm, height: 18mm,"),
+            "expected an 18-tall box 2 below the first child in: {src_col}"
+        );
 
         // Capped fill child sharing line: fits within 80mm
         let yaml_capped = r#"
@@ -11068,6 +11400,695 @@ layout:
         let res_capped =
             render_single_label(&t_capped, &HashMap::new(), &BTreeMap::new(), &resolver());
         assert!(res_capped.is_ok());
+    }
+
+    /// The Typst source `yaml` renders to in `frame`, with `data` bound to its parameters.
+    fn flow_source(
+        yaml: &str,
+        frame: (f32, f32),
+        data: serde_json::Value,
+    ) -> Result<String, AppError> {
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+            defaults: Default::default(),
+        };
+        let data: HashMap<String, JsonValue> = serde_json::from_value(data).unwrap();
+        let resolved = super::resolve_parameters(
+            &template,
+            &data,
+            &crate::render::resolve_environment(&template, &settings, &datetime)
+                .unwrap()
+                .defaults,
+        )
+        .unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", &resolved.data, &env, &images);
+        let (measured, _) =
+            ctx.measure_items(items, frame, [true, true], &HashMap::new(), "layout")?;
+        ctx.render_items(items, &measured, frame, &HashMap::new(), None, "layout")
+    }
+
+    /// The width of every `#box(width: …mm` in `src`, in emission order.
+    fn box_widths(src: &str) -> Vec<f32> {
+        src.split("#box(width: ")
+            .skip(1)
+            .map(|rest| rest[..rest.find("mm").unwrap()].parse().unwrap())
+            .collect()
+    }
+
+    /// What a text emits inside the box that starts `#box(width: {width}mm, height: {height}mm`:
+    /// its size, lines and insets.
+    fn text_body(src: &str, width: f32, height: f32) -> String {
+        let head = format!("#box(width: {width}mm, height: {height}mm, clip: true)");
+        let at = src
+            .find(&head)
+            .unwrap_or_else(|| panic!("no {head} in: {src}"));
+        let rest = &src[at + head.len()..];
+        rest[..rest.find("]\n").unwrap()].to_string()
+    }
+
+    /// A wrapped `fill` title after a badge is fitted to the 18 units the row leaves it, exactly
+    /// as the same text in an authored 18-wide box of equal height. A fit against the whole
+    /// 30-unit inner box sets fewer lines at a larger size.
+    #[test]
+    fn a_packed_title_fits_its_allocated_width() {
+        let title = r#"
+        value: "Ordered packed fill title"
+        wrap: true
+        font_size: { min: 6, max: 14 }"#;
+        let packed = format!(
+            r#"
+name: Packed Title
+unit: mm
+dpi: 200
+format: {{ type: single, width: 30, height: 10 }}
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 10]
+    flow: {{ direction: row, gap: 2 }}
+    items:
+      - type: text
+        value: "A"
+        size: [10, 10]
+        font_size: 8
+      - type: text
+        size: [fill, 10]{title}
+"#
+        );
+        let authored = format!(
+            r#"
+name: Authored Title
+unit: mm
+dpi: 200
+format: {{ type: single, width: 30, height: 10 }}
+layout:
+  - type: text
+    at: [0, 0]
+    size: [18, 10]{}
+"#,
+            title.replace("\n        ", "\n    ")
+        );
+        let packed = flow_source(&packed, (30.0, 10.0), json!({})).unwrap();
+        let authored = flow_source(&authored, (30.0, 10.0), json!({})).unwrap();
+        assert_eq!(
+            text_body(&packed, 18.0, 10.0),
+            text_body(&authored, 18.0, 10.0)
+        );
+    }
+
+    /// A content-width row claims what its wrapped `fill` title lays out to in the 18 units the
+    /// badge and gap leave it, the width the same text has when capped at 18. Measuring the title
+    /// against the whole 30-unit inner box claims its wider lines and widens the row.
+    #[test]
+    fn a_packed_title_claims_its_allocated_width() {
+        let packed = r#"
+name: Packed Claim
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 10 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [content, 10]
+    flow: { direction: row, gap: 2 }
+    items:
+      - type: container
+        size: [10, 10]
+        items: []
+      - type: text
+        value: "Ordered packed fill title"
+        size: [fill, 10]
+        wrap: true
+        font_size: 8
+"#;
+        let capped = r#"
+name: Capped Claim
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 10 }
+layout:
+  - type: text
+    value: "Ordered packed fill title"
+    at: [0, 0]
+    size: [content, 10]
+    max_w: 18
+    wrap: true
+    font_size: 8
+"#;
+        let row = box_widths(&flow_source(packed, (30.0, 10.0), json!({})).unwrap())[0];
+        let claim = box_widths(&flow_source(capped, (30.0, 10.0), json!({})).unwrap())[0];
+        assert!(claim < 18.0 - 1.0, "the title wraps inside 18: {claim}");
+        assert!(
+            (row - (12.0 + claim)).abs() < 1e-3,
+            "the row is the badge, the gap and the title's {claim}: {row}"
+        );
+    }
+
+    /// A content-width row measures a title against the 40 its cap allows and hugs what the
+    /// title then claims; the capped 8-wide box before it claims only its 4-wide content. The
+    /// final row leaves the title 4 less than its claim, below the cap it was laid out at, so it
+    /// is fitted again to that box, as an authored box of the same size is, while the row keeps
+    /// the width it was measured at.
+    #[test]
+    fn a_packed_title_shrunk_below_its_measured_box_is_fitted_again() {
+        let yaml = r#"
+name: Shrunk Title
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 10 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [content, 10]
+    flow: { direction: row, gap: 2 }
+    items:
+      - type: container
+        size: [fill, 10]
+        max_w: 8
+        items:
+          - type: container
+            at: [0, 0]
+            size: [4, 4]
+            items: []
+      - type: text
+        value: "Packed fill title"
+        size: [fill, 10]
+        max_w: 40
+        wrap: true
+        font_size: 8
+"#;
+        let src = flow_source(yaml, (60.0, 10.0), json!({})).unwrap();
+        let widths = box_widths(&src);
+        let (row, title) = (widths[0], widths[3]);
+        assert!(title < 40.0, "the title is below its cap: {src}");
+        let intrinsic = flow_source(
+            r#"
+name: Intrinsic Title
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 10 }
+layout:
+  - type: text
+    value: "Packed fill title"
+    at: [0, 0]
+    size: [content, 10]
+    max_w: 40
+    wrap: true
+    font_size: 8
+"#,
+            (60.0, 10.0),
+            json!({}),
+        )
+        .unwrap();
+        let claim = box_widths(&intrinsic)[0];
+        assert!(
+            (row - (4.0 + 2.0 + claim)).abs() < 1e-3,
+            "the row keeps the width of its initial claims, the 4-wide box, the gap and the \
+             title's {claim} laid out at its cap: {src}"
+        );
+        let authored = format!(
+            r#"
+name: Authored Title
+unit: mm
+dpi: 200
+format: {{ type: single, width: 60, height: 10 }}
+layout:
+  - type: text
+    value: "Packed fill title"
+    at: [0, 0]
+    size: [{title}, 10]
+    wrap: true
+    font_size: 8
+"#
+        );
+        let authored = flow_source(&authored, (60.0, 10.0), json!({})).unwrap();
+        let body = text_body(&src, title, 10.0);
+        assert!(body.contains("#linebreak()"), "the refit wraps: {body}");
+        assert_eq!(body, text_body(&authored, title, 10.0));
+    }
+
+    /// A `fill` child after a full line gets zero: it takes no gap and starts no line, so the
+    /// child after it wraps to x = 0 on line 2. Its own text error stands rather than being
+    /// retried on that fresh line.
+    #[test]
+    fn a_zero_remainder_fill_occupies_no_slot_and_keeps_its_text_error() {
+        let yaml = |value: &str| {
+            format!(
+                r#"
+name: Zero Remainder
+unit: mm
+dpi: 200
+format: {{ type: single, width: 30, height: 10 }}
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 10]
+    flow: {{ direction: row, wrap: true, gap: 2 }}
+    items:
+      - type: text
+        value: "A"
+        size: [30, 4]
+        font_size: 8
+      - type: text
+        value: "{value}"
+        size: [fill, 4]
+        overflow: fail
+        font_size: 8
+      - type: text
+        value: "B"
+        size: [5, 4]
+        font_size: 8
+"#
+            )
+        };
+        let src = flow_source(&yaml(""), (30.0, 10.0), json!({})).unwrap();
+        assert!(
+            src.contains("#place(top + left, dx: 30mm, dy: 0mm)[#box(width: 0mm, height: 4mm,"),
+            "the zero box sits at the cursor on line 1: {src}"
+        );
+        assert!(
+            src.contains("#place(top + left, dx: 0mm, dy: 4mm)[#box(width: 5mm, height: 4mm,"),
+            "the next child starts line 2: {src}"
+        );
+
+        let err = flow_source(&yaml("H"), (30.0, 10.0), json!({})).unwrap_err();
+        assert_eq!(err.reason(), Some("text_does_not_fit"), "{err:?}");
+        assert!(err.message_text().contains("items[1]"), "{err:?}");
+    }
+
+    /// The trimmed child's nested text is fitted to its final box before trimming discards it.
+    /// The content row measured its text against 20 units and hugs to 4.1; at that width the
+    /// capped QR takes the whole row, leaving the text zero, where `H` cannot fit.
+    #[test]
+    fn a_trimmed_childs_nested_text_is_still_fitted() {
+        let yaml = r#"
+name: Trimmed Nested Text
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 4 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 4]
+    flow: { direction: row, overflow: trim }
+    items:
+      - type: container
+        size: [29, 4]
+        items: []
+      - type: container
+        size: [content, 4]
+        flow: { direction: row }
+        items:
+          - type: qr
+            value: "A"
+            size: [fill, 2.1]
+            max_w: 10
+            module_size: 0.1
+            quiet_zone: 0
+          - type: text
+            value: "H"
+            size: [fill, 4]
+            overflow: fail
+            font_size: 8
+"#;
+        let err = flow_source(yaml, (30.0, 4.0), json!({})).unwrap_err();
+        assert_eq!(err.reason(), Some("text_does_not_fit"), "{err:?}");
+        assert!(
+            err.message_text().contains("layout[0].items[1].items[1]"),
+            "{err:?}"
+        );
+    }
+
+    /// A trimming wrap row whose `tags` repeat follows a 10×4 box on line 1 and a 20×1 box on
+    /// line 2, leaving the repeat's first instance 8 units of line 2. `repeat` is the repeating
+    /// container's YAML after its `repeat`, `trim_marker` and `size` keys.
+    fn marker_row(marker: &str, size: &str, repeat: &str) -> String {
+        format!(
+            r#"
+name: Marker Row
+unit: mm
+dpi: 200
+format: {{ type: single, width: 30, height: 7 }}
+params:
+  - name: tags
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 7]
+    flow: {{ direction: row, wrap: true, gap: 2, overflow: trim }}
+    items:
+      - type: container
+        size: [10, 4]
+        items: []
+      - type: container
+        size: [20, 1]
+        items: []
+      - type: container
+        repeat: tags
+        trim_marker: "{marker}"
+        size: {size}{repeat}
+"#
+        )
+    }
+
+    /// At the longest prefix the marker's remainder is zero and its text cannot fit; dropping the
+    /// first instance leaves it 8 units, so that shorter prefix is drawn.
+    #[test]
+    fn a_trim_marker_retries_a_text_fit_its_allocation_failed() {
+        let yaml = marker_row(
+            "...",
+            "[fill, content]",
+            r#"
+        items:
+          - type: text
+            value: "{tags}"
+            size: [fill, content]
+            wrap: true
+            font_size: 8"#,
+        );
+        let src = flow_source(&yaml, (30.0, 7.0), json!({ "tags": ["K", "\n"] })).unwrap();
+        assert!(src.contains("..."), "the marker is drawn: {src}");
+        assert!(
+            !src.contains("\"K\""),
+            "the first instance gives way: {src}"
+        );
+    }
+
+    /// A marker's absolute children are judged against each candidate's allocation: an authored
+    /// 4-wide child and one anchored 4 from the far edge both fail at the longest prefix's zero
+    /// remainder and fit the 8 units a shorter prefix leaves.
+    #[test]
+    fn a_trim_marker_retries_an_absolute_child_its_allocation_failed() {
+        for child in [
+            "at: [0, 0]\n            size: [4, 1]",
+            "at: [-4.0, 0]\n            size: [4, 1]",
+        ] {
+            let yaml = marker_row(
+                "...",
+                "[fill, content]",
+                &format!(
+                    r#"
+        items:
+          - type: container
+            when: {{ tags: "..." }}
+            {child}
+            items: []
+          - type: container
+            when: {{ tags: "KEEP" }}
+            size: [2, 1]
+            items: []
+          - type: container
+            when: {{ tags: "" }}
+            size: [content, 5]
+            items: []"#
+                ),
+            );
+            let src = flow_source(&yaml, (30.0, 7.0), json!({ "tags": ["KEEP", ""] }))
+                .unwrap_or_else(|err| panic!("{child}: {err:?}"));
+            assert!(
+                src.contains("width: 4mm"),
+                "{child}: the marker is drawn: {src}"
+            );
+            assert!(
+                !src.contains("width: 2mm"),
+                "{child}: the first instance gives way: {src}"
+            );
+        }
+    }
+
+    /// A marker failure no allocation can clear is reported as itself rather than as the search
+    /// running out of candidates: an unmapped character, a text in a fixed 10×4 marker even
+    /// through a nested row, a text its own cap fixes, a fill text whose cap no candidate's 8
+    /// units reach, a fill text an uncapped sibling fill leaves no room, hard lines taller than
+    /// an authored height, and an authored text box after an edge-relative child whose failure
+    /// at the zero remainder a shorter prefix clears.
+    #[test]
+    fn a_trim_marker_keeps_an_error_its_allocation_did_not_cause() {
+        let cases = [
+            (
+                marker_row(
+                    "中",
+                    "[fill, content]",
+                    r#"
+        items:
+          - type: text
+            value: "{tags}"
+            size: [fill, content]
+            wrap: true
+            font_size: 8
+          - type: container
+            when: { tags: "" }
+            size: [content, 5]
+            items: []"#,
+                ),
+                json!({ "tags": ["K", ""] }),
+                "text_character_unmapped",
+                "items[0]",
+            ),
+            (
+                marker_row(
+                    "TOOLONGVALUE",
+                    "[10, 4]",
+                    r#"
+        flow: { direction: row }
+        items:
+          - type: text
+            value: "{tags}"
+            size: [fill, 4]
+            overflow: fail
+            font_size: 8"#,
+                ),
+                json!({ "tags": ["K"] }),
+                "text_does_not_fit",
+                "items[0]",
+            ),
+            (
+                marker_row(
+                    "TOOLONGVALUE",
+                    "[fill, content]",
+                    r#"
+        flow: { direction: row }
+        items:
+          - type: text
+            value: "{tags}"
+            size: [content, content]
+            max_w: 5
+            overflow: fail
+            font_size: 8"#,
+                ),
+                json!({ "tags": ["K", "\n"] }),
+                "text_does_not_fit",
+                "items[0]",
+            ),
+            (
+                marker_row(
+                    "TOOLONGVALUE",
+                    "[fill, content]",
+                    r#"
+        flow: { direction: row }
+        items:
+          - type: text
+            value: "{tags}"
+            size: [fill, content]
+            max_w: 9
+            overflow: fail
+            font_size: 8"#,
+                ),
+                json!({ "tags": ["K", "\n"] }),
+                "text_does_not_fit",
+                "items[0]",
+            ),
+            (
+                marker_row(
+                    "...",
+                    "[fill, content]",
+                    r#"
+        flow: { direction: row }
+        items:
+          - type: container
+            when: { tags: "..." }
+            size: [fill, 1]
+            items: []
+          - type: text
+            value: "{tags}"
+            size: [fill, content]
+            overflow: fail
+            font_size: 8"#,
+                ),
+                json!({ "tags": ["K", "\n"] }),
+                "text_does_not_fit",
+                "items[1]",
+            ),
+            (
+                marker_row(
+                    "A\\nB\\nC\\nD",
+                    "[fill, content]",
+                    r#"
+        flow: { direction: row }
+        items:
+          - type: text
+            value: "{tags}"
+            size: [fill, 3]
+            wrap: true
+            overflow: fail
+            font_size: 8
+          - type: container
+            when: { tags: "" }
+            size: [content, 5]
+            items: []"#,
+                ),
+                json!({ "tags": ["K", ""] }),
+                "text_does_not_fit",
+                "items[0]",
+            ),
+            (
+                marker_row(
+                    "...",
+                    "[fill, content]",
+                    r#"
+        items:
+          - type: container
+            when: { tags: "..." }
+            at: [-4.0, 0]
+            size: [4, 1]
+            items: []
+          - type: text
+            when: { tags: "..." }
+            value: "TOOLONGVALUE"
+            at: [0, 0]
+            size: [4, 1]
+            overflow: fail
+            font_size: 8
+          - type: container
+            when: { tags: "" }
+            size: [content, 5]
+            items: []"#,
+                ),
+                json!({ "tags": ["K", ""] }),
+                "text_does_not_fit",
+                "items[1]",
+            ),
+        ];
+        for (yaml, data, reason, text) in cases {
+            let err = flow_source(&yaml, (30.0, 7.0), data).unwrap_err();
+            assert_eq!(err.reason(), Some(reason), "{yaml}: {err:?}");
+            assert!(
+                err.message_text()
+                    .contains(&format!("layout[0].items[2].{text}")),
+                "{yaml}: the marker's own text is named: {err:?}"
+            );
+        }
+    }
+
+    /// A marker text whose authored height fails because the zero remainder wraps it onto two
+    /// lines fits on one line at a shorter prefix's 8 units, so that prefix is drawn.
+    #[test]
+    fn a_trim_marker_retries_a_height_its_allocation_wrapped_past() {
+        let yaml = marker_row(
+            "A B",
+            "[fill, content]",
+            r#"
+        flow: { direction: row }
+        items:
+          - type: text
+            value: "{tags}"
+            size: [fill, 3]
+            wrap: true
+            overflow: fail
+            font_size: 8
+          - type: container
+            when: { tags: "" }
+            size: [content, 5]
+            items: []"#,
+        );
+        let src = flow_source(&yaml, (30.0, 7.0), json!({ "tags": ["K", ""] })).unwrap();
+        assert!(
+            src.contains("#text(\"A\u{a0}B\")"),
+            "the marker is drawn on one line: {src}"
+        );
+        assert!(
+            !src.contains("\"K\""),
+            "the first instance gives way: {src}"
+        );
+    }
+
+    /// A marker whose content row measures at the longest prefix's 16 units but, once the row
+    /// hugs its claims, leaves its wrapped `fill` title too little room to fit is retried at the
+    /// shorter prefix's 24, where the final fit wraps onto two lines that fit. The capped box
+    /// before the title takes 8 but claims only its 4-wide content.
+    #[test]
+    fn a_trim_marker_retries_a_fit_only_its_final_box_fails() {
+        let yaml = r#"
+name: Final Fit Marker
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 14 }
+params:
+  - name: tags
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 14]
+    flow: { direction: row, wrap: true, overflow: trim }
+    items:
+      - type: container
+        size: [60, 4]
+        items: []
+      - type: container
+        size: [20, 1]
+        items: []
+      - type: container
+        repeat: tags
+        trim_marker: "WW WW"
+        size: [fill, content]
+        max_w: 24
+        items:
+          - type: container
+            when: { tags: "WW WW" }
+            size: [content, 8]
+            flow: { direction: row, gap: 1 }
+            items:
+              - type: container
+                size: [fill, 4]
+                max_w: 8
+                items:
+                  - type: container
+                    at: [0, 0]
+                    size: [4, 4]
+                    items: []
+              - type: text
+                value: "{tags}"
+                size: [fill, 8]
+                wrap: true
+                overflow: fail
+                font_size: 8
+          - type: container
+            when: { tags: "" }
+            size: [content, 11]
+            items: []
+"#;
+        let src = flow_source(yaml, (60.0, 14.0), json!({ "tags": ["K", ""] })).unwrap();
+        assert!(
+            src.contains("#place(top + left, dx: 20mm, dy: 4mm)[#box(width: 24mm,"),
+            "the marker takes the shorter prefix's 24 units after the 20-wide box: {src}"
+        );
+        assert!(
+            !src.contains("dx: 44mm"),
+            "the first instance gives way: {src}"
+        );
+        assert_eq!(
+            src.matches("#text(\"WW\")").count(),
+            2,
+            "the final fit wraps the title: {src}"
+        );
     }
 
     #[test]

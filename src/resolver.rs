@@ -557,6 +557,68 @@ impl FlowLine {
     }
 }
 
+/// The axis a flow packs along: 0 (x) for a row, 1 (y) for a column.
+pub fn flow_primary_axis(flow: &Flow) -> usize {
+    match flow.direction {
+        FlowDirection::Row => 0,
+        FlowDirection::Column => 1,
+    }
+}
+
+/// Whether a packed child's primary-axis extent is `fill`, which sizes against its line's
+/// remainder.
+pub fn takes_remainder(
+    placement: &Placement,
+    flow: &Flow,
+    geometry_values: &HashMap<String, f32>,
+) -> bool {
+    let spec = source_of(placement, flow_primary_axis(flow), geometry_values);
+    matches!(spec.source, ExtentSource::Frame)
+}
+
+/// The frame a packed child sizes against: the padded inner box, with its line's `remainder` on
+/// the primary axis when the child [`takes_remainder`].
+pub fn packed_frame(
+    placement: &Placement,
+    inner: (f32, f32),
+    flow: &Flow,
+    remainder: f32,
+    geometry_values: &HashMap<String, f32>,
+) -> (f32, f32) {
+    if !takes_remainder(placement, flow, geometry_values) {
+        return inner;
+    }
+    match flow_primary_axis(flow) {
+        0 => (remainder, inner.1),
+        _ => (inner.0, remainder),
+    }
+}
+
+/// Resolve `n` packed children in template order. `resolve` receives each child's index and the
+/// remainder its line has left after the boxes resolved before it, so a child that
+/// [`takes_remainder`] sizes against what earlier children left.
+pub fn resolve_flow_children<E>(
+    flow: &Flow,
+    inner: (f32, f32),
+    n: usize,
+    mut resolve: impl FnMut(usize, f32) -> Result<FlowChildInput, E>,
+) -> Result<Vec<FlowChildInput>, E> {
+    let axis = flow_primary_axis(flow);
+    let inner_primary = frame_axis(inner, axis);
+    let mut line = FlowLine::default();
+    let mut inputs = Vec::with_capacity(n);
+    for idx in 0..n {
+        let input = resolve(idx, line.remainder(flow, inner_primary))?;
+        let extent = frame_axis(input.resolved_box, axis);
+        if line.wraps_before(flow, inner_primary, extent) {
+            line = FlowLine::default();
+        }
+        line.add(flow, extent);
+        inputs.push(input);
+    }
+    Ok(inputs)
+}
+
 /// Compute the flow arrangement for packed children inside a padded inner box.
 /// Check accumulation in packing coordinates, then convert to drawing coordinates.
 pub fn arrange_flow(

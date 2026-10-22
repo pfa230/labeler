@@ -339,7 +339,7 @@ A container with `flow:` packs its children in order instead of placing each by 
           max: 14.0
 ```
 
-Each packed child is sized as if it sat alone at the inner box's origin, then placed after its predecessor. So an uncapped `content` or `fill` child placed after a sibling can claim the whole inner width and overrun it (`item_out_of_frame`); cap it with `max_w` as above. Gated-off and empty children leave no gap. `wrap: true` continues onto further lines, and `overflow: trim` drops what does not fit instead of failing. `repeat:` on a packed container draws it once per element of a `list` parameter.
+Packed children are sized in order and placed after their predecessors. A `fill` on the packing axis takes what its line has left: the inner extent less the earlier boxes, their gaps and the gap before it, never below zero. So a title written `fill` after a badge shares the row, and its text is fitted to that remainder. A `fill` child written first takes the whole line, and the remainder does not move it to a new line: a later `fill` can get zero, and a text that cannot fit its remainder fails or is shortened by its own `overflow`. Every other extent is sized against the whole inner box, so an uncapped `content` child after a sibling can still overrun it (`item_out_of_frame`); cap it with `max_w` as above. Gated-off and empty children leave no gap. `wrap: true` continues onto further lines, and `overflow: trim` drops what does not fit instead of failing. `repeat:` on a packed container draws it once per element of a `list` parameter.
 
 A repeating container MAY declare `trim_marker:`, a literal string drawn as one more instance, with the repeated parameter bound to the marker, when trimming first discards an instance of that repeat. Trailing instances are dropped until the marker fits, so a shortened list is visible rather than silent. A list that fits exactly draws every element and no marker. `trim_marker` without `repeat` is refused at load.
 
@@ -388,7 +388,7 @@ Load refuses whatever the template alone shows to be wrong; on an auto-length la
 | `data_key_unknown` | The request sends a key the template does not declare. Declare it or drop it. |
 | `param_value_invalid` | Send a value the parameter's type accepts: one of an enum's `values`, a number within `min`/`max`, a whole number for `integer`. |
 | `text_does_not_fit` | Enlarge the box, lower `font_size.min`, or (under `fail` only) switch to `ellipsis`. |
-| `item_out_of_frame`, `coord_out_of_frame`, `line_endpoint_out_of_frame` | Children resolve against the padded inner box, not the container's outer size. In a flow, cap `content`/`fill` children with `max_w`/`max_h`. |
+| `item_out_of_frame`, `coord_out_of_frame`, `line_endpoint_out_of_frame` | Children resolve against the padded inner box, not the container's outer size. In a flow, write the child that should take the leftover room as `fill` after its siblings, and cap `content` children with `max_w`/`max_h`. |
 | `edge_rect_inverted` | Check signs: `-0.0` is the far edge, `0.0` the near one. |
 | `size_invalid` | A parameter supplied a size of zero or less. |
 | `width_bounds_inverted` | A supplied `width` bound put `max` below `min`. |

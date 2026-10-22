@@ -317,7 +317,8 @@ layout:
     assert_eq!(err_col_overrun.reason(), Some("item_out_of_frame"));
     assert!(err_col_overrun.message_text().contains("items[1]"));
 
-    // 7. A fill packed child alone in its container, and the same child beside a sibling
+    // 7. A fill packed child alone in its container, and the same child after a sibling, where
+    // it takes the line's remainder instead of overrunning
     let yaml_fill_alone = r#"
 name: Fill Alone
 unit: mm
@@ -364,15 +365,13 @@ layout:
         font_size: 8
 "#;
     let t_fill_sibling = parse_and_validate(yaml_fill_sibling).unwrap();
-    let err_fill_sibling = render_single_label_image(
+    let _png_fill_sibling = render_single_label_image(
         &t_fill_sibling,
         &HashMap::new(),
         &resolve_environment(&t_fill_sibling, &vars, &dt).unwrap(),
         opts,
     )
-    .unwrap_err();
-    assert_eq!(err_fill_sibling.reason(), Some("item_out_of_frame"));
-    assert!(err_fill_sibling.message_text().contains("items[1]"));
+    .unwrap();
 
     // 8. A flow container as the root of a sheet slot
     let yaml_sheet = r#"
