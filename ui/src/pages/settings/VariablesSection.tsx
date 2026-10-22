@@ -88,8 +88,9 @@ export function VariablesSection() {
   const [newValue, setNewValue] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
 
-  // Render rows only once variables have loaded: VariableRow seeds its draft from `value` on mount and is
-  // keyed by its key and stored-ness, so mounting a row before the real value arrives would strand it at "".
+  // Render rows only once variables have loaded, since `keys` derives from `stored`. A row is keyed by its
+  // key and stored-ness, so it remounts when its key moves between stored and suggested: a removed
+  // `qr_base_url` comes back with a fresh draft.
   if (variables === undefined) {
     return (
       <section className="flex flex-col gap-4">
