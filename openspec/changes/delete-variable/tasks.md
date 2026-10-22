@@ -9,4 +9,4 @@
 - [x] 2.1 Add `useDeleteVariable` to `ui/src/api/queries.ts`, invalidating `["variables"]` on success.
 - [x] 2.2 Give stored rows in `VariablesSection.tsx` a Remove button that switches to Confirm/Cancel, deleting only on Confirm and showing an error toast if the delete fails; suggested rows get no Remove.
 - [x] 2.3 Add a `VariablesSection.test.tsx` case for the "Remove a variable" scenario: Remove sends no request, Confirm sends `DELETE /api/variables/site`.
-- [ ] 2.4 Add a `VariablesSection.test.tsx` case for the "Remove a suggested key" scenario: after Remove and Confirm on a stored `qr_base_url`, its input is empty and its Save is disabled.
+- [x] 2.4 Add a `VariablesSection.test.tsx` case for the "Remove a suggested key" scenario: after Remove and Confirm on a stored `qr_base_url`, its input is empty and its Save is disabled.
