@@ -11,6 +11,9 @@
 //! - job-log attribution            → the service records the wrong actor for
 //!   prints made through a personal token, or through a no-auth service
 //!   (expected actor `local`)
+//! - sheet PDF download              → the adapter cannot carry a sheet batch
+//!   with options, copies and skipped slots to the service's PDF, or the
+//!   download reaches the printer
 
 mod common;
 
@@ -357,7 +360,7 @@ async fn personal_token_preview_print_and_attribution() {
     .await;
     mcp.initialize().await;
 
-    // The twelve tools are what a client discovers against the real service.
+    // The thirteen tools are what a client discovers against the real service.
     let tools = mcp.list_tools().await;
     let mut names: Vec<String> = tools["tools"]
         .as_array()
@@ -1003,6 +1006,75 @@ async fn a_quarantined_template_is_repaired_and_a_sheet_thumbnail_is_one_slot() 
         ipp.print_jobs.load(Ordering::SeqCst),
         0,
         "a thumbnail never prints"
+    );
+
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+    service.kill().await.expect("stop the service");
+}
+
+/// A sheet batch with template options, copies and skipped slots downloads as a
+/// PDF resource, and nothing reaches the printer.
+#[tokio::test(flavor = "multi_thread")]
+async fn render_sheet_downloads_a_filled_sheet_pdf_without_printing() {
+    let config = TempConfig::new("sheet-pdf");
+    config.write_template("sheet", SHEET_YAML);
+    let port = free_port();
+    let mut service = spawn_service(&config, port, &[("LABELER_NO_AUTH", "true")]).await;
+    let base = format!("http://127.0.0.1:{port}");
+
+    let ipp = spawn_fake_ipp();
+    let printer = reqwest::Client::new()
+        .post(format!("{base}/api/printers"))
+        .json(&json!({"id": "fake", "name": "Fake", "uri": ipp.uri}))
+        .send()
+        .await
+        .expect("create printer");
+    assert!(
+        printer.status().is_success(),
+        "printer: {}",
+        printer.status()
+    );
+
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", base.as_str())]).await;
+    mcp.initialize().await;
+    let data = |id: &str, orientation: &str| {
+        json!({
+            "id": id,
+            "url": format!("https://example.com/{id}"),
+            "name": "Drill",
+            "tags": "tools",
+            "description": "Cordless",
+            "orientation": orientation,
+            "outline": "yes"
+        })
+    };
+    let result = mcp
+        .tool_result(
+            "render_sheet",
+            json!({
+                "template": "sheet",
+                "labels": [
+                    {"data": data("A1", "vertical"), "copies": 3},
+                    {"data": data("A2", "horizontal")}
+                ],
+                "start_slot": 2
+            }),
+        )
+        .await;
+    assert!(!is_error(&result), "{result}");
+    let resource = &result["content"][0]["resource"];
+    assert_eq!(resource["uri"], "labeler:///renders/sheet.pdf", "{result}");
+    assert_eq!(resource["mimeType"], "application/pdf", "{result}");
+    use base64::Engine as _;
+    let pdf = base64::engine::general_purpose::STANDARD
+        .decode(resource["blob"].as_str().expect("base64 blob"))
+        .expect("decode blob");
+    assert!(pdf.starts_with(b"%PDF-"), "the blob is a PDF");
+    assert_eq!(
+        ipp.print_jobs.load(Ordering::SeqCst),
+        0,
+        "a sheet download never prints"
     );
 
     let (success, _, _) = mcp.shutdown().await;

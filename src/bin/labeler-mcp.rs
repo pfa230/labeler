@@ -1,20 +1,20 @@
 //! `labeler-mcp`: an MCP (stdio) adapter that fronts a running labeler REST service.
 //!
-//! It publishes twelve tools — template listing, detail, source, thumbnail, create,
-//! replace, delete, reload, `render_label`, `list_printers`, `print_labels` and
-//! `cut_printer` — over the official Rust MCP SDK, forwarding each call as an HTTP
-//! request to the service origin in `LABELER_URL` (default `http://127.0.0.1:8080`),
-//! with `LABELER_TOKEN` (when set) as a bearer token. The service owns validation,
-//! rendering, printer connections and actor attribution; this process owns only the
-//! MCP protocol and the HTTP forwarding.
+//! It publishes thirteen tools — template listing, detail, source, thumbnail, create,
+//! replace, delete, reload, `render_label`, `render_sheet`, `list_printers`,
+//! `print_labels` and `cut_printer` — over the official Rust MCP SDK, forwarding
+//! each call as an HTTP request to the service origin in `LABELER_URL` (default
+//! `http://127.0.0.1:8080`), with `LABELER_TOKEN` (when set) as a bearer token. The
+//! service owns validation, rendering, printer connections and actor attribution;
+//! this process owns only the MCP protocol and the HTTP forwarding.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroU32};
 
 use labeler::api::valid_printer_id;
 use labeler::templates::validate_template_id_stem;
 use rmcp::{
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
+    model::{CallToolResult, ContentBlock, ResourceContents},
     schemars::JsonSchema,
     tool, tool_handler, tool_router,
     transport::stdio,
@@ -26,6 +26,7 @@ use url::Url;
 
 const DEFAULT_SERVICE_ORIGIN: &str = "http://127.0.0.1:8080";
 const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+const PDF_MAGIC: &[u8] = b"%PDF-";
 
 /// The adapter's configuration, parsed once from the environment at startup.
 struct Config {
@@ -87,7 +88,34 @@ struct RenderLabelArgs {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LabelEntry {
+    /// Parameter values for this label, including template options such as
+    /// orientation or outline; names and JSON values pass through unchanged.
     data: HashMap<String, Value>,
+    /// How many labels this entry stands for; present only when supplied, and
+    /// explicit `null` is refused.
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(required)]
+    copies: Option<NonZeroU32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RenderSheetArgs {
+    template: String,
+    labels: Vec<LabelEntry>,
+    /// The number of leading sheet slots to skip; present only when supplied,
+    /// and explicit `null` is refused.
+    #[serde(
+        default,
+        deserialize_with = "non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(required)]
+    start_slot: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -521,6 +549,36 @@ impl LabelerMcp {
             )
             .await?;
         Ok(png_image(&bytes, "preview"))
+    }
+
+    #[tool(
+        name = "render_sheet",
+        description = "Download a filled sheet PDF without printing. start_slot skips that many leading slots. Template options such as orientation or outline are selected through each label's data.",
+        annotations(read_only_hint = true)
+    )]
+    async fn render_sheet(
+        &self,
+        Parameters(args): Parameters<RenderSheetArgs>,
+    ) -> Result<CallToolResult, CallToolResult> {
+        let uri = format!("labeler:///renders/{}.pdf", args.template);
+        let body = serde_json::to_value(&args).expect("sheet arguments serialize");
+        let (_, bytes) = self
+            .rest_bytes(
+                reqwest::Method::POST,
+                self.url("api/render"),
+                Some(&Body::Json(body)),
+            )
+            .await?;
+        if !bytes.starts_with(PDF_MAGIC) {
+            return Ok(error_text(
+                "the service response is not a sheet PDF; render_sheet needs a sheet template",
+            ));
+        }
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(CallToolResult::success(vec![ContentBlock::resource(
+            ResourceContents::blob(encoded, uri).with_mime_type("application/pdf"),
+        )]))
     }
 
     #[tool(

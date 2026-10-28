@@ -247,12 +247,12 @@ async fn absent_token_sends_no_authorization_header() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn discovery_publishes_twelve_tools_with_schemas_and_annotations() {
+async fn discovery_publishes_thirteen_tools_with_schemas_and_annotations() {
     let mut mcp = McpProcess::spawn(&[]).await;
     mcp.initialize().await;
     let tools = mcp.list_tools().await;
     assert_eq!(tool_names(&tools), template_management_tool_names());
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 13);
 
     let print = find_tool(&tools, "print_labels");
     let schema = &print["inputSchema"];
@@ -326,6 +326,7 @@ async fn discovery_publishes_twelve_tools_with_schemas_and_annotations() {
         "get_template_source",
         "get_template_thumbnail",
         "render_label",
+        "render_sheet",
         "list_printers",
     ] {
         assert_eq!(
@@ -450,6 +451,34 @@ async fn discovery_publishes_twelve_tools_with_schemas_and_annotations() {
     assert_eq!(
         render_schema["properties"]["data"]["type"], "object",
         "data is an object: {render_schema}"
+    );
+
+    let sheet = find_tool(&tools, "render_sheet");
+    let sheet_schema = &sheet["inputSchema"];
+    assert_eq!(
+        sheet_schema["required"],
+        json!(["template", "labels"]),
+        "render_sheet requires template and labels only: {sheet_schema}"
+    );
+    let sheet_slot = &sheet_schema["properties"]["start_slot"];
+    assert_eq!(sheet_slot["type"], "integer", "{sheet_schema}");
+    assert!(sheet_slot.get("default").is_none(), "{sheet_slot}");
+    let entry = &sheet_schema["$defs"]["LabelEntry"];
+    assert_eq!(
+        entry["required"],
+        json!(["data"]),
+        "copies is optional: {entry}"
+    );
+    let copies = &entry["properties"]["copies"];
+    assert_eq!(copies["type"], "integer", "{copies}");
+    assert_eq!(copies["minimum"], 1, "{copies}");
+    assert!(copies.get("default").is_none(), "{copies}");
+    let sheet_description = sheet["description"].as_str().unwrap();
+    assert!(
+        sheet_description.contains("PDF")
+            && sheet_description.contains("start_slot skips")
+            && sheet_description.contains("data"),
+        "render_sheet states the download, the slot skip and option selection: {sheet_description}"
     );
 
     let (success, _, _) = mcp.shutdown().await;
@@ -598,6 +627,31 @@ async fn unlisted_arguments_missing_fields_and_null_start_slot_are_execution_err
             "non-boolean chain_and_continue {invalid}: {invalid_chain}"
         );
     }
+
+    for copies in [json!(Value::Null), json!(0)] {
+        let labels = json!([{"data": {}, "copies": copies}]);
+        let sheet = mcp
+            .tool_result("render_sheet", json!({ "template": "t", "labels": labels }))
+            .await;
+        assert!(is_error(&sheet), "render_sheet copies {copies}: {sheet}");
+        let print = mcp
+            .tool_result(
+                "print_labels",
+                json!({ "template": "t", "printer": "p", "labels": labels }),
+            )
+            .await;
+        assert!(is_error(&print), "print_labels copies {copies}: {print}");
+    }
+    let null_sheet_slot = mcp
+        .tool_result(
+            "render_sheet",
+            json!({ "template": "t", "labels": [{"data": {}}], "start_slot": Value::Null }),
+        )
+        .await;
+    assert!(
+        is_error(&null_sheet_slot),
+        "null start_slot: {null_sheet_slot}"
+    );
 
     assert!(
         mock.received_requests().await.unwrap().is_empty(),
@@ -842,6 +896,165 @@ async fn sheet_refusal_propagates_as_the_service_error() {
 }
 
 // ---------------------------------------------------------------------------
+// render_sheet
+// ---------------------------------------------------------------------------
+
+/// A PDF-signed body with bytes that are not UTF-8, so a lossy text round trip
+/// would change it.
+fn pdf_bytes() -> Vec<u8> {
+    let mut bytes = b"%PDF-1.7\n".to_vec();
+    bytes.extend_from_slice(&[0x00, 0xff, 0xfe, 0x80, 0x0a]);
+    bytes.extend_from_slice(b"%%EOF\n");
+    bytes
+}
+
+#[tokio::test]
+async fn render_sheet_forwards_the_batch_and_returns_the_pdf_as_a_blob_resource() {
+    let pdf = pdf_bytes();
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/render"))
+        .and(wiremock::matchers::body_json(json!({
+            "template": "sheet1",
+            "labels": [
+                {"data": {"id": "A1", "orientation": "vertical", "outline": "yes"}, "copies": 3},
+                {"data": {"id": "A2"}}
+            ],
+            "start_slot": 2
+        })))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(pdf.clone())
+                .insert_header("content-type", "application/pdf"),
+        )
+        .mount(&mock)
+        .await;
+
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", mock.uri().as_str())]).await;
+    mcp.initialize().await;
+    let result = mcp
+        .tool_result(
+            "render_sheet",
+            json!({
+                "template": "sheet1",
+                "labels": [
+                    {"data": {"id": "A1", "orientation": "vertical", "outline": "yes"}, "copies": 3},
+                    {"data": {"id": "A2"}}
+                ],
+                "start_slot": 2
+            }),
+        )
+        .await;
+    assert!(!is_error(&result), "{result}");
+    let content = result["content"].as_array().expect("content");
+    assert_eq!(content.len(), 1, "one resource block: {result}");
+    assert_eq!(content[0]["type"], "resource", "{result}");
+    let resource = &content[0]["resource"];
+    assert_eq!(resource["uri"], "labeler:///renders/sheet1.pdf", "{result}");
+    assert_eq!(resource["mimeType"], "application/pdf", "{result}");
+    use base64::Engine as _;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(resource["blob"].as_str().expect("base64 blob"))
+        .expect("decodes");
+    assert_eq!(decoded, pdf, "decoded blob equals the service PDF");
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "one render request, no print request");
+    assert_eq!(requests[0].url.path(), "/api/render");
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+}
+
+#[tokio::test]
+async fn render_sheet_omits_an_absent_start_slot() {
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/render"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(pdf_bytes()))
+        .mount(&mock)
+        .await;
+
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", mock.uri().as_str())]).await;
+    mcp.initialize().await;
+    let result = mcp
+        .tool_result(
+            "render_sheet",
+            json!({ "template": "sheet1", "labels": [{"data": {}}] }),
+        )
+        .await;
+    assert!(!is_error(&result), "{result}");
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("JSON body");
+    assert_eq!(
+        body,
+        json!({ "template": "sheet1", "labels": [{"data": {}}] }),
+        "absent start_slot and copies stay absent"
+    );
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+}
+
+#[tokio::test]
+async fn render_sheet_refuses_a_successful_zip_and_carries_service_errors() {
+    let envelope = json!({
+        "error": {
+            "code": "BatchInvalid",
+            "message": "some labels are invalid",
+            "details": {"failures": [{"index": 0, "error": "missing id"}]}
+        }
+    });
+    let mock = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/render"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({"template": "single"}),
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(b"PK\x03\x04zip".to_vec())
+                .insert_header("content-type", "application/zip"),
+        )
+        .mount(&mock)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/api/render"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({"template": "sheet1"}),
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(422).set_body_json(&envelope))
+        .mount(&mock)
+        .await;
+
+    let mut mcp = McpProcess::spawn(&[("LABELER_URL", mock.uri().as_str())]).await;
+    mcp.initialize().await;
+    let zip = mcp
+        .tool_result(
+            "render_sheet",
+            json!({ "template": "single", "labels": [{"data": {}}] }),
+        )
+        .await;
+    assert!(is_error(&zip), "{zip}");
+    assert_eq!(zip["content"].as_array().unwrap().len(), 1, "{zip}");
+    assert!(
+        first_text(&zip).contains("not a sheet PDF"),
+        "the message explains the refusal: {zip}"
+    );
+
+    let refused = mcp
+        .tool_result(
+            "render_sheet",
+            json!({ "template": "sheet1", "labels": [{"data": {}}] }),
+        )
+        .await;
+    assert!(is_error(&refused), "{refused}");
+    let carried = error_object_text(&refused);
+    assert_eq!(carried["status"], 422);
+    assert_eq!(carried["error"], envelope["error"]);
+    let (success, _, _) = mcp.shutdown().await;
+    assert!(success);
+}
+
+// ---------------------------------------------------------------------------
 // 2.3 print_labels
 // ---------------------------------------------------------------------------
 
@@ -863,7 +1076,7 @@ async fn print_labels_forwards_arguments_and_returns_a_full_summary() {
             "template": "sheet1",
             "printer": "p1",
             "labels": [
-                {"data": {"id": "A1"}},
+                {"data": {"id": "A1"}, "copies": 2},
                 {"data": {"id": "A2"}}
             ],
             "start_slot": 2
@@ -881,7 +1094,7 @@ async fn print_labels_forwards_arguments_and_returns_a_full_summary() {
             json!({
                 "template": "sheet1",
                 "printer": "p1",
-                "labels": [{"data": {"id": "A1"}}, {"data": {"id": "A2"}}],
+                "labels": [{"data": {"id": "A1"}, "copies": 2}, {"data": {"id": "A2"}}],
                 "start_slot": 2
             }),
         )
@@ -1394,7 +1607,7 @@ async fn unavailable_service_is_an_execution_error_and_later_calls_still_run() {
         "still an execution error, not a crash: {second}"
     );
     let tools = mcp.list_tools().await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 13);
 
     let (success, _, _) = mcp.shutdown().await;
     assert!(success);
