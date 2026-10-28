@@ -4,7 +4,7 @@
 
 ### Requirement: Tool surface
 
-The adapter SHALL publish exactly the following tools with descriptions and JSON input schemas. All arguments shown without `?` are required; arguments ending in `?` are optional and SHALL be omitted from forwarded requests when absent. Tool arguments and label entries SHALL refuse unlisted keys, while `data` SHALL allow arbitrary parameter names and JSON values. `start_slot` SHALL accept nonnegative integers and refuse explicit null. `chain_and_continue` SHALL accept only boolean values and refuse explicit null. Template identifiers in the seven template-management tools SHALL follow the id rule in `templates`; invalid identifiers SHALL return tool execution errors before calling REST. Every valid identifier, including `reload`, SHALL address that template rather than a different operation. The `cut_printer` identifier SHALL follow the printer id rule in `printing`; an invalid identifier SHALL return a tool execution error before calling REST.
+The adapter SHALL publish exactly the following tools with descriptions and JSON input schemas. All arguments shown without `?` are required; arguments ending in `?` are optional and SHALL be omitted from forwarded requests when absent. Tool arguments and label entries SHALL refuse unlisted keys, while `data` SHALL allow arbitrary parameter names and JSON values. A label entry's optional `copies` SHALL accept integers of at least 1 and refuse explicit null; omitted copies follow `rendering`. `start_slot` SHALL accept nonnegative integers and refuse explicit null. `chain_and_continue` SHALL accept only boolean values and refuse explicit null. Template identifiers in the seven template-management tools SHALL follow the id rule in `templates`; invalid identifiers SHALL return tool execution errors before calling REST. Every valid identifier, including `reload`, SHALL address that template rather than a different operation. The `cut_printer` identifier SHALL follow the printer id rule in `printing`; an invalid identifier SHALL return a tool execution error before calling REST.
 
 | Tool | Arguments | Operation |
 |---|---|---|
@@ -17,9 +17,9 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 | `delete_template` | `{template: string}` | `DELETE /api/templates/{id}` |
 | `reload_templates` | `{}` | `POST /api/template-registry/reload` |
 | `render_label` | `{template: string, data: object}` | `POST /api/render/label?format=png` |
-| `render_sheet` | `{template: string, labels: [{data: object}], start_slot?: integer}` | `POST /api/render` |
+| `render_sheet` | `{template: string, labels: [{data: object, copies?: integer}], start_slot?: integer}` | `POST /api/render` |
 | `list_printers` | `{}` | `GET /api/printers` |
-| `print_labels` | `{template: string, printer: string, labels: [{data: object}], start_slot?: integer, chain_and_continue?: boolean}` | `POST /api/print` |
+| `print_labels` | `{template: string, printer: string, labels: [{data: object, copies?: integer}], start_slot?: integer, chain_and_continue?: boolean}` | `POST /api/print` |
 | `cut_printer` | `{printer: string}` | `POST /api/printers/{id}/cut` |
 
 `list_templates`, `get_template`, `get_template_source`, `get_template_thumbnail`, `render_label`, `render_sheet` and `list_printers` SHALL carry `readOnlyHint: true`. `create_template`, `replace_template`, `delete_template`, `reload_templates`, `print_labels` and `cut_printer` SHALL carry `readOnlyHint: false`, `destructiveHint: true` and `idempotentHint: false`. The `list_templates` description SHALL state that each summary includes published parameters. The write descriptions SHALL distinguish create from complete-source replacement and deletion; `reload_templates` SHALL describe replacing the live registry from disk. The `print_labels` description SHALL state that it sends physical print jobs and explain that `chain_and_continue: true` selects chain and continue, while false or omission selects ordinary printing (`printing`). The `cut_printer` description SHALL state that it cuts the tape to release the last label held by chain and continue, on printers whose probe reports `cut`.
@@ -68,7 +68,7 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 #### Scenario: Client discovers sheet download
 
 - **WHEN** a client requests the tool list
-- **THEN** `render_sheet` requires `template` and `labels`, accepts optional `start_slot`, and advertises a read-only sheet PDF download without printing
+- **THEN** `render_sheet` requires `template` and `labels`, accepts optional `start_slot`, and advertises a read-only sheet PDF download without printing, explaining that `start_slot` skips that many leading slots and template options are selected through each label's `data`
 
 ## ADDED Requirements
 
@@ -85,3 +85,13 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 
 - **WHEN** `render_sheet` receives a single-label template and the service successfully returns a ZIP
 - **THEN** the tool returns `isError: true` explaining that the response is not a sheet PDF and returns no PDF resource
+
+#### Scenario: Template options and copies reach rendering
+
+- **WHEN** `render_sheet` receives a label with `data: {orientation: "vertical", outline: "yes"}`, `copies: 3` and `start_slot: 2`
+- **THEN** the option selections, copy count and start slot reach `/api/render` unchanged
+
+#### Scenario: Copies reach printing
+
+- **WHEN** `print_labels` receives a label entry with `copies: 3`
+- **THEN** it forwards that copy count without expanding the label entry

@@ -10,7 +10,8 @@ Fixes #506
 
 ## What Changes
 
-- Add a read-only `render_sheet` MCP tool accepting a template, label entries and an optional start slot.
+- Add a read-only `render_sheet` MCP tool accepting a template, label entries and an optional start slot (the number of leading slots to skip).
+- Expose per-entry copies for download and printing, and make template option selections discoverable through the existing per-label parameter data.
 - Return the existing REST sheet PDF as an embedded MCP binary resource without printing.
 
 ## Capabilities
