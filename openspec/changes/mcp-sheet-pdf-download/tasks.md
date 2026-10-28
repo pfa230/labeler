@@ -7,4 +7,4 @@
 
 ## 2. Integration
 
-- [ ] 2.1 Run the repository's configured loop checks and the required cut pass; verify all checks succeed and the diff contains only the PDF-download adapter change, its tests and this change's OpenSpec artifacts.
+- [ ] 2.1 Run the repository's configured loop checks and the required cut pass; verify all checks succeed and the diff contains only the `render_sheet` tool plus the shared label-entry `copies` change, their tests and this change's OpenSpec artifacts.

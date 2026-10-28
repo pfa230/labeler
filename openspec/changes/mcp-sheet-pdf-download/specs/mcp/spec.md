@@ -32,7 +32,7 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 
 #### Scenario: An unexpected print option
 
-- **WHEN** a client calls `print_labels` with an additional `copies` argument
+- **WHEN** a client calls `print_labels` with an additional top-level `copies` argument
 - **THEN** the adapter returns a tool execution error with `isError: true` without calling the REST service
 
 #### Scenario: Reserved-looking parameter names
@@ -68,13 +68,13 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 #### Scenario: Client discovers sheet download
 
 - **WHEN** a client requests the tool list
-- **THEN** `render_sheet` requires `template` and `labels`, accepts optional `start_slot`, and advertises a read-only sheet PDF download without printing, explaining that `start_slot` skips that many leading slots and template options are selected through each label's `data`
+- **THEN** `render_sheet` requires `template` and `labels` and accepts optional `start_slot`
 
 ## ADDED Requirements
 
 ### Requirement: Sheet PDF download
 
-`render_sheet` SHALL forward its arguments to `/api/render` and return the PDF bytes as one embedded MCP blob resource with `mimeType: application/pdf` and URI `labeler:///renders/<template>.pdf`, without printing. Batch validation and pagination follow `rendering`. Its description SHALL state that it downloads a sheet PDF. A successful REST body without the `%PDF-` signature SHALL return an explanatory execution error rather than a PDF resource.
+`render_sheet` SHALL forward its arguments to `/api/render` and return the PDF bytes as one embedded MCP blob resource with `mimeType: application/pdf` and URI `labeler:///renders/<template>.pdf`, without printing. Batch validation and pagination follow `rendering`. Its description SHALL state that it downloads a sheet PDF, that `start_slot` skips that many leading slots, and that template options are selected through each label's `data`. A successful REST body without the `%PDF-` signature SHALL return an explanatory execution error rather than a PDF resource.
 
 #### Scenario: Filled sheet is downloaded
 
@@ -86,12 +86,3 @@ The adapter SHALL publish exactly the following tools with descriptions and JSON
 - **WHEN** `render_sheet` receives a single-label template and the service successfully returns a ZIP
 - **THEN** the tool returns `isError: true` explaining that the response is not a sheet PDF and returns no PDF resource
 
-#### Scenario: Template options and copies reach rendering
-
-- **WHEN** `render_sheet` receives a label with `data: {orientation: "vertical", outline: "yes"}`, `copies: 3` and `start_slot: 2`
-- **THEN** the option selections, copy count and start slot reach `/api/render` unchanged
-
-#### Scenario: Copies reach printing
-
-- **WHEN** `print_labels` receives a label entry with `copies: 3`
-- **THEN** it forwards that copy count without expanding the label entry
