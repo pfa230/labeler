@@ -1,4 +1,4 @@
-FROM node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315 AS ui
+FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS ui
 WORKDIR /ui
 COPY ui/package*.json ./
 RUN npm ci
@@ -11,7 +11,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 RUN cargo build --release --locked
 
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS runtime
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime
 # ca-certificates: the `ipp` printing path (reqwest 0.13 -> rustls-platform-verifier) uses the system
 # trust store for `ipps://` printers. distroless bundled certs; debian-slim does not. gosu drops the
 # entrypoint from root to PUID:PGID.
